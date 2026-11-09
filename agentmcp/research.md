@@ -153,46 +153,36 @@ implementation evidence, not a current public stability guarantee.
 
 `Check` compares the active user registration before asking the agent to start
 one named server. Missing and changed entries return `missing` and `outdated`
-without launching an agent. Other profiles, incomplete status replies,
-missing agents, and ten-second probe limits return `unknown`. The caller can
-retry or inspect the agent directly.
-Checks write no config through kit, but agents can launch server processes and
-update their own runtime state.
+without launching an agent. Other profiles, incomplete status replies, missing
+agents, and ten-second probe limits return `unknown`. Checks write no config
+through kit, but agents can launch server processes and update runtime state.
 
 Codex's [app-server contract](https://developers.openai.com/codex/app-server)
 provides `mcpServerStatus/list`, whose `serverName` parameter restricts
 discovery to the requested server. `toolsError` is the agent's failure reason;
-a tool catalog, including an empty catalog, reports success with its count.
-With [`startup_readiness = "catalog"`](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/mcp_types.rs#L247-L255),
-Codex may satisfy startup with a cached catalog, so Check returns `unknown`
-because live status is inconclusive.
-An entry with `enabled = false` differs from the requested one and is
-`outdated`. Without a thread, status loads system, user, and runtime settings
+a tool catalog, including an empty one, reports success with its count. With
+[`startup_readiness = "catalog"`](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/mcp_types.rs#L247-L255),
+Codex may return a cached catalog, so the result is `unknown`. Without a thread,
+status loads system, user, and runtime settings
 [without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
-Check compares Codex's connection fields represented by `Server`, including an
-explicit disable. An explicit `enabled = true`, empty `args`, and empty `env`
-match their omitted defaults. Extra user settings do not make an entry outdated.
-`Install` replaces the named entry, including those extra settings.
+Check compares only the connection fields represented by `Server`, plus
+`enabled = false`; explicit `enabled = true`, empty `args`, and empty `env` match
+their defaults. Extra user settings don't make an entry outdated, although
+`Install` replaces the whole entry when it differs.
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
-`Status`, and, when present, `Issue`. Only a connected user entry with no issue
-reports `ok`; a same-name project or local entry returns `unknown` with its
-scope. Claude Code 2.1.301's isolated `mcp get` and `mcp add` output confirms
-these fields and its empty `args` and `env` registration defaults. The probe
-inherits the caller's environment. Claude safe mode intentionally hides MCP
-registrations, so a check in that mode can return `unknown`. A server registered
-only in project or local scope returns `missing` because Check starts with the
-active user config.
+`Status`, and, when present, `Issue`, as Claude Code 2.1.301 confirms. Only a
+connected user entry with no issue reports `ok`; a same-name project or local
+entry returns `unknown` with its scope, and one registered only there is
+`missing` because Check reads the user config first. The probe inherits the caller's
+environment, so Claude safe mode, which hides MCP registrations, returns
+`unknown`.
 
 `Command` renders `claude mcp add --scope user` and `codex mcp add` for POSIX
-shells and PowerShell. Options precede `-- NAME`; stdio commands and arguments
-follow the name directly, with a single `--` in the registration command.
-Claude CLI names accept ASCII letters, digits, underscores, and hyphens. Codex
-also accepts `.`, `:`, `@`, and `/`. These limits apply to command rendering;
-config writing and native checks keep their existing name handling. Claude's
-native check uses `mcp get -- NAME` for names beginning with a hyphen.
-Claude can express literal headers and bearer environment
-references. Codex 0.166.0's `mcp add --help` offers URL and bearer environment
-flags but no arbitrary-header flag; those configurations return a renderer
-error. Native checks still support them. Command strings can contain credentials
-and need the same care as config files.
+shells and PowerShell. Options precede a single `--`, then the name and any
+stdio command and arguments; Claude's native check likewise uses
+`mcp get -- NAME`. Claude names accept ASCII letters, digits, underscores, and
+hyphens; Codex also accepts `.`, `:`, `@`, and `/`. Codex 0.166.0's `mcp add`
+has no arbitrary-header flag, so literal headers return a renderer error. These
+limits don't apply to config writing or native checks. Command strings can
+contain credentials and need the same care as config files.

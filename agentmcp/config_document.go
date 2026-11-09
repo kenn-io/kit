@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"slices"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -44,13 +45,8 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	if present {
 		if fields, ok := previous.(map[string]any); checkOnly && ok {
 			dropEmptyFields(fields)
-			if fields["enabled"] == true {
-				delete(fields, "enabled")
-			}
-			for key := range fields {
-				switch key {
-				case "command", "args", "env", "url", "http_headers", "bearer_token_env_var", "enabled":
-				default:
+			for key, value := range fields {
+				if !slices.Contains(connectionFields, key) || key == "enabled" && value == true {
 					delete(fields, key)
 				}
 			}
@@ -79,6 +75,9 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	}
 	return data, true, present, err
 }
+
+// connectionFields are the Codex settings Check compares with Server.
+var connectionFields = []string{"command", "args", "env", "url", "http_headers", "bearer_token_env_var", "enabled"}
 
 // dropEmptyFields removes the empty args and env written by agent add commands.
 func dropEmptyFields(fields map[string]any) {
