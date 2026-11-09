@@ -1004,9 +1004,13 @@ func (e *retryableLooseError) Error() string { return e.err.Error() }
 func (e *retryableLooseError) Unwrap() error { return e.err }
 
 // classifyLooseFailure marks err retryable unless reading showed that the
-// content does not match its hash or size.
+// content does not match its hash or size. A failed read or a file that
+// changed while it was read proves nothing about the content, even when the
+// error also carries ErrContentMismatch.
 func classifyLooseFailure(err error) error {
-	if errors.Is(err, ErrContentMismatch) || errors.Is(err, pack.ErrBlobMismatch) {
+	_, failedRead := errors.AsType[*looseReadError](err)
+	if !failedRead && !errors.Is(err, errIdentityChanged) &&
+		(errors.Is(err, ErrContentMismatch) || errors.Is(err, pack.ErrBlobMismatch)) {
 		return err
 	}
 	return &retryableLooseError{err: err}
@@ -1075,7 +1079,7 @@ func openLooseObjectAtPath(
 	logicalSize := info.Size()
 	if encoding == LooseEncodingZstd {
 		header := make([]byte, compressedLooseHeaderSize)
-		if _, err := io.ReadFull(f, header); err != nil {
+		if _, err := io.ReadFull(looseFileReader{readLooseFile(f)}, header); err != nil {
 			return nil, nil, errors.Join(
 				fmt.Errorf("%w: read compressed loose header: %w", ErrContentMismatch, err),
 				f.Close(),

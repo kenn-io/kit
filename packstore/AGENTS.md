@@ -72,7 +72,9 @@
   proved: content that fails its hash or size check (`ErrContentMismatch`,
   `pack.ErrBlobMismatch`) or exceeds a size limit. Other read failures, such
   as permissions or a full scratch disk, stay retryable, and conflicts and
-  missing files are rechecked every pass. A remembered rejection holds only
+  missing files are rechecked every pass. The decoder and verifier wrap file
+  read errors in `ErrContentMismatch`, so loose file reads go through
+  `looseFileReader`, which marks them as `looseReadError`; that marker wins. A remembered rejection holds only
   while the cataloged size, the row conflict state, and every path's
   existence, length, and modification time stay the same, so a repair, a new
   copy, or a catalog fix makes the member eligible again.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -379,6 +380,60 @@ func TestPackRetriesLooseContentAfterOperationalFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, stats.LooseSealDeferred, "a failure unrelated to the content must not hide the member")
 	assert.Equal(t, 2, stats.BlobsPacked)
+}
+
+// failingReader fails every read, as a disk that returns I/O errors would.
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("input/output error") }
+
+func TestPackRetriesCompressedLooseContentAfterReadFailure(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	loose, err := NewLooseStore(layout)
+	require.NoError(t, err)
+	content := bytes.Repeat([]byte("a"), 4096)
+	written, err := loose.WriteBytes(t.Context(), content, WriteOptions{
+		Durability: AtomicPublication, Dedup: VerifyFullHash,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+	require.NoError(t, err)
+	compressed := layout.CompressedLoosePath(written.Hash)
+	require.Equal(t, compressed, written.Path, "the test needs a compressed loose object")
+	require.NoError(t, os.Chtimes(compressed, old, old))
+	addMaintenanceCandidate(catalog, Candidate{Hash: written.Hash, Paths: []string{compressed}, Size: 4096})
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	// The header reads fine; the compressed payload after it does not.
+	original := readLooseFile
+	opened := 0
+	readLooseFile = func(file *os.File) io.Reader {
+		opened++
+		if opened%2 == 0 {
+			return failingReader{}
+		}
+		return file
+	}
+	t.Cleanup(func() { readLooseFile = original })
+	opts := PackOptions{MinSealBytes: 8192, MaxLooseAge: time.Hour, Now: now}
+
+	stats, err := maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.BlobsCorrupt)
+	require.Zero(t, stats.BlobsPacked)
+
+	readLooseFile = original
+	young := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("b"), 4096))
+	require.NoError(t, os.Chtimes(layout.LoosePath(young), now, now))
+	catalog.addLoose(young, layout.LoosePath(young))
+	// Both members together reach the threshold only if the first still counts.
+	stats, err = maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	assert.False(t, stats.LooseSealDeferred, "a read failure must not hide the unchanged file")
+	assert.Equal(t, 2, stats.BlobsPacked)
+	got, _ := readStoreTest(t, maintainer.store, written.Hash)
+	assert.Equal(t, content, got)
 }
 
 func TestPackRechecksRejectedLooseContentWhenACopyAppears(t *testing.T) {
