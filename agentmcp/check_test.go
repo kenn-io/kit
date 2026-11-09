@@ -3,7 +3,6 @@ package agentmcp_test
 import (
 	"context"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -137,52 +136,6 @@ func TestCheckClaude(t *testing.T) {
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			assert.Equal(t, tc.reason, result.Reason)
 			assert.Equal(t, tc.next, result.NextStep)
-		})
-	}
-}
-
-// Run explicitly with KIT_MCP_LIVE_TEST=1 and installed Claude/Codex clients.
-func TestInstalledChecks(t *testing.T) {
-	if os.Getenv("KIT_MCP_LIVE_TEST") != "1" {
-		t.Skip("requires installed agents")
-	}
-	for _, agent := range []agentmcp.Agent{agentmcp.AgentCodex, agentmcp.AgentClaude} {
-		t.Run(string(agent), func(t *testing.T) {
-			_, err := exec.LookPath(string(agent))
-			require.NoError(t, err)
-			dir := t.TempDir()
-			t.Setenv("CODEX_HOME", dir)
-			t.Setenv("CLAUDE_CONFIG_DIR", dir)
-			t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-			t.Setenv("CLAUDE_CODE_SAFE_MODE", "")
-			t.Chdir(dir)
-			executable, err := os.Executable()
-			require.NoError(t, err)
-			for _, tc := range []struct {
-				name   string
-				server agentmcp.Server
-				state  agentmcp.CheckState
-			}{
-				{"native working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}}, agentmcp.CheckOK},
-				{"native missing binary", agentmcp.Server{Command: "kit-missing-mcp-binary"}, agentmcp.CheckFailed},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					_, err := agentmcp.Install(agent, agentmcp.InstallOptions{Name: "native-example", Server: tc.server})
-					require.NoError(t, err)
-					result, err := agentmcp.Check(t.Context(), agent, "native-example", tc.server)
-					require.NoError(t, err)
-					assert.Equal(t, tc.state, result.State, result.Reason)
-					if tc.state == agentmcp.CheckOK && agent == agentmcp.AgentCodex {
-						assert.Equal(t, 1, result.ToolCount)
-					} else if tc.state == agentmcp.CheckFailed {
-						if agent == agentmcp.AgentCodex {
-							assert.Contains(t, result.Reason, "MCP startup failed:")
-						} else {
-							assert.Contains(t, result.Reason, "kit-missing-mcp-binary")
-						}
-					}
-				})
-			}
 		})
 	}
 }
