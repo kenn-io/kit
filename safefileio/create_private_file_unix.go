@@ -118,7 +118,7 @@ func requireUnsharedParent(dir, created fs.FileInfo) error {
 	if !ok {
 		return fmt.Errorf("stat %s: missing owner information", dir.Name())
 	}
-	uid := uint32(os.Getuid())
+	uid := uint32(os.Geteuid())
 	if stat.Uid != uid && stat.Uid != 0 {
 		return fmt.Errorf("parent %s is owned by another user", dir.Name())
 	}

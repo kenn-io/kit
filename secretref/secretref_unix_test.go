@@ -14,23 +14,20 @@ import (
 	"go.kenn.io/kit/secretref"
 )
 
-func TestRefFileMustBePrivateAndNotALink(t *testing.T) {
+func TestRefFilePermissionPolicy(t *testing.T) {
 	dir := t.TempDir()
 	shared := filepath.Join(dir, "shared.key")
 	require.NoError(t, os.WriteFile(shared, []byte("secret"), 0o600))
 	require.NoError(t, os.Chmod(shared, 0o644))
-	private := filepath.Join(dir, "private.key")
-	writePrivateFile(t, private, "secret")
-	link := filepath.Join(dir, "link.key")
-	require.NoError(t, os.Symlink(private, link))
-
-	for path, reason := range map[string]string{
-		shared: "file must be private to its owner (mode 0600)",
-		link:   "file must be a regular file owned by the current user",
-	} {
-		_, err := secretref.Ref{File: path}.Resolve()
-		require.ErrorContains(t, err, reason)
+	if os.Geteuid() == 0 {
+		// Root-owned files may be readable by others if they are not writable.
+		got, err := (secretref.Ref{File: shared}).Resolve()
+		require.NoError(t, err)
+		require.Equal(t, "secret", got.Value)
+		return
 	}
+	_, err := (secretref.Ref{File: shared}).Resolve()
+	require.ErrorContains(t, err, "file must be a regular file with trusted ownership")
 }
 
 func TestRefFileRefusesAFIFOWithoutBlocking(t *testing.T) {
@@ -43,7 +40,7 @@ func TestRefFileRefusesAFIFOWithoutBlocking(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		require.ErrorContains(t, err, "file must be a regular file owned by the current user")
+		require.ErrorContains(t, err, "file must be a regular file with trusted ownership")
 	case <-time.After(5 * time.Second):
 		// A blocked open waits for a FIFO writer, kernel state that synctest
 		// cannot observe, so this wait is wall-clock. Open a writer to

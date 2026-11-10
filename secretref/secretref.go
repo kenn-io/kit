@@ -17,6 +17,7 @@
 package secretref
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,20 +45,10 @@ type Ref struct { //nolint:recvcheck // decoders need pointer receivers; values 
 // Literal returns a Ref that holds the secret itself.
 func Literal(secret string) Ref { return Ref{Value: secret} }
 
-// Secret is a resolved Ref. Value goes only to the code that uses the
-// secret. Source names where it came from ("inline", "env:NAME", or
-// "file:PATH") and never contains the value. Reason explains why a source
-// produced no value.
-type Secret struct {
-	Value  string
-	Source string
-	Reason string
-}
-
 // IsZero reports whether the reference is unset.
 func (r Ref) IsZero() bool { return r == Ref{} }
 
-// Validate reports a reference that names more than one source.
+// Validate checks source exclusivity and selector shape without reading a source.
 func (r Ref) Validate() error {
 	var sources []string
 	if r.Value != "" {
@@ -71,6 +62,12 @@ func (r Ref) Validate() error {
 	}
 	if len(sources) > 1 {
 		return fmt.Errorf("secretref: set one source, not %s", strings.Join(sources, " and "))
+	}
+	if r.File != "" && (!filepath.IsAbs(r.File) && !strings.HasPrefix(r.File, "~/") || strings.ContainsRune(r.File, 0)) {
+		return &SourceError{Source: "file:" + r.File, Reason: "file must use an absolute or ~/ path without NUL"}
+	}
+	if r.Env != "" && (strings.TrimSpace(r.Env) == "" || strings.ContainsAny(r.Env, "=\x00")) {
+		return &SourceError{Source: "environment", Reason: "invalid environment variable name"}
 	}
 	return nil
 }
@@ -120,18 +117,28 @@ func (r *Ref) UnmarshalJSON(data []byte) error {
 		*r = Literal(literal)
 		return nil
 	}
-	type fields struct {
-		Value string `json:"value"`
-		Env   string `json:"env"`
-		File  string `json:"file"`
+	invalid := errors.New("secretref: a secret is a string or an object with known string fields")
+	var fields map[string]*string
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return invalid
 	}
-	var decoded fields
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&decoded); err != nil {
-		return fmt.Errorf("secretref: a secret is a string or an object: %w", err)
+	var decoded Ref
+	for key, value := range fields {
+		if value == nil {
+			return invalid
+		}
+		switch key {
+		case "value":
+			decoded.Value = *value
+		case "env":
+			decoded.Env = *value
+		case "file":
+			decoded.File = *value
+		default:
+			return invalid
+		}
 	}
-	*r = Ref(decoded)
+	*r = decoded
 	return r.Validate()
 }
 
@@ -155,10 +162,19 @@ func (r Ref) MarshalTOML() ([]byte, error) {
 // unreadable returns an error. A reference naming more than one source
 // also returns an error.
 //
-// A file must be a regular, private file owned by the current user, as
-// safefileio verifies; a symlink or FIFO is refused without blocking.
-// Trailing newlines are removed.
+// Files follow safefileio.OpenSecretFile's trusted-path policy, are bounded to
+// 64 KiB, and lose trailing CR/LF bytes. Other bytes are preserved. Blank and
+// NUL-containing secrets are errors; exact-empty literals remain unset.
 func (r Ref) Resolve() (Secret, error) {
+	return r.ResolveContext(context.Background())
+}
+
+// ResolveContext resolves a source, checking cancellation between I/O steps.
+// Cancellation cannot interrupt every operating-system filesystem call.
+func (r Ref) ResolveContext(ctx context.Context) (Secret, error) {
+	if err := ctx.Err(); err != nil {
+		return Secret{}, err
+	}
 	if err := r.Validate(); err != nil {
 		return Secret{}, err
 	}
@@ -167,58 +183,81 @@ func (r Ref) Resolve() (Secret, error) {
 		return Secret{}, nil
 	case r.Env != "":
 		name := strings.TrimSpace(r.Env)
-		source := "env:" + name
-		value := os.Getenv(name)
-		if strings.TrimSpace(value) == "" {
-			return Secret{}, fmt.Errorf("secretref: env %q is unset or empty", name)
-		}
-		return Secret{Value: value, Source: source}, nil
+		return checkedSecret(os.Getenv(name), "env:"+name)
 	case r.File != "":
-		secret := resolveFile(strings.TrimSpace(r.File))
-		if secret.Reason != "" {
-			return Secret{}, fmt.Errorf("secretref: %s: %s", secret.Source, secret.Reason)
-		}
-		return secret, nil
+		return resolveFile(ctx, r.File)
 	default:
-		if strings.TrimSpace(r.Value) == "" {
-			return Secret{Source: "inline", Reason: "inline value is empty"}, nil
-		}
-		return Secret{Value: r.Value, Source: "inline"}, nil
+		return checkedSecret(r.Value, "inline")
 	}
 }
 
-func resolveFile(configured string) Secret {
-	unavailable := func(reason string) Secret {
-		return Secret{Source: "file:" + configured, Reason: reason}
+func checkedSecret(value, source string) (Secret, error) {
+	if strings.TrimSpace(value) == "" {
+		return Secret{}, &SourceError{Source: source, Reason: "secret is unset or empty"}
+	}
+	if strings.ContainsRune(value, 0) {
+		return Secret{}, &SourceError{Source: source, Reason: "secret contains a NUL byte"}
+	}
+	return Secret{Value: value, Source: source}, nil
+}
+
+func resolveFile(ctx context.Context, configured string) (Secret, error) {
+	unavailable := func(reason string) (Secret, error) {
+		return Secret{}, &SourceError{Source: "file:" + configured, Reason: reason}
 	}
 	path := configured
-	if configured == "~" || strings.HasPrefix(configured, "~/") {
+	if strings.HasPrefix(configured, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return unavailable("file home directory is unavailable")
 		}
-		path = filepath.Join(home, strings.TrimPrefix(configured, "~"))
+		// Joining would clean .. before the trusted walker can inspect its
+		// preceding components, and changes the meaning after a symlink.
+		path = home + string(os.PathSeparator) + strings.TrimPrefix(configured, "~/")
 	}
-	file, err := safefileio.OpenCurrentUserFile(path)
+	file, err := safefileio.OpenSecretFile(ctx, path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return unavailable("file is missing")
 		}
-		return unavailable("file must be a regular file owned by the current user")
+		if ctx.Err() != nil {
+			return Secret{}, ctx.Err()
+		}
+		return unavailable("file must be a regular file with trusted ownership, private permissions and parents")
 	}
 	defer func() { _ = file.Close() }()
-	if err := safefileio.ValidatePrivateCurrentUserFile(file); err != nil {
-		return unavailable("file must be private to its owner (mode 0600)")
-	}
-	data, err := io.ReadAll(file)
+	info, err := file.Stat()
 	if err != nil {
 		return unavailable("file is unreadable")
+	}
+	if info.Size() > 64<<10 {
+		return unavailable("file exceeds 64 KiB")
+	}
+	data, err := readSecret(ctx, file)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Secret{}, ctx.Err()
+		}
+		return unavailable(err.Error())
 	}
 	value := strings.TrimRight(string(data), "\r\n")
 	if strings.TrimSpace(value) == "" {
 		return unavailable("file is empty")
 	}
-	return Secret{Value: value, Source: "file:" + configured}
+	return checkedSecret(value, "file:"+configured)
+}
+
+// readSecret enforces the bound independently of stat, including growing files.
+// Its errors are public-safe; reader errors must not escape with file names.
+func readSecret(ctx context.Context, reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, reader: reader}, (64<<10)+1))
+	if err != nil {
+		return nil, errors.New("file is unreadable")
+	}
+	if len(data) > 64<<10 {
+		return nil, errors.New("file exceeds 64 KiB")
+	}
+	return data, nil
 }
 
 // quote returns a TOML basic string.
@@ -238,4 +277,17 @@ func quote(value string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// contextReader keeps cancellation checks at each bounded read operation.
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }
