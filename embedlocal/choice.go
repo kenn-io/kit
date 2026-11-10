@@ -9,8 +9,7 @@ import (
 	"go.kenn.io/kit/atomicfile"
 )
 
-// RecordChoice records an explicit turn-on of the built-in server. Apps can
-// also call it at startup for an existing built-in server opt-in. An error
+// RecordChoice records an explicit turn-on of the built-in server. An error
 // wrapping atomicfile.ErrPublished means the marker is visible; one wrapping
 // atomicfile.ErrNotDurable means a crash may lose it.
 func RecordChoice() error {
@@ -28,7 +27,6 @@ func RecordChoice() error {
 }
 
 // ChoiceRecorded reports whether a user recorded a shared turn-on choice.
-// On error, callers should leave the shared choice off.
 func ChoiceRecorded() (bool, error) {
 	dir, err := DefaultDir()
 	if err != nil {

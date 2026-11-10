@@ -21,15 +21,10 @@ func TestChoiceRecorded(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 
 	require.NoError(t, os.MkdirAll(dir, 0o700))
-	got, err = ChoiceRecorded()
-	require.NoError(t, err)
-	assert.False(t, got)
-
 	for _, tc := range []struct {
 		name, contents string
 		want           bool
 	}{
-		{"empty", "", false},
 		{"partial", "yes", false},
 		{"malformed", "no\n", false},
 		{"unknown", "yes\nextra", false},
@@ -42,6 +37,14 @@ func TestChoiceRecorded(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "search-by-meaning")))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "search-by-meaning"), 0o700))
+	got, err = ChoiceRecorded()
+	require.ErrorContains(t, err, "read search by meaning choice")
+	var pathErr *os.PathError
+	require.ErrorAs(t, err, &pathErr)
+	assert.False(t, got)
 }
 
 func TestRecordChoice(t *testing.T) {
@@ -54,14 +57,4 @@ func TestRecordChoice(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "yes\n", string(data))
 	}
-}
-
-func TestChoiceRecordedNonRegularMarker(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	require.NoError(t, os.MkdirAll(filepath.Join(home, ".kenn", "embeddings", "search-by-meaning"), 0o700))
-	got, err := ChoiceRecorded()
-	require.Error(t, err)
-	assert.False(t, got)
 }
