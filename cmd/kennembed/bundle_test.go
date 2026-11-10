@@ -20,18 +20,29 @@ import (
 	"go.kenn.io/kit/embedlocal"
 	"go.kenn.io/kit/internal/embedassets"
 	"go.kenn.io/kit/internal/embedtest"
+	"go.kenn.io/kit/selfupdate"
 )
 
-// CI supplies a staged native bundle. This catches missing companion
-// libraries and executable-relative lookup failures that model-only parity misses.
+// CI supplies the final release archive for the runner's platform. The test
+// extracts it as the installer does and runs it from a fresh directory, which
+// catches missing companion libraries, packaging mistakes, and
+// executable-relative lookup failures that model-only parity misses.
 func TestBundleNativeParity(t *testing.T) {
-	executable, dir := os.Getenv("KIT_EMBED_TEST_EXECUTABLE"), os.Getenv("KIT_EMBED_TEST_DIR")
-	if executable == "" || dir == "" {
+	archive, dir := os.Getenv("KIT_EMBED_TEST_ARCHIVE"), os.Getenv("KIT_EMBED_TEST_DIR")
+	if archive == "" || dir == "" {
 		t.Skip("native bundle fixture is unset")
 	}
+	bundle := t.TempDir()
+	if strings.HasSuffix(archive, ".zip") {
+		require.NoError(t, selfupdate.ExtractZip(archive, bundle))
+	} else {
+		require.NoError(t, selfupdate.ExtractTarGz(archive, bundle))
+	}
+	executable := filepath.Join(bundle, embedassets.ExecutableName())
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, executable, "--data-dir", dir)
+	command.Dir = t.TempDir()
 	stderr, err := command.StderrPipe()
 	require.NoError(t, err)
 	require.NoError(t, command.Start())
