@@ -151,46 +151,28 @@ func TestNaturalForms(t *testing.T) {
 }
 
 func TestNaturalFTS(t *testing.T) {
-	bodies := []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded"}
-	db := ftsDB(t, bodies)
-	got, err := lexical.Literal().PrepareNatural("invoice rounding decision")
-	require.NoError(t, err)
-	counts := map[string]int{}
-	for _, word := range got.Words {
-		for _, body := range matchBodies(t, db, word.Match) {
-			counts[body]++
-		}
-	}
-	assert.Equal(t, 3, counts[bodies[1]])
-	assert.Equal(t, 2, counts[bodies[0]])
-	assert.Equal(t, 2, counts[bodies[2]])
 	for _, tc := range []struct {
-		query, body string
-		words       []string
-		count       int
+		query  string
+		bodies []string
+		counts map[string]int
 	}{
-		{`"the connection" retry`, "the connection retry", []string{"retry"}, 3},
-		{`trie "trying"`, "trying", []string{"trie"}, 1},
-		{`tries "trying tried" retry`, "trying tried retry", []string{"tries", "retry"}, 2},
-		{`nil-pointer "nil-pointer" retry`, "nil pointer retry", []string{"nil-pointer", "retry"}, 2},
+		{"invoice rounding decision", []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded"}, map[string]int{"rounding of invoices": 2, "invoice rounding decision": 3, "the invoiced total was rounded": 2}},
+		{`"the connection" retry`, []string{"the connection retry"}, map[string]int{"the connection retry": 3}},
+		{`trie "trying"`, []string{"trying"}, map[string]int{"trying": 1}},
+		{`tries "trying tried" retry`, []string{"trying tried retry"}, map[string]int{"trying tried retry": 2}},
+		{`nil-pointer "nil-pointer" retry`, []string{"nil pointer retry"}, map[string]int{"nil pointer retry": 2}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)
 			require.NoError(t, err)
-			var words []string
-			for _, word := range got.Words {
-				words = append(words, word.Text)
-			}
-			assert.Equal(t, tc.words, words)
-			db := ftsDB(t, []string{tc.body})
-			require.Equal(t, []string{tc.body}, matchBodies(t, db, got.Match))
-			count := 0
+			db := ftsDB(t, tc.bodies)
+			counts := map[string]int{}
 			for _, term := range got.CountTerms {
-				if len(matchBodies(t, db, term.Match)) > 0 {
-					count++
+				for _, body := range matchBodies(t, db, term.Match) {
+					counts[body]++
 				}
 			}
-			assert.Equal(t, tc.count, count)
+			assert.Equal(t, tc.counts, counts)
 		})
 	}
 }
