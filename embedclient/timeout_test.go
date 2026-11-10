@@ -105,31 +105,24 @@ func TestSingleTimeoutUsesRetryAndReportsTimeout(t *testing.T) {
 	assert.Equal(t, int32(2), calls.Load())
 }
 
-func TestCallerCancelDoesNotSplit(t *testing.T) {
-	started := make(chan struct{})
+func TestCallerDeadlineDoesNotSplit(t *testing.T) {
 	var calls atomic.Int32
-	client := timeoutClient(t, func(_ http.ResponseWriter, r *http.Request) {
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		calls.Add(1)
-		var body struct {
-			Input []string `json:"input"`
-		}
-		if !assert.NoError(t, jsonv2.UnmarshalRead(r.Body, &body)) {
-			return
-		}
-		close(started)
 		<-r.Context().Done()
-	}, embedclient.Retry{})
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		_, err := client.EmbedTexts(ctx, embedconfig.RoleDocument, []string{"a", "b"})
-		done <- err
-	}()
-	<-started
-	cancel()
-	err := <-done
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, int32(1), calls.Load())
+		return nil, r.Context().Err()
+	})
+	client, err := embedclient.New(embedclient.Options{
+		Model:      unitModel(),
+		Deployment: embedconfig.Deployment{BaseURL: "http://embed.test/v1", TrustPrivateNetwork: true},
+		HTTP:       &http.Client{Transport: transport},
+	})
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond) //nolint:kennlint // deadlinetest: the caller's deadline is the expected result; the transport blocks until it expires
+	defer cancel()
+	_, err = client.EmbedTexts(ctx, embedconfig.RoleDocument, []string{"a", "b"})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, int32(1), calls.Load(), "an expired caller deadline must not split the batch")
 }
 
 func TestTimeoutSplitMapsBadVectorIndex(t *testing.T) {
