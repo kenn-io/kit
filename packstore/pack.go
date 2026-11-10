@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,9 +31,28 @@ type PackOptions struct {
 	// Zero examines every indexed entry, reading packed bytes for entries with
 	// a loose repair source. Positive values resume across calls on
 	// this Maintainer, up to the last entry present when the sweep started.
+	// A pass that fails or is canceled keeps the progress it made, except
+	// that it resumes before any repair it found but did not commit, unless
+	// the repair's loose source proved bad.
 	// A new Maintainer starts a fresh sweep.
 	MaxVerifyBytes int64
+	// MinSealBytes holds loose members until their combined logical size
+	// reaches it or the oldest reaches MaxLooseAge, so frequent passes do not
+	// seal one small pack each. Zero packs whatever is loose on every pass.
+	// Members that packing skips, such as oversized or missing ones, count
+	// toward neither limit, nor do members an earlier pass of this
+	// Maintainer could not read. Repairs of damaged packed entries are never
+	// held.
+	MinSealBytes int64
+	// MaxLooseAge seals loose members below MinSealBytes once the oldest
+	// loose file was modified at least this long ago. It applies only when
+	// MinSealBytes is positive; zero then selects 24 hours.
+	MaxLooseAge time.Duration
+	// Now dates loose ages. Zero uses the current time.
+	Now time.Time
 }
+
+const defaultMaxLooseAge = 24 * time.Hour
 
 // PackStats summarizes committed and repair outcomes.
 type PackStats struct {
@@ -58,7 +78,10 @@ type PackStats struct {
 	LooseOrphansRemoved        int
 	LooseOrphansDeferred       int
 	LooseOrphanSweepSuppressed bool
-	BudgetExhausted            bool
+	// LooseSealDeferred reports loose members left for a later pass because
+	// they were below MinSealBytes and younger than MaxLooseAge.
+	LooseSealDeferred bool
+	BudgetExhausted   bool
 }
 
 // Pack repairs inventory, reconciles orphan packs, packs loose members, and
@@ -68,7 +91,8 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err := ctx.Err(); err != nil {
 		return stats, err
 	}
-	if opts.TargetSize < 0 || opts.MaxBytes < 0 || opts.MaxVerifyBytes < 0 {
+	if opts.TargetSize < 0 || opts.MaxBytes < 0 || opts.MaxVerifyBytes < 0 ||
+		opts.MinSealBytes < 0 || opts.MaxLooseAge < 0 {
 		return stats, ErrInvalidPolicy
 	}
 	lease, err := m.coordinator.AcquireMaintenance(ctx)
@@ -76,14 +100,14 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 		return stats, err
 	}
 	defer func() { _ = lease.Release() }()
-	// A failed pass must revisit any repair candidates that were not committed.
-	previous, previousEnd := m.verifiedThrough, m.verificationEnd
-	completed := false
-	defer func() {
-		if !completed {
-			m.verifiedThrough, m.verificationEnd = previous, previousEnd
-		}
-	}()
+	// An exhaustive pass examines every entry from the start, so it records
+	// its own position; a bounded sweep's saved cursor could lie past a repair
+	// that this pass finds but cannot commit.
+	var progress verificationProgress
+	if opts.MaxVerifyBytes > 0 {
+		progress = verificationProgress{through: m.verifiedThrough, safe: m.verifiedThrough, end: m.verificationEnd}
+	}
+	defer func() { m.verifiedThrough, m.verificationEnd = progress.resume() }()
 	if err := pack.MkdirAllSynced(m.layout.PacksDir()); err != nil {
 		return stats, err
 	}
@@ -98,20 +122,27 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	for _, reference := range inventory.References {
 		refs[reference.Hash] = reference
 	}
-	recoveries, err := m.dropDangling(ctx, &stats, refs, opts.MaxVerifyBytes)
+	recoveries, err := m.dropDangling(ctx, &stats, refs, opts.MaxVerifyBytes, &progress)
 	if err != nil {
 		return stats, err
 	}
+	repairRetryable := false
 	if err := m.packCandidates(ctx, recoveries, opts, &stats, packCandidatePolicy{
 		commit:          m.catalog.AdoptPack,
 		openPin:         m.openVerificationPin,
 		replaceMappings: true,
+		noteSkip: func(_ context.Context, _ candidateGroup, skip looseSkip) {
+			repairRetryable = repairRetryable || skip == looseRetryable
+		},
 	}); err != nil {
 		return stats, err
 	}
-	// A packing budget can defer some verified repair candidates as well.
-	if stats.BudgetExhausted {
-		m.verifiedThrough, m.verificationEnd = previous, previousEnd
+	// A packing budget can defer some verified repair candidates as well, and
+	// a repair skipped for a reason that may pass, such as a full disk, must
+	// be found again. One whose source content is proven bad cannot be
+	// repaired from it, so the sweep moves on.
+	if !stats.BudgetExhausted && !repairRetryable {
+		progress.repairPending = false
 	}
 	pruned, err := m.catalog.PruneUnreferenced(ctx)
 	if err != nil {
@@ -131,8 +162,31 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err := m.sweepLoose(ctx, refs, inventory.Complete, &stats); err != nil {
 		return stats, err
 	}
-	completed = true
 	return stats, nil
+}
+
+// verificationProgress tracks one pass through a bounded verification sweep.
+// Entries at or before through were examined; safe is the last of them
+// examined before the first repair this pass found.
+type verificationProgress struct {
+	through       IndexEntry
+	safe          IndexEntry
+	end           IndexEntry
+	repairPending bool
+	finished      bool
+}
+
+// resume returns the sweep bounds for the next pass. A repair that was found
+// but not committed must be found again, so the next pass starts before it.
+func (p *verificationProgress) resume() (through, end IndexEntry) {
+	switch {
+	case p.repairPending:
+		return p.safe, p.end
+	case p.finished:
+		return IndexEntry{}, IndexEntry{}
+	default:
+		return p.through, p.end
+	}
 }
 
 func (m *Maintainer) cleanPackStaging(ctx context.Context) error {
@@ -154,7 +208,7 @@ func (m *Maintainer) cleanPackStaging(ctx context.Context) error {
 }
 
 func (m *Maintainer) dropDangling(
-	ctx context.Context, stats *PackStats, refs map[Hash]Reference, maxVerifyBytes int64,
+	ctx context.Context, stats *PackStats, refs map[Hash]Reference, maxVerifyBytes int64, progress *verificationProgress,
 ) ([]Candidate, error) {
 	records, err := m.catalog.ListPackRecords(ctx)
 	if err != nil {
@@ -179,9 +233,9 @@ func (m *Maintainer) dropDangling(
 	}
 	// Physical ordering avoids reopening packs for hash-interleaved entries.
 	slices.SortFunc(indexed, compareVerificationEntry)
-	if maxVerifyBytes > 0 && m.verificationEnd == (IndexEntry{}) && len(indexed) > 0 {
+	if maxVerifyBytes > 0 && progress.end == (IndexEntry{}) && len(indexed) > 0 {
 		// New packs must not keep a sweep from returning to older entries.
-		m.verificationEnd = indexed[len(indexed)-1]
+		progress.end = indexed[len(indexed)-1]
 	}
 	var recoveries []Candidate
 	remaining := maxVerifyBytes
@@ -190,10 +244,10 @@ func (m *Maintainer) dropDangling(
 			return nil, err
 		}
 		if maxVerifyBytes > 0 {
-			if compareVerificationEntry(entry, m.verificationEnd) > 0 {
+			if compareVerificationEntry(entry, progress.end) > 0 {
 				break
 			}
-			if compareVerificationEntry(entry, m.verifiedThrough) <= 0 {
+			if compareVerificationEntry(entry, progress.through) <= 0 {
 				continue
 			}
 		}
@@ -207,15 +261,18 @@ func (m *Maintainer) dropDangling(
 		}
 		if recovery != nil {
 			recoveries = append(recoveries, *recovery)
+			progress.repairPending = true
 		}
 		stats.BlobsChecked++
+		progress.through = entry
+		if !progress.repairPending {
+			progress.safe = entry
+		}
 		if maxVerifyBytes > 0 {
 			remaining = max(0, remaining-max(1, entry.RawLen, entry.StoredLen))
-			m.verifiedThrough = entry
 		}
 	}
-	m.verifiedThrough = IndexEntry{}
-	m.verificationEnd = IndexEntry{}
+	progress.finished = true
 	return recoveries, nil
 }
 
@@ -268,6 +325,17 @@ func (m *Maintainer) repairIndexed(ctx context.Context, stats *PackStats, refs m
 }
 
 func (m *Maintainer) reconcileOrphans(ctx context.Context, refs map[Hash]Reference, stats *PackStats) error {
+	// One snapshot answers for every file in the walk. Maintenance records
+	// packs only under the lease this pass holds, and a restore must already
+	// exclude maintenance because its packs are uncataloged until it commits.
+	records, err := m.catalog.ListPackRecords(ctx)
+	if err != nil {
+		return err
+	}
+	recorded := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		recorded[record.PackID] = struct{}{}
+	}
 	return filepath.WalkDir(m.layout.PacksDir(), func(path string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -282,9 +350,8 @@ func (m *Maintainer) reconcileOrphans(ctx context.Context, refs map[Hash]Referen
 		if !pack.IsValidPackID(packID) || filepath.Clean(path) != filepath.Clean(m.layout.PackPath(packID)) {
 			return nil
 		}
-		hasRecord, err := m.catalog.HasPackRecord(ctx, packID)
-		if err != nil || hasRecord {
-			return err
+		if _, ok := recorded[packID]; ok {
+			return nil
 		}
 		return m.reconcileOne(ctx, path, packID, refs, stats)
 	})
@@ -480,11 +547,205 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	if err != nil {
 		return err
 	}
+	m.forgetPackedLooseSkips(candidates)
+	if len(candidates) == 0 {
+		return nil
+	}
+	ready, err := m.looseReadyToSeal(ctx, candidates, opts, stats)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		stats.LooseSealDeferred = true
+		return nil
+	}
 	return m.packCandidates(ctx, candidates, opts, stats, packCandidatePolicy{
 		commit:       m.catalog.RecordPack,
 		openPin:      m.openVerificationPin,
 		removeSource: true,
+		noteSkip:     m.noteLooseSkip,
 	})
+}
+
+// looseSkip records why packing could not use a loose member.
+type looseSkip uint8
+
+const (
+	looseUsable looseSkip = iota
+	looseCorrupt
+	looseOversized
+	// looseRetryable is a member packing did not use for a reason that may
+	// pass, such as a full disk. It is never remembered.
+	looseRetryable
+)
+
+func (s looseSkip) count(stats *PackStats) {
+	switch s {
+	case looseCorrupt:
+		stats.BlobsCorrupt++
+	case looseOversized:
+		stats.BlobsDeferredOversized++
+	case looseUsable, looseRetryable:
+	}
+}
+
+// forgetPackedLooseSkips drops remembered members that are no longer loose.
+func (m *Maintainer) forgetPackedLooseSkips(candidates []Candidate) {
+	if len(m.looseSkips) == 0 {
+		return
+	}
+	loose := make(map[Hash]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		loose[candidate.Hash] = struct{}{}
+	}
+	maps.DeleteFunc(m.looseSkips, func(hash Hash, _ looseRejection) bool {
+		_, still := loose[hash]
+		return !still
+	})
+}
+
+// looseRejection is a member whose content packing read and could not use,
+// with what readiness saw of it at the time. A later change, such as a repair,
+// a new copy, or a catalog fix, makes it eligible again.
+type looseRejection struct {
+	skip  looseSkip
+	stamp looseStamp
+}
+
+// noteLooseSkip remembers or forgets a loose member that packing examined.
+func (m *Maintainer) noteLooseSkip(ctx context.Context, group candidateGroup, skip looseSkip) {
+	if skip == looseUsable || skip == looseRetryable {
+		delete(m.looseSkips, group.Hash)
+		return
+	}
+	stamp, err := statLoose(ctx, m.layout.Root(), group)
+	if err != nil {
+		// Without a stamp a repair could not be noticed, so do not remember it.
+		delete(m.looseSkips, group.Hash)
+		return
+	}
+	if m.looseSkips == nil {
+		m.looseSkips = make(map[Hash]looseRejection)
+	}
+	m.looseSkips[group.Hash] = looseRejection{skip: skip, stamp: stamp}
+}
+
+// looseReadyToSeal reports whether loose members justify a new pack under
+// opts. Members that packing always skips (oversized, conflicting sizes, with
+// no existing path, or rejected by an earlier pass of this Maintainer) never
+// make a pass ready, so they cannot force a small pack on every pass. When it
+// holds the pass, it counts them in stats as packing would.
+func (m *Maintainer) looseReadyToSeal(
+	ctx context.Context, candidates []Candidate, opts PackOptions, stats *PackStats,
+) (bool, error) {
+	if opts.MinSealBytes == 0 {
+		return true, nil
+	}
+	maxAge := cmp.Or(opts.MaxLooseAge, defaultMaxLooseAge)
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	sealBefore := now.Add(-maxAge)
+	var skipped PackStats
+	var total int64
+	// Packing reads each hash from the union of its rows' paths, so judge
+	// readiness on the same merged view.
+	for _, group := range mergeLogicalCandidates(candidates) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		stamp, err := statLoose(ctx, m.layout.Root(), group)
+		if err != nil {
+			return false, err
+		}
+		// Only packing reads loose content, so a damaged file that still
+		// exists is known as unusable once packing has rejected it, until the
+		// member or its file changes.
+		if rejected, known := m.looseSkips[group.Hash]; known {
+			if rejected.stamp.equal(stamp) {
+				rejected.skip.count(&skipped)
+				continue
+			}
+			delete(m.looseSkips, group.Hash)
+		}
+		if group.err != nil || group.Size < 0 {
+			skipped.BlobsCorrupt++
+			continue
+		}
+		if group.Size > m.limits.BlobBytes {
+			skipped.BlobsDeferredOversized++
+			continue
+		}
+		file, exists := stamp.firstFile()
+		if !exists {
+			skipped.BlobsMissing++
+			continue
+		}
+		total += group.Size
+		if total >= opts.MinSealBytes || !file.modTime.After(sealBefore) {
+			return true, nil
+		}
+	}
+	stats.BlobsCorrupt += skipped.BlobsCorrupt
+	stats.BlobsDeferredOversized += skipped.BlobsDeferredOversized
+	stats.BlobsMissing += skipped.BlobsMissing
+	return false, nil
+}
+
+// looseStamp is what readiness sees of a loose member without reading it: its
+// cataloged size, whether its rows conflict, and the state of every path.
+type looseStamp struct {
+	size     int64
+	conflict bool
+	files    []looseFileState
+}
+
+type looseFileState struct {
+	path    string
+	exists  bool
+	length  int64
+	modTime time.Time
+}
+
+func (s looseStamp) equal(other looseStamp) bool {
+	return s.size == other.size && s.conflict == other.conflict &&
+		slices.EqualFunc(s.files, other.files, func(a, b looseFileState) bool {
+			return a.path == b.path && a.exists == b.exists && a.length == b.length && a.modTime.Equal(b.modTime)
+		})
+}
+
+// firstFile returns the first existing file, which packing would read first.
+func (s looseStamp) firstFile() (looseFileState, bool) {
+	index := slices.IndexFunc(s.files, func(file looseFileState) bool { return file.exists })
+	if index < 0 {
+		return looseFileState{}, false
+	}
+	return s.files[index], true
+}
+
+func statLoose(ctx context.Context, root string, group candidateGroup) (looseStamp, error) {
+	stamp := looseStamp{size: group.Size, conflict: group.err != nil, files: make([]looseFileState, 0, len(group.Paths))}
+	for _, path := range group.Paths {
+		if err := ctx.Err(); err != nil {
+			return looseStamp{}, err
+		}
+		file := looseFileState{path: resolveCandidatePath(root, path)}
+		if info, err := os.Lstat(file.path); err == nil {
+			file.exists, file.length, file.modTime = true, info.Size(), info.ModTime()
+		}
+		stamp.files = append(stamp.files, file)
+	}
+	return stamp, nil
+}
+
+// resolveCandidatePath resolves a catalog candidate path, which may be
+// relative to the store root.
+func resolveCandidatePath(root, path string) string {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, filepath.FromSlash(path))
+	}
+	return filepath.Clean(path)
 }
 
 type packCatalogCommit func(context.Context, PackRecord, []Adoption) error
@@ -494,6 +755,8 @@ type packCandidatePolicy struct {
 	openPin         identityPinOpener
 	replaceMappings bool
 	removeSource    bool
+	// noteSkip, when set, learns which candidates packing could use.
+	noteSkip func(context.Context, candidateGroup, looseSkip)
 }
 
 func (m *Maintainer) packCandidates(
@@ -531,13 +794,23 @@ func (m *Maintainer) packCandidates(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		note := func(skip looseSkip) {
+			if policy.noteSkip != nil {
+				policy.noteSkip(ctx, group, skip)
+			}
+		}
+		// Readiness checks conflicting sizes, the size limit, and missing
+		// files itself on every pass, so packing remembers only what it learns
+		// by reading content.
 		if group.err != nil {
 			stats.BlobsCorrupt++
+			note(looseUsable)
 			continue
 		}
 		candidate := group.Candidate
 		if candidate.Size > m.limits.BlobBytes {
 			stats.BlobsDeferredOversized++
+			note(looseUsable)
 			continue
 		}
 		if writer != nil && len(sources) >= m.packedSourcePinLimit {
@@ -550,15 +823,25 @@ func (m *Maintainer) packCandidates(
 			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 				return readErr
 			}
+			// A failure that may pass on a retry, such as a full scratch
+			// disk, must not hide the member from later readiness checks.
+			_, retryable := errors.AsType[*retryableLooseError](readErr)
+			skip := looseCorrupt
 			if errors.Is(readErr, ErrBlobTooLarge) {
 				stats.BlobsDeferredOversized++
-				continue
+				skip = looseOversized
+			} else {
+				stats.BlobsCorrupt++
 			}
-			stats.BlobsCorrupt++
+			if retryable {
+				skip = looseRetryable
+			}
+			note(skip)
 			continue
 		}
 		if !found {
 			stats.BlobsMissing++
+			note(looseUsable)
 			continue
 		}
 		if prepared == nil || sourcePin == nil {
@@ -577,8 +860,10 @@ func (m *Maintainer) packCandidates(
 				return closeErr
 			}
 			stats.BlobsDeferredOversized++
+			note(looseOversized)
 			continue
 		}
+		note(looseUsable)
 		if writer != nil {
 			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(sources)+1); err != nil {
 				if err := seal(); err != nil {
@@ -642,11 +927,7 @@ func (m *Maintainer) prepareCandidate(
 			}
 			return nil, "", nil, false, err
 		}
-		path := candidatePath
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(m.layout.Root(), filepath.FromSlash(path))
-		}
-		path = filepath.Clean(path)
+		path := resolveCandidatePath(m.layout.Root(), candidatePath)
 		if _, duplicate := seenPaths[path]; duplicate {
 			continue
 		}
@@ -660,7 +941,7 @@ func (m *Maintainer) prepareCandidate(
 			continue
 		}
 		if err != nil {
-			corrupt = errors.Join(corrupt, err)
+			corrupt = errors.Join(corrupt, classifyLooseFailure(err))
 			continue
 		}
 		if object.storedSize > m.limits.BlobBytes {
@@ -679,13 +960,13 @@ func (m *Maintainer) prepareCandidate(
 		if selected == nil {
 			pin, err = m.pinOpenCandidate(path, identity, openPin)
 			if err != nil {
-				corrupt = errors.Join(corrupt, err, object.file.Close())
+				corrupt = errors.Join(corrupt, classifyLooseFailure(err), object.file.Close())
 				continue
 			}
 		}
 		stream, err := newLooseVerifiedStream(ctx, candidate.Hash, object)
 		if err != nil {
-			corrupt = errors.Join(corrupt, err, closeIdentityPin(pin))
+			corrupt = errors.Join(corrupt, classifyLooseFailure(err), closeIdentityPin(pin))
 			continue
 		}
 		var prepared *pack.PreparedBlob
@@ -708,7 +989,7 @@ func (m *Maintainer) prepareCandidate(
 				}
 				return nil, "", nil, false, err
 			}
-			corrupt = errors.Join(corrupt, err)
+			corrupt = errors.Join(corrupt, classifyLooseFailure(err))
 			continue
 		}
 		if selected == nil && prepared == nil {
@@ -727,6 +1008,29 @@ func (m *Maintainer) prepareCandidate(
 		return selected, selectedPath, selectedPin, true, nil
 	}
 	return nil, "", nil, false, corrupt
+}
+
+// retryableLooseError marks a loose read failure that does not prove the
+// content is bad, such as a permission error or a full scratch disk.
+type retryableLooseError struct {
+	err error
+}
+
+func (e *retryableLooseError) Error() string { return e.err.Error() }
+
+func (e *retryableLooseError) Unwrap() error { return e.err }
+
+// classifyLooseFailure marks err retryable unless reading showed that the
+// content does not match its hash or size. A failed read or a file that
+// changed while it was read proves nothing about the content, even when the
+// error also carries ErrContentMismatch.
+func classifyLooseFailure(err error) error {
+	_, failedRead := errors.AsType[*looseReadError](err)
+	if !failedRead && !errors.Is(err, errIdentityChanged) &&
+		(errors.Is(err, ErrContentMismatch) || errors.Is(err, pack.ErrBlobMismatch)) {
+		return err
+	}
+	return &retryableLooseError{err: err}
 }
 
 func (m *Maintainer) pinOpenCandidate(
@@ -792,7 +1096,7 @@ func openLooseObjectAtPath(
 	logicalSize := info.Size()
 	if encoding == LooseEncodingZstd {
 		header := make([]byte, compressedLooseHeaderSize)
-		if _, err := io.ReadFull(f, header); err != nil {
+		if _, err := io.ReadFull(looseFileReader{readLooseFile(f)}, header); err != nil {
 			return nil, nil, errors.Join(
 				fmt.Errorf("%w: read compressed loose header: %w", ErrContentMismatch, err),
 				f.Close(),

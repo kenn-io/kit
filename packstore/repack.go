@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -17,10 +18,18 @@ const (
 	defaultRepackDeadBytes = int64(8 << 20)
 )
 
-// RepackSelection configures sparse-pack eligibility.
+// RepackSelection configures sparse-pack and small-pack eligibility. Zero
+// MinAge selects 24 hours and zero MinDeadStored selects 8 MiB.
 type RepackSelection struct {
 	MinAge        time.Duration
 	MinDeadStored int64
+	// MergeBelowStored merges live packs whose stored bytes are below it, and
+	// that are at least MinAge old, into packs of up to TargetSize live stored
+	// bytes. Packs merge in creation order, in groups of at least two sources.
+	// A positive MaxBytes admits whole groups while their live raw bytes fit
+	// the rest of the budget, and always admits the run's first rewrite.
+	// Zero disables merging.
+	MergeBelowStored int64
 }
 
 // RepackOptions bounds and dates one reclamation run. MaxBytes greater than
@@ -35,8 +44,11 @@ type RepackOptions struct {
 
 // RepackStats summarizes committed source-independent reclamation.
 type RepackStats struct {
-	MappingsPruned         int64
+	MappingsPruned int64
+	// PacksSelected counts empty and sparse sources; PacksMerged counts small
+	// sources replaced by merging.
 	PacksSelected          int
+	PacksMerged            int
 	PacksRewritten         int
 	PacksSealed            int
 	PacksRemoved           int
@@ -53,7 +65,8 @@ func (m *Maintainer) Repack(ctx context.Context, opts RepackOptions) (RepackStat
 	if err := ctx.Err(); err != nil {
 		return stats, err
 	}
-	if opts.TargetSize < 0 || opts.MaxBytes < 0 || opts.Selection.MinAge < 0 || opts.Selection.MinDeadStored < 0 {
+	if opts.TargetSize < 0 || opts.MaxBytes < 0 || opts.Selection.MinAge < 0 || opts.Selection.MinDeadStored < 0 ||
+		opts.Selection.MergeBelowStored < 0 {
 		return stats, ErrInvalidPolicy
 	}
 	lease, err := m.coordinator.AcquireMaintenance(ctx)
@@ -115,7 +128,7 @@ func (m *Maintainer) Repack(ctx context.Context, opts RepackOptions) (RepackStat
 			}
 			return stats, errors.Join(runErr, err)
 		}
-		result, err := m.rewriteSource(ctx, source.PackID, entries, opts.TargetSize)
+		result, err := m.rewriteSources(ctx, entries, opts.TargetSize)
 		if err != nil {
 			err = fmt.Errorf("packstore: repack source %s: %w", source.PackID, err)
 			if errors.Is(err, ErrBlobTooLarge) {
@@ -139,22 +152,165 @@ func (m *Maintainer) Repack(ctx context.Context, opts RepackOptions) (RepackStat
 			runErr = errors.Join(runErr, err)
 		}
 	}
+	if stats.BudgetExhausted || opts.Selection.MergeBelowStored == 0 {
+		return stats, runErr
+	}
+	for _, group := range selectMergeGroups(usage, selected, opts) {
+		if err := ctx.Err(); err != nil {
+			return stats, errors.Join(runErr, err)
+		}
+		// Whole groups keep merged outputs near the target size; the first may
+		// exceed the budget so that a small budget still makes progress.
+		if automatic && stats.BytesRepacked > 0 && stats.BytesRepacked+liveRawBytes(group) > opts.MaxBytes {
+			stats.BudgetExhausted = true
+			break
+		}
+		if err := m.mergeGroup(ctx, group, opts, &stats, &runErr); err != nil {
+			return stats, errors.Join(runErr, err)
+		}
+	}
 	return stats, runErr
 }
 
-func selectRepackSources(usage []PackUsage, opts RepackOptions) []PackUsage {
-	now := opts.Now.UTC()
+// mergeGroup replaces small live sources with packs of their combined live
+// entries. Like sparse rewriting, automatic runs skip sources whose content
+// fails and report it with the run's error.
+func (m *Maintainer) mergeGroup(
+	ctx context.Context, group []PackUsage, opts RepackOptions, stats *RepackStats, runErr *error,
+) error {
+	automatic := opts.MaxBytes > 0
+	var sourceIDs []string
+	var entries []IndexEntry
+	for _, source := range group {
+		if source.MaxLiveRawLen > m.limits.BlobBytes || source.MaxLiveStoredLen > m.limits.BlobBytes {
+			stats.PacksDeferredOversized++
+			continue
+		}
+		live, err := m.catalog.ListLivePackEntries(ctx, source.PackID)
+		if err != nil {
+			return err
+		}
+		if err := verifyUsage(source, live); err != nil {
+			return err
+		}
+		if err := m.preflightRepackSource(source.PackID, live); err != nil {
+			err = fmt.Errorf("packstore: merge source %s: %w", source.PackID, err)
+			if errors.Is(err, ErrBlobTooLarge) {
+				stats.PacksDeferredOversized++
+				continue
+			}
+			if automatic && isSourceContentError(err) {
+				*runErr = errors.Join(*runErr, err)
+				continue
+			}
+			return err
+		}
+		sourceIDs = append(sourceIDs, source.PackID)
+		entries = append(entries, live...)
+	}
+	var result rewriteResult
+	for {
+		if len(sourceIDs) < 2 {
+			return nil
+		}
+		var err error
+		result, err = m.rewriteSources(ctx, entries, opts.TargetSize)
+		if err == nil {
+			break
+		}
+		err = fmt.Errorf("packstore: merge sources: %w", err)
+		if errors.Is(err, ErrBlobTooLarge) {
+			stats.PacksDeferredOversized += len(sourceIDs)
+			return nil
+		}
+		if !automatic || !isSourceContentError(err) {
+			return err
+		}
+		*runErr = errors.Join(*runErr, err)
+		// Merge the remaining sources so one damaged pack cannot block the
+		// rest of its group on every pass.
+		failed, ok := errors.AsType[*sourceReadError](err)
+		if !ok || !slices.Contains(sourceIDs, failed.packID) {
+			return nil
+		}
+		sourceIDs = slices.DeleteFunc(sourceIDs, func(id string) bool { return id == failed.packID })
+		entries = slices.DeleteFunc(entries, func(entry IndexEntry) bool { return entry.PackID == failed.packID })
+	}
+	if err := m.catalog.CommitRepack(ctx, sourceIDs, result.records, result.moves); err != nil {
+		return err
+	}
+	stats.PacksMerged += len(sourceIDs)
+	stats.PacksSealed += len(result.records)
+	stats.BlobsRepacked += len(result.moves)
+	stats.BytesRepacked += result.rawBytes
+	for _, packID := range sourceIDs {
+		if err := m.retireEmpty(ctx, packID, stats); err != nil {
+			*runErr = errors.Join(*runErr, err)
+		}
+	}
+	return nil
+}
+
+// selectMergeGroups groups old small live packs, in creation order, so each
+// group's live stored bytes fit one target-size pack. Groups of one source
+// would only rewrite it, so they are dropped.
+func selectMergeGroups(usage []PackUsage, selected []PackUsage, opts RepackOptions) [][]PackUsage {
+	target := opts.TargetSize
+	if target == 0 {
+		target = pack.DefaultTargetSize
+	}
+	cutoff := repackNow(opts).Add(-repackMinAge(opts))
+	excluded := make(map[string]struct{}, len(selected))
+	for _, source := range selected {
+		excluded[source.PackID] = struct{}{}
+	}
+	var groups [][]PackUsage
+	var current []PackUsage
+	var currentStored int64
+	flush := func() {
+		if len(current) >= 2 {
+			groups = append(groups, current)
+		}
+		current, currentStored = nil, 0
+	}
+	for _, source := range orderedUsage(usage) {
+		if _, skip := excluded[source.PackID]; skip || source.LiveEntries == 0 ||
+			source.StoredBytes >= opts.Selection.MergeBelowStored || source.CreatedAt.After(cutoff) {
+			continue
+		}
+		if len(current) > 0 && currentStored+source.LiveStoredBytes > target {
+			flush()
+		}
+		current = append(current, source)
+		currentStored += source.LiveStoredBytes
+	}
+	flush()
+	return groups
+}
+
+func liveRawBytes(group []PackUsage) int64 {
+	var total int64
+	for _, source := range group {
+		total += source.LiveRawBytes
+	}
+	return total
+}
+
+func repackNow(opts RepackOptions) time.Time {
 	if opts.Now.IsZero() {
-		now = time.Now().UTC()
+		return time.Now().UTC()
 	}
-	minAge := opts.Selection.MinAge
-	if minAge == 0 {
-		minAge = defaultRepackMinAge
+	return opts.Now.UTC()
+}
+
+func repackMinAge(opts RepackOptions) time.Duration {
+	if opts.Selection.MinAge == 0 {
+		return defaultRepackMinAge
 	}
-	minDead := opts.Selection.MinDeadStored
-	if minDead == 0 {
-		minDead = defaultRepackDeadBytes
-	}
+	return opts.Selection.MinAge
+}
+
+func orderedUsage(usage []PackUsage) []PackUsage {
 	ordered := append([]PackUsage(nil), usage...)
 	sort.Slice(ordered, func(i, j int) bool {
 		if !ordered[i].CreatedAt.Equal(ordered[j].CreatedAt) {
@@ -162,8 +318,18 @@ func selectRepackSources(usage []PackUsage, opts RepackOptions) []PackUsage {
 		}
 		return ordered[i].PackID < ordered[j].PackID
 	})
+	return ordered
+}
+
+func selectRepackSources(usage []PackUsage, opts RepackOptions) []PackUsage {
+	now := repackNow(opts)
+	minAge := repackMinAge(opts)
+	minDead := opts.Selection.MinDeadStored
+	if minDead == 0 {
+		minDead = defaultRepackDeadBytes
+	}
 	var zero, partial []PackUsage
-	for _, source := range ordered {
+	for _, source := range orderedUsage(usage) {
 		if source.LiveEntries == 0 {
 			zero = append(zero, source)
 			continue
@@ -206,7 +372,7 @@ func (m *Maintainer) preflightRepackSource(packID string, entries []IndexEntry) 
 	}
 	for _, indexed := range entries {
 		authoritative, ok := footer[indexed.Hash]
-		if !ok || !packIndexMatchesFooter(&indexed, authoritative) {
+		if !ok || indexed.PackID != packID || !packIndexMatchesFooter(&indexed, authoritative) {
 			return fmt.Errorf("%w: source %s metadata mismatch for %s", pack.ErrCorrupt, packID, indexed.Hash)
 		}
 		if authoritative.RawLen > uint64(m.limits.BlobBytes) {
@@ -225,13 +391,28 @@ type rewriteResult struct {
 	rawBytes int64
 }
 
-type rewriteSourceEntry struct {
-	oldPackID string
-	indexed   IndexEntry
-	sealed    pack.Entry
+// sourceReadError reports a live entry that could not be read from its source
+// pack, so a merge can leave that source out.
+type sourceReadError struct {
+	packID string
+	hash   Hash
+	err    error
 }
 
-func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entries []IndexEntry, targetSize int64) (rewriteResult, error) {
+func (e *sourceReadError) Error() string {
+	return fmt.Sprintf("packstore: read source %s blob %s: %v", e.packID, e.hash, e.err)
+}
+
+func (e *sourceReadError) Unwrap() error { return e.err }
+
+type rewriteSourceEntry struct {
+	indexed IndexEntry
+	sealed  pack.Entry
+}
+
+// rewriteSources copies live entries, each from the source pack its PackID
+// names, into replacement packs.
+func (m *Maintainer) rewriteSources(ctx context.Context, entries []IndexEntry, targetSize int64) (rewriteResult, error) {
 	var result rewriteResult
 	var writer *pack.Writer
 	var current []rewriteSourceEntry
@@ -264,7 +445,7 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 			}
 			newEntry := indexFromPack(packID, entry)
 			record.StoredBytes += newEntry.StoredLen
-			result.moves = append(result.moves, RepackMove{OldPackID: oldPackID, NewEntry: newEntry})
+			result.moves = append(result.moves, RepackMove{OldPackID: current[i].indexed.PackID, NewEntry: newEntry})
 		}
 		result.records = append(result.records, record)
 		writer = nil
@@ -277,11 +458,14 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 		}
 		stream, size, err := m.store.OpenStream(ctx, indexed.Hash)
 		if err != nil {
-			return result, fmt.Errorf("packstore: read source %s blob %s: %w", oldPackID, indexed.Hash, err)
+			return result, &sourceReadError{packID: indexed.PackID, hash: indexed.Hash, err: err}
 		}
 		if size != indexed.RawLen {
 			_ = stream.Close()
-			return result, fmt.Errorf("%w: source length mismatch", ErrContentMismatch)
+			return result, &sourceReadError{
+				packID: indexed.PackID, hash: indexed.Hash,
+				err: fmt.Errorf("%w: source length mismatch", ErrContentMismatch),
+			}
 		}
 		id, err := pack.ParseBlobID(indexed.Hash.String())
 		if err != nil {
@@ -296,10 +480,10 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 			if prepared != nil {
 				_ = prepared.Close()
 			}
-			return result, fmt.Errorf("packstore: read source %s blob %s: %w", oldPackID, indexed.Hash, err)
+			return result, &sourceReadError{packID: indexed.PackID, hash: indexed.Hash, err: err}
 		}
 		if prepared == nil {
-			return result, fmt.Errorf("packstore: prepare source %s blob %s returned no result", oldPackID, indexed.Hash)
+			return result, fmt.Errorf("packstore: prepare source %s blob %s returned no result", indexed.PackID, indexed.Hash)
 		}
 		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), prepared.StoredLen(), 1); err != nil {
 			_ = prepared.Close()
@@ -324,7 +508,7 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 		if err != nil {
 			return result, err
 		}
-		current = append(current, rewriteSourceEntry{oldPackID: oldPackID, indexed: indexed, sealed: sealed})
+		current = append(current, rewriteSourceEntry{indexed: indexed, sealed: sealed})
 		result.rawBytes += size
 		if writer.Full() {
 			if err := seal(); err != nil {
