@@ -2,6 +2,7 @@
 // queries and records the analyzer identity that must match the index.
 //
 // PrepareNatural requires quoted phrases and uses unquoted words for ranking.
+// CountTerms includes words from required phrases, including stop words.
 // Without phrases, any word matches. Regular English forms expand the query
 // without changing index text or analyzer identities.
 //

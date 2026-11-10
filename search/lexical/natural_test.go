@@ -164,6 +164,35 @@ func TestNaturalFTS(t *testing.T) {
 	assert.Equal(t, 3, counts[bodies[1]])
 	assert.Equal(t, 2, counts[bodies[0]])
 	assert.Equal(t, 2, counts[bodies[2]])
+	for _, tc := range []struct {
+		query, body string
+		words       []string
+		count       int
+	}{
+		{`"the connection" retry`, "the connection retry", []string{"retry"}, 3},
+		{`trie "trying"`, "trying", []string{"trie"}, 1},
+		{`tries "trying tried" retry`, "trying tried retry", []string{"tries", "retry"}, 2},
+		{`nil-pointer "nil-pointer" retry`, "nil pointer retry", []string{"nil-pointer", "retry"}, 2},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			got, err := lexical.Literal().PrepareNatural(tc.query)
+			require.NoError(t, err)
+			var words []string
+			for _, word := range got.Words {
+				words = append(words, word.Text)
+			}
+			assert.Equal(t, tc.words, words)
+			db := ftsDB(t, []string{tc.body})
+			require.Equal(t, []string{tc.body}, matchBodies(t, db, got.Match))
+			count := 0
+			for _, term := range got.CountTerms {
+				if len(matchBodies(t, db, term.Match)) > 0 {
+					count++
+				}
+			}
+			assert.Equal(t, tc.count, count)
+		})
+	}
 }
 
 func TestNaturalCJK(t *testing.T) {
@@ -209,6 +238,13 @@ func TestNaturalCJK(t *testing.T) {
 		assert.Equal(t, tc.match, got.Match)
 	}
 	assert.Empty(t, calls)
+	got, err = chinese.PrepareNatural(`搜索引擎 "搜索引擎 T恤"`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"搜索引擎"}, calls)
+	require.Len(t, got.CountTerms, 2)
+	assert.Equal(t, got.Words[0].Match, got.CountTerms[0].Match)
+	assert.Equal(t, `"T恤"`, got.CountTerms[1].Match)
+	calls = nil
 	got, err = chinese.PrepareNatural("搜索\x00 invoice")
 	require.Error(t, err)
 	assert.Equal(t, lexical.Natural{}, got)
