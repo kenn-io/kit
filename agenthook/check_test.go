@@ -87,17 +87,7 @@ func runHookCheckHelper(mode string) int {
 }
 
 func TestCheckCodexNativeStates(t *testing.T) {
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	bin := t.TempDir()
-	name := "codex"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	program, err := os.ReadFile(executable)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(bin, name), program, 0o700))
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	executable := testserver.InstallExecutable(t, "codex")
 	for _, tc := range []struct {
 		name, mode, trust, extra string
 		want                     CheckState

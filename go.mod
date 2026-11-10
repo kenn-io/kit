@@ -22,6 +22,7 @@ require (
 	github.com/gofrs/flock v0.13.1
 	github.com/golangci/plugin-module-register v0.1.2
 	github.com/golangci/rowserrcheck v0.0.0-20261101210309-7f680fea35ce
+	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/googleapis/gax-go/v2 v2.27.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/klauspost/compress v1.20.3
@@ -117,7 +118,6 @@ require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/renameio/v2 v2.0.2 // indirect
 	github.com/google/s2a-go v0.1.11 // indirect
-	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.24 // indirect
 	github.com/gorilla/handlers v1.5.2 // indirect

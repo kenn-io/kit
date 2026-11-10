@@ -38,7 +38,7 @@ func MarshalConfig(agent Agent, name string, server Server) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, _, err := planConfig(agent, nil, name, entry)
+	data, _, _, err := planConfig(agent, nil, name, entry)
 	return data, err
 }
 
@@ -52,9 +52,9 @@ func prepareConfig(agent Agent, name string, server Server) (map[string]any, err
 	return server.native(agent)
 }
 
-func planConfig(agent Agent, original []byte, name string, entry map[string]any) ([]byte, bool, error) {
+func planConfig(agent Agent, original []byte, name string, entry map[string]any) ([]byte, bool, bool, error) {
 	if agent == AgentCodex || agent == AgentHermes {
-		return planDocument(agent, original, name, entry)
+		return planDocument(agent, original, name, entry, false)
 	}
 	return planJSON(agent, original, name, entry)
 }
@@ -79,7 +79,7 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Result{}, fmt.Errorf("read MCP config %s: %w", path, err)
 	}
-	data, changed, err := planConfig(agent, original, opts.Name, entry)
+	data, changed, _, err := planConfig(agent, original, opts.Name, entry)
 	if err != nil {
 		return Result{}, fmt.Errorf("plan MCP config %s: %w", path, err)
 	}
