@@ -16,4 +16,8 @@
 // without hashing model contents. Install still verifies cached model contents.
 // Installing means approved work holds the install lock and a staging directory.
 // The advisory snapshot leaves settings, endpoints, and indexing progress to apps.
+//
+// Call RecordChoice after a successful explicit turn-on with the built-in server.
+// Call ChoiceRecorded at startup to read that shared choice. Apps retain their
+// own provider and enabled settings.
 package embedlocal

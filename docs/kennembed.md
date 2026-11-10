@@ -1,12 +1,12 @@
 ---
 title: "Installing the local embedding server"
 description: "Install and operate the local embedding server and its model assets."
-last_edited: 2026-10-29
+last_edited: 2026-11-10
 ---
 
 # Installing the local embedding server
 
-Apps share one verified server and installed models under `~/.kenn/embeddings`. Confirmation belongs to each app. Completed installations work offline. Downloading missing files asks for their remaining download size. An optional `Progress` callback reports bytes downloaded against the exact total as data arrives, so apps can draw a progress bar. The installer serializes callers and reserves `.install-*` directories for temporary downloads.
+Apps share one verified server and installed models under `~/.kenn/embeddings`. Apps record a successful explicit turn-on with the built-in server using `embedlocal.RecordChoice` and read the shared choice at startup with `embedlocal.ChoiceRecorded`. Each app owns its provider and enabled settings. Completed installations work offline. Downloading missing files asks for their remaining download size. An optional `Progress` callback reports bytes downloaded against the exact total as data arrives, so apps can draw a progress bar. The installer serializes callers and reserves `.install-*` directories for temporary downloads.
 
 `InstallOptions.Model` selects `embedlocal.TextModel`, the default, or `embedlocal.FaceModel`. Faces download only AuraFace-v1 and YuNet, 260,926,740 bytes, plus the 20 MB server bundle allowance when needed. Text installations prefer the current bundle and reuse an older complete bundle whenever the current bundle is absent. Face installations require the current bundle. Call `Install` before requesting inference. Direct `kennembed` launches also require installation first; they no longer download the text model at startup. The server loads verified, installed models on demand and makes no network requests. Installing another model makes it available to the running server.
 
