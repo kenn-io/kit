@@ -20,7 +20,7 @@
 // Call RecordChoice after a successful explicit turn-on with the built-in server.
 // At startup, call ChoiceRecorded first. If it returns false without an error,
 // call RecordChoice for an existing built-in server opt-in. Only the exact bytes
-// "yes\n" under ~/.kenn/embeddings count, regardless of Options.DataDir.
+// `yes\n` under `~/.kenn/embeddings` count, regardless of `Options.DataDir`.
 // On a read error, leave the shared choice off. Apps retain their own provider
 // and enabled settings.
 package embedlocal
