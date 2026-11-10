@@ -58,8 +58,10 @@
   such as a full disk, moves the resume point back to just before that repair
   so it is found again; never advance past such a repair. Only a repair whose
   loose source is proven bad (content mismatch or a size limit) lets the sweep
-  advance, so an unrepairable entry cannot pin it. A new maintainer starts a
-  fresh sweep.
+  advance, so an unrepairable entry cannot pin it. An exhaustive pass (zero)
+  starts from the beginning and records its own position, so a retryable
+  repair it finds is not hidden behind an earlier bounded cursor. A new
+  maintainer starts a fresh sweep.
 
 ## Pack growth
 

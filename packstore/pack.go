@@ -100,7 +100,13 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 		return stats, err
 	}
 	defer func() { _ = lease.Release() }()
-	progress := verificationProgress{through: m.verifiedThrough, safe: m.verifiedThrough, end: m.verificationEnd}
+	// An exhaustive pass examines every entry from the start, so it records
+	// its own position; a bounded sweep's saved cursor could lie past a repair
+	// that this pass finds but cannot commit.
+	var progress verificationProgress
+	if opts.MaxVerifyBytes > 0 {
+		progress = verificationProgress{through: m.verifiedThrough, safe: m.verifiedThrough, end: m.verificationEnd}
+	}
 	defer func() { m.verifiedThrough, m.verificationEnd = progress.resume() }()
 	if err := pack.MkdirAllSynced(m.layout.PacksDir()); err != nil {
 		return stats, err
@@ -258,12 +264,12 @@ func (m *Maintainer) dropDangling(
 			progress.repairPending = true
 		}
 		stats.BlobsChecked++
+		progress.through = entry
+		if !progress.repairPending {
+			progress.safe = entry
+		}
 		if maxVerifyBytes > 0 {
 			remaining = max(0, remaining-max(1, entry.RawLen, entry.StoredLen))
-			progress.through = entry
-			if !progress.repairPending {
-				progress.safe = entry
-			}
 		}
 	}
 	progress.finished = true
