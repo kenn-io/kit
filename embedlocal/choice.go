@@ -3,7 +3,6 @@ package embedlocal
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
@@ -11,7 +10,9 @@ import (
 )
 
 // RecordChoice records an explicit turn-on of the built-in server. Apps can
-// also call it at startup for an existing built-in server opt-in.
+// also call it at startup for an existing built-in server opt-in. An error
+// wrapping atomicfile.ErrPublished means the marker is visible; one wrapping
+// atomicfile.ErrNotDurable means a crash may lose it.
 func RecordChoice() error {
 	dir, err := DefaultDir()
 	if err != nil {
@@ -33,15 +34,10 @@ func ChoiceRecorded() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("resolve embeddings directory: %w", err)
 	}
-	file, err := os.Open(filepath.Join(dir, "search-by-meaning"))
+	data, err := os.ReadFile(filepath.Join(dir, "search-by-meaning"))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	if err != nil {
-		return false, fmt.Errorf("open search by meaning choice: %w", err)
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, 5))
 	if err != nil {
 		return false, fmt.Errorf("read search by meaning choice: %w", err)
 	}

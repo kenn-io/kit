@@ -20,6 +20,8 @@
 // Call RecordChoice after a successful explicit turn-on with the built-in server.
 // At startup, call RecordChoice for an existing built-in server opt-in, and
 // call ChoiceRecorded to read the shared choice. A missing, partial, or unknown
-// marker returns false. On error, including on unsupported platforms, leave the
-// shared choice off. Apps retain their own provider and enabled settings.
+// marker returns false. On a read error, leave the shared choice off. A
+// RecordChoice error wrapping atomicfile.ErrPublished means the marker is visible;
+// atomicfile.ErrNotDurable means a crash may lose it. Apps retain their own
+// provider and enabled settings.
 package embedlocal
