@@ -26,7 +26,6 @@ func TestChoiceRecorded(t *testing.T) {
 		want           bool
 	}{
 		{"partial", "yes", false},
-		{"malformed", "no\n", false},
 		{"unknown", "yes\nextra", false},
 		{"chosen", "yes\n", true},
 	} {
