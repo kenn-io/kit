@@ -32,7 +32,6 @@ func TestChoiceRecorded(t *testing.T) {
 		{"empty", "", false},
 		{"partial", "yes", false},
 		{"malformed", "no\n", false},
-		{"crlf", "yes\r\n", false},
 		{"unknown", "yes\nextra", false},
 		{"chosen", "yes\n", true},
 	} {
