@@ -3,8 +3,11 @@ package embedclient_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -159,4 +162,34 @@ func TestTimeoutSplitMapsBadVectorIndex(t *testing.T) {
 	var vectorErr *embedclient.VectorError
 	require.ErrorAs(t, err, &vectorErr)
 	assert.Equal(t, 7, vectorErr.Index)
+}
+
+func TestOllamaRecoveryTimeoutDoesNotSplitTheBatch(t *testing.T) {
+	var primary, native atomic.Int32
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/v1/embeddings":
+			primary.Add(1)
+			body := `{"data":[{"index":0,"embedding":[3,4]},{"index":1,"embedding":[null,1]}]}`
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+		case "/api/ps":
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"models":[]}`)), Request: r}, nil
+		default:
+			native.Add(1)
+			return nil, os.ErrDeadlineExceeded
+		}
+	})
+	client, err := embedclient.New(embedclient.Options{
+		Model:               unitModel(),
+		Deployment:          embedconfig.Deployment{BaseURL: "http://ollama.test/v1", TrustPrivateNetwork: true},
+		HTTP:                &http.Client{Transport: transport},
+		Batch:               embedconfig.Batch{Items: 4},
+		OllamaMetalRecovery: true,
+	})
+	require.NoError(t, err)
+	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"alpha", "beta"})
+	var timeout interface{ Timeout() bool }
+	require.ErrorAs(t, err, &timeout)
+	assert.Equal(t, int32(1), primary.Load(), "a recovery timeout must not resend the batch")
+	assert.Equal(t, int32(3), native.Load(), "recovery runs its own unload, reload, and CPU attempts once")
 }

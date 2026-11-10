@@ -162,12 +162,29 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 	return out, nil
 }
 
+// recoveryError marks a failure of Ollama recovery, which retries the bad
+// inputs on its own. Splitting the original batch cannot make it succeed.
+type recoveryError struct{ err error }
+
+func (e *recoveryError) Error() string { return e.err.Error() }
+
+func (e *recoveryError) Unwrap() error { return e.err }
+
+// splittableTimeout reports whether err is a timeout of the primary embeddings
+// request, which a smaller batch can avoid.
+func splittableTimeout(err error) bool {
+	if _, ok := errors.AsType[*recoveryError](err); ok {
+		return false
+	}
+	transport, ok := errors.AsType[*TransportError](err)
+	return ok && transport.Timeout()
+}
+
 func (c *Client) postBatch(ctx context.Context, role embedconfig.Role, texts []string) ([][]float32, error) {
 	vectors, err := retryCall(ctx, c.retry, len(texts) > 1, func() ([][]float32, error) {
 		return c.post(ctx, role, texts)
 	})
-	transport, timedOut := errors.AsType[*TransportError](err)
-	if !timedOut || !transport.Timeout() || len(texts) < 2 || ctx.Err() != nil {
+	if !splittableTimeout(err) || len(texts) < 2 || ctx.Err() != nil {
 		return vectors, err
 	}
 	middle := len(texts) / 2
@@ -267,7 +284,11 @@ func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string
 	if !c.ollamaRecovery {
 		return nil, problems[0]
 	}
-	return c.recoverOllama(ctx, texts, vectors, problems)
+	vectors, err = c.recoverOllama(ctx, texts, vectors, problems)
+	if err != nil {
+		err = &recoveryError{err: err}
+	}
+	return vectors, err
 }
 
 func embeddingsURL(canonical string) string {

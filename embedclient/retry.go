@@ -55,8 +55,8 @@ func retryCall[T any](ctx context.Context, r Retry, splitTimeout bool, call func
 			}
 			return zero, err
 		}
-		if transport, ok := errors.AsType[*TransportError](err); ok {
-			if splitTimeout && transport.Timeout() {
+		if _, ok := errors.AsType[*TransportError](err); ok {
+			if splitTimeout && splittableTimeout(err) {
 				return zero, backoff.Permanent(err)
 			}
 			return zero, err
