@@ -151,19 +151,30 @@ func TestNaturalForms(t *testing.T) {
 }
 
 func TestNaturalFTS(t *testing.T) {
-	bodies := []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded"}
-	db := ftsDB(t, bodies)
-	got, err := lexical.Literal().PrepareNatural("invoice rounding decision")
-	require.NoError(t, err)
-	counts := map[string]int{}
-	for _, word := range got.Words {
-		for _, body := range matchBodies(t, db, word.Match) {
-			counts[body]++
-		}
+	for _, tc := range []struct {
+		query  string
+		bodies []string
+		counts map[string]int
+	}{
+		{"invoice rounding decision", []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded"}, map[string]int{"rounding of invoices": 2, "invoice rounding decision": 3, "the invoiced total was rounded": 2}},
+		{`"the connection" retry`, []string{"the connection retry"}, map[string]int{"the connection retry": 3}},
+		{`trie "trying"`, []string{"trying"}, map[string]int{"trying": 1}},
+		{`tries "trying tried" retry`, []string{"trying tried retry"}, map[string]int{"trying tried retry": 2}},
+		{`nil-pointer "nil-pointer" retry`, []string{"nil pointer retry"}, map[string]int{"nil pointer retry": 2}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			got, err := lexical.Literal().PrepareNatural(tc.query)
+			require.NoError(t, err)
+			db := ftsDB(t, tc.bodies)
+			counts := map[string]int{}
+			for _, term := range got.CountTerms {
+				for _, body := range matchBodies(t, db, term.Match) {
+					counts[body]++
+				}
+			}
+			assert.Equal(t, tc.counts, counts)
+		})
 	}
-	assert.Equal(t, 3, counts[bodies[1]])
-	assert.Equal(t, 2, counts[bodies[0]])
-	assert.Equal(t, 2, counts[bodies[2]])
 }
 
 func TestNaturalCJK(t *testing.T) {
@@ -209,6 +220,13 @@ func TestNaturalCJK(t *testing.T) {
 		assert.Equal(t, tc.match, got.Match)
 	}
 	assert.Empty(t, calls)
+	got, err = chinese.PrepareNatural(`搜索引擎 "搜索引擎 T恤"`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"搜索引擎"}, calls)
+	require.Len(t, got.CountTerms, 2)
+	assert.Equal(t, got.Words[0].Match, got.CountTerms[0].Match)
+	assert.Equal(t, `"T恤"`, got.CountTerms[1].Match)
+	calls = nil
 	got, err = chinese.PrepareNatural("搜索\x00 invoice")
 	require.Error(t, err)
 	assert.Equal(t, lexical.Natural{}, got)
