@@ -30,9 +30,10 @@ and baseline system imports. Never discover expectations from available files,
 execute archive payloads, or treat header/import checks as ABI or lazy-loader
 proof. OS subsets require a subsequent full-inventory check before publishing.
 Archive paths reject case-equivalent collisions and file/directory prefix
-conflicts on case-insensitive targets; contract and import matching stays exact
-on Darwin. Bundle imports must resolve to shared-library images, and Unix
-executable payloads require owner execute permission. Tar directory status
+conflicts on case-insensitive targets, and Unicode-normalization aliases on
+Darwin; contract and import matching stays exact on Darwin. Bundle imports
+must resolve to shared-library images, and Unix executable payloads require
+owner execute permission. Tar directory status
 comes from `Typeflag`, as in extraction; disagreeing mode bits fail. Declared
 Unix members need owner read. Executable-relative and bare Windows imports use
 the importing executable's directory, or any bundled executable's directory for

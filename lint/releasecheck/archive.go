@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Bound memory/entry counts while accommodating large native runtime bundles.
@@ -109,6 +111,9 @@ type archiveMembers struct {
 	size            int64
 	windows         bool
 	caseInsensitive bool
+	// Default macOS filesystems also treat canonically equivalent Unicode
+	// spellings as one name.
+	normalizationInsensitive bool
 }
 
 func (m *archiveMembers) add(name string, mode fs.FileMode, size int64, r io.Reader) error {
@@ -137,6 +142,9 @@ func (m *archiveMembers) add(name string, mode fs.FileMode, size int64, r io.Rea
 	canonical := name
 	if m.caseInsensitive {
 		canonical = strings.ToLower(name)
+	}
+	if m.normalizationInsensitive {
+		canonical = norm.NFC.String(canonical)
 	}
 	if m.seen[canonical] {
 		return fmt.Errorf("duplicate archive path %q", name)
@@ -199,12 +207,13 @@ func checkArchive(ctx context.Context, dir string, a Artifact, sum string) error
 		return err
 	}
 	members := archiveMembers{
-		ctx:             ctx,
-		files:           map[string]member{},
-		seen:            map[string]bool{},
-		pathKinds:       map[string]bool{},
-		windows:         a.OS == "windows",
-		caseInsensitive: a.OS == "windows" || a.OS == "darwin",
+		ctx:                      ctx,
+		files:                    map[string]member{},
+		seen:                     map[string]bool{},
+		pathKinds:                map[string]bool{},
+		windows:                  a.OS == "windows",
+		caseInsensitive:          a.OS == "windows" || a.OS == "darwin",
+		normalizationInsensitive: a.OS == "darwin",
 	}
 	if a.OS == "windows" {
 		stat, err := f.Stat()

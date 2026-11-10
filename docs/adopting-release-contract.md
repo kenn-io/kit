@@ -1,7 +1,7 @@
 ---
 title: "Checking standalone release archives"
 description: "Declare and verify final executable and runtime bundle artifacts before publishing."
-last_edited: 2026-11-08
+last_edited: 2026-11-10
 ---
 
 # Checking standalone release archives
@@ -36,7 +36,9 @@ import tables do not mention them. Put data assets and distribution notices in
 `required_files`. All declared members must be nonempty regular files, owner
 readable on Unix; Unix executables and helpers must carry executable permission.
 Links, traversal,
-duplicate paths, and ambiguous Windows member names fail validation.
+duplicate paths, and ambiguous Windows member names fail validation. On
+case-insensitive targets, names that differ only by case also count as
+duplicates, as do canonically equivalent Unicode spellings on macOS.
 
 For example, a genuinely static Linux executable with a notice:
 

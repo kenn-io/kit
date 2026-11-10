@@ -599,6 +599,20 @@ func TestDarwinArchiveRejectsCaseEquivalentPaths(t *testing.T) {
 		members := append(append([]testMember{}, valid...), testMember{name: "APP", data: []byte("not native"), mode: 0o644})
 		require.ErrorContains(t, check(t, a, members), "duplicate archive path")
 	})
+	t.Run("Unicode normalization alias cannot overwrite member", func(t *testing.T) {
+		members := append(append([]testMember{}, valid...),
+			testMember{name: "caf\u00e9.txt", data: []byte("composed"), mode: 0o644},
+			testMember{name: "cafe\u0301.txt", data: []byte("decomposed"), mode: 0o644},
+		)
+		require.ErrorContains(t, check(t, a, members), "duplicate archive path")
+	})
+	t.Run("Unicode normalization alias cannot shadow directory", func(t *testing.T) {
+		members := append(append([]testMember{}, valid...),
+			testMember{name: "caf\u00e9", data: []byte("file"), mode: 0o644},
+			testMember{name: "cafe\u0301/item", data: []byte("child"), mode: 0o644},
+		)
+		require.ErrorContains(t, check(t, a, members), "file is also directory prefix")
+	})
 	t.Run("case alias cannot satisfy contract path", func(t *testing.T) {
 		artifact := a
 		artifact.Executable = "App"
