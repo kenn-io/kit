@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"go.kenn.io/kit/atomicfile"
-	"go.kenn.io/kit/safefileio"
 )
 
 // RecordChoice records an explicit turn-on of the built-in server. Apps can
@@ -28,13 +27,13 @@ func RecordChoice() error {
 }
 
 // ChoiceRecorded reports whether a user recorded a shared turn-on choice.
-// A non-regular marker path or a link at the marker path returns an error.
+// On error, callers should leave the shared choice off.
 func ChoiceRecorded() (bool, error) {
 	dir, err := DefaultDir()
 	if err != nil {
 		return false, fmt.Errorf("resolve embeddings directory: %w", err)
 	}
-	file, err := safefileio.OpenCurrentUserFile(filepath.Join(dir, "search-by-meaning"))
+	file, err := os.Open(filepath.Join(dir, "search-by-meaning"))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
