@@ -32,7 +32,8 @@ type PackOptions struct {
 	// a loose repair source. Positive values resume across calls on
 	// this Maintainer, up to the last entry present when the sweep started.
 	// A pass that fails or is canceled keeps the progress it made, except
-	// that it resumes before any repair it found but did not commit.
+	// that it resumes before any repair it found but did not commit, unless
+	// the repair's loose source proved bad.
 	// A new Maintainer starts a fresh sweep.
 	MaxVerifyBytes int64
 	// MinSealBytes holds loose members until their combined logical size
@@ -119,15 +120,22 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err != nil {
 		return stats, err
 	}
+	repairRetryable := false
 	if err := m.packCandidates(ctx, recoveries, opts, &stats, packCandidatePolicy{
 		commit:          m.catalog.AdoptPack,
 		openPin:         m.openVerificationPin,
 		replaceMappings: true,
+		noteSkip: func(_ context.Context, _ candidateGroup, skip looseSkip) {
+			repairRetryable = repairRetryable || skip == looseRetryable
+		},
 	}); err != nil {
 		return stats, err
 	}
-	// A packing budget can defer some verified repair candidates as well.
-	if !stats.BudgetExhausted {
+	// A packing budget can defer some verified repair candidates as well, and
+	// a repair skipped for a reason that may pass, such as a full disk, must
+	// be found again. One whose source content is proven bad cannot be
+	// repaired from it, so the sweep moves on.
+	if !stats.BudgetExhausted && !repairRetryable {
 		progress.repairPending = false
 	}
 	pruned, err := m.catalog.PruneUnreferenced(ctx)
@@ -560,6 +568,9 @@ const (
 	looseUsable looseSkip = iota
 	looseCorrupt
 	looseOversized
+	// looseRetryable is a member packing did not use for a reason that may
+	// pass, such as a full disk. It is never remembered.
+	looseRetryable
 )
 
 func (s looseSkip) count(stats *PackStats) {
@@ -568,7 +579,7 @@ func (s looseSkip) count(stats *PackStats) {
 		stats.BlobsCorrupt++
 	case looseOversized:
 		stats.BlobsDeferredOversized++
-	case looseUsable:
+	case looseUsable, looseRetryable:
 	}
 }
 
@@ -597,7 +608,7 @@ type looseRejection struct {
 
 // noteLooseSkip remembers or forgets a loose member that packing examined.
 func (m *Maintainer) noteLooseSkip(ctx context.Context, group candidateGroup, skip looseSkip) {
-	if skip == looseUsable {
+	if skip == looseUsable || skip == looseRetryable {
 		delete(m.looseSkips, group.Hash)
 		return
 	}
@@ -817,7 +828,7 @@ func (m *Maintainer) packCandidates(
 				stats.BlobsCorrupt++
 			}
 			if retryable {
-				skip = looseUsable
+				skip = looseRetryable
 			}
 			note(skip)
 			continue

@@ -54,9 +54,12 @@
   so continued ingestion cannot postpone revisiting older entries. A failed or
   canceled pass keeps the entries it examined, so a deadline that keeps
   expiring cannot pin the sweep to one window. A repair found but not
-  committed, through failure or a packing budget, moves the resume point back
-  to just before that repair so it is found again; never advance past an
-  uncommitted repair. A new maintainer starts a fresh sweep.
+  committed, through failure, a packing budget, or a retryable read failure
+  such as a full disk, moves the resume point back to just before that repair
+  so it is found again; never advance past such a repair. Only a repair whose
+  loose source is proven bad (content mismatch or a size limit) lets the sweep
+  advance, so an unrepairable entry cannot pin it. A new maintainer starts a
+  fresh sweep.
 
 ## Pack growth
 

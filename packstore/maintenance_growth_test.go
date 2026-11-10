@@ -148,6 +148,46 @@ func TestPackVerificationRevisitsUncommittedRepairButNotEarlierEntries(t *testin
 	assert.Equal(t, damagedContent, got)
 }
 
+func TestPackVerificationRevisitsRepairSkippedForRetryableFailure(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	contents := repeatedContents(1, 2, 3, 4)
+	entries := seedOneEntryPacks(t, layout, catalog, contents, time.Now())
+	damaged := entries[1]
+	var damagedContent []byte
+	for _, content := range contents {
+		if hashForTest(content) == damaged.Hash {
+			damagedContent = content
+		}
+	}
+	require.NotNil(t, damagedContent)
+	writeMaintenanceLoose(t, layout, damagedContent)
+	file, err := os.OpenFile(layout.PackPath(damaged.PackID), os.O_RDWR, 0)
+	require.NoError(t, err)
+	_, err = file.WriteAt([]byte{0xff}, damaged.Offset)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	maintainer.openVerificationPin = func(string) (identityPin, fs.FileInfo, error) {
+		return nil, nil, errors.New("scratch disk full")
+	}
+
+	stats, err := maintainer.Pack(t.Context(), PackOptions{MaxVerifyBytes: 3072})
+	require.NoError(t, err)
+	require.Equal(t, 3, stats.BlobsChecked)
+	require.Zero(t, stats.BlobsPacked, "the repair could not be packed")
+
+	maintainer.openVerificationPin = openLooseMaintenanceVerificationPin
+	stats, err = maintainer.Pack(t.Context(), PackOptions{MaxVerifyBytes: 3072})
+	require.NoError(t, err)
+	assert.Equal(t, 3, stats.BlobsChecked, "the retry starts at the skipped repair")
+	assert.Equal(t, 1, stats.BlobsPacked)
+	repaired, _ := catalog.snapshot()
+	assert.NotEqual(t, damaged.PackID, repaired[damaged.Hash].PackID)
+	got, _ := readStoreTest(t, maintainer.store, damaged.Hash)
+	assert.Equal(t, damagedContent, got)
+}
+
 // recordListingCatalog refuses per-pack record lookups.
 type recordListingCatalog struct {
 	*maintenanceCatalog
