@@ -89,6 +89,13 @@
   `MaxBytes` so outputs stay near the target size. An automatic merge leaves
   out a source whose payload cannot be read and merges the rest, so one
   damaged pack cannot block its group on every pass.
+- Repack and merge copy each live entry's stored frame into the output
+  without recompressing it. A copied frame must pass its footer CRC32C and
+  a streamed decode that checks its raw length and SHA-256 before it is
+  appended; a failure is a `sourceReadError` so a merge can drop that
+  source. Frames above `maxCopiedFrameBytes` keep the verified-stream
+  `PrepareBlob` path. Sources are read under the store's limits, one source
+  pack open at a time.
 - Orphan reconciliation lists pack records once per pass. Pack records change
   only under the maintenance lease or during a restore that already excludes
   maintenance.

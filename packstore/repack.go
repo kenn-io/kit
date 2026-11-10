@@ -411,7 +411,9 @@ type rewriteSourceEntry struct {
 }
 
 // rewriteSources copies live entries, each from the source pack its PackID
-// names, into replacement packs.
+// names, into replacement packs. Each stored frame is copied as is after its
+// CRC32C, decoded length, and SHA-256 verify; frames above
+// maxCopiedFrameBytes are recompressed through PrepareBlob instead.
 func (m *Maintainer) rewriteSources(ctx context.Context, entries []IndexEntry, targetSize int64) (rewriteResult, error) {
 	var result rewriteResult
 	var writer *pack.Writer
@@ -452,47 +454,50 @@ func (m *Maintainer) rewriteSources(ctx context.Context, entries []IndexEntry, t
 		current = nil
 		return nil
 	}
+	// Sources are read under the store's read policy, as packed streams are.
+	sources := newSourceFrames(m.layout, m.store.limits)
+	defer sources.Close()
 	for _, indexed := range entries {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		stream, size, err := m.store.OpenStream(ctx, indexed.Hash)
+		source, err := sources.entry(indexed)
 		if err != nil {
 			return result, &sourceReadError{packID: indexed.PackID, hash: indexed.Hash, err: err}
 		}
-		if size != indexed.RawLen {
-			_ = stream.Close()
-			return result, &sourceReadError{
-				packID: indexed.PackID, hash: indexed.Hash,
-				err: fmt.Errorf("%w: source length mismatch", ErrContentMismatch),
+		// Copy the verified stored frame when it fits in memory; recompress
+		// larger ones through bounded disk scratch.
+		var frame []byte
+		var prepared *pack.PreparedBlob
+		storedLen := source.StoredLen
+		if source.StoredLen <= maxCopiedFrameBytes {
+			frame, err = sources.readVerified(ctx, source)
+			if err != nil {
+				return result, &sourceReadError{packID: indexed.PackID, hash: indexed.Hash, err: err}
 			}
+		} else {
+			prepared, err = sources.prepare(ctx, indexed, source, m.layout.PacksDir())
+			if err != nil {
+				return result, &sourceReadError{packID: indexed.PackID, hash: indexed.Hash, err: err}
+			}
+			if prepared == nil {
+				return result, fmt.Errorf("packstore: prepare source %s blob %s returned no result", indexed.PackID, indexed.Hash)
+			}
+			storedLen = prepared.StoredLen()
 		}
-		id, err := pack.ParseBlobID(indexed.Hash.String())
-		if err != nil {
-			_ = stream.Close()
-			return result, err
-		}
-		prepared, prepareErr := pack.PrepareBlob(ctx, stream, uint64(size), pack.DefaultZstdLevel, pack.AppendStreamOptions{
-			ExpectedID: &id, ScratchDir: m.layout.PacksDir(),
-		})
-		streamErr := stream.Close()
-		if err := errors.Join(prepareErr, streamErr); err != nil {
+		discard := func() {
 			if prepared != nil {
 				_ = prepared.Close()
 			}
-			return result, &sourceReadError{packID: indexed.PackID, hash: indexed.Hash, err: err}
 		}
-		if prepared == nil {
-			return result, fmt.Errorf("packstore: prepare source %s blob %s returned no result", indexed.PackID, indexed.Hash)
-		}
-		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), prepared.StoredLen(), 1); err != nil {
-			_ = prepared.Close()
+		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), storedLen, 1); err != nil {
+			discard()
 			return result, err
 		}
 		if writer != nil {
-			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(current)+1); err != nil {
+			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), storedLen, len(current)+1); err != nil {
 				if err := seal(); err != nil {
-					_ = prepared.Close()
+					discard()
 					return result, err
 				}
 			}
@@ -500,16 +505,21 @@ func (m *Maintainer) rewriteSources(ctx context.Context, entries []IndexEntry, t
 		if writer == nil {
 			writer, err = pack.NewWriter(m.layout.PacksDir(), pack.WriterOptions{TargetSize: targetSize})
 			if err != nil {
-				_ = prepared.Close()
+				discard()
 				return result, err
 			}
 		}
-		sealed, err := writer.AppendPrepared(ctx, prepared)
+		var sealed pack.Entry
+		if prepared != nil {
+			sealed, err = writer.AppendPrepared(ctx, prepared)
+		} else {
+			sealed, err = writer.AppendEncoded(source.ID, frame, source.RawLen, source.Flags&pack.BlobCompressed != 0)
+		}
 		if err != nil {
 			return result, err
 		}
 		current = append(current, rewriteSourceEntry{indexed: indexed, sealed: sealed})
-		result.rawBytes += size
+		result.rawBytes += indexed.RawLen
 		if writer.Full() {
 			if err := seal(); err != nil {
 				return result, err
