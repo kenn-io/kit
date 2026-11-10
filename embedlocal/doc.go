@@ -18,8 +18,9 @@
 // The advisory snapshot leaves settings, endpoints, and indexing progress to apps.
 //
 // Call RecordChoice after a successful explicit turn-on with the built-in server.
-// At startup, call RecordChoice for an existing built-in server opt-in, and
-// call ChoiceRecorded to read the shared choice. A missing, partial, or unknown
-// marker returns false. On a read error, leave the shared choice off. Apps retain
-// their own provider and enabled settings.
+// At startup, call ChoiceRecorded first. If it returns false without an error,
+// call RecordChoice for an existing built-in server opt-in. Only the exact bytes
+// "yes\n" under ~/.kenn/embeddings count, regardless of Options.DataDir.
+// On a read error, leave the shared choice off. Apps retain their own provider
+// and enabled settings.
 package embedlocal
