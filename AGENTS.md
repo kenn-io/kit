@@ -133,6 +133,11 @@ approvals, token permissions, and secrets are separate controls.
 - Pull requests must have a user-facing benefit or improve the developer
   experience, and the body must say which one.
 - Write issues and pull requests in English.
+- End every commit message with a `Co-authored-by:` trailer naming the agent
+  that wrote the change.
+- End the pull request description with a `Model used:` line naming the model,
+  such as `Model used: Opus 5.5` or `Model used: GPT-6.1 Sol`. Squash-merge
+  keeps only the description, so put the `Co-authored-by:` trailer there too.
 - Do not poll or watch CI or pull request checks after pushing unless the user
   explicitly asks. A one-time status lookup is allowed when diagnosing a
   user-identified CI failure.
@@ -141,8 +146,8 @@ approvals, token permissions, and secrets are separate controls.
 - Keep pull request descriptions concise and rationale-first: explain the
   problem, the chosen approach, and consequences that matter to reviewers.
 - Do not add validation sections, command or check inventories, benchmark logs,
-  caveats about unrelated pre-existing failures, or agent/tool attribution to
-  pull request descriptions. Put verification evidence in CI, the kata issue,
+  or caveats about unrelated pre-existing failures to pull request
+  descriptions. Put verification evidence in CI, the kata issue,
   or a targeted review comment when it is useful.
 
 <!-- BEGIN KATA (managed by `kata init --with-agents`) -->
