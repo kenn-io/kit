@@ -11,13 +11,14 @@ import (
 	"go.kenn.io/kit/safefileio"
 )
 
-// RecordChoice records a successful explicit turn-on of the built-in server.
+// RecordChoice records an explicit turn-on of the built-in server. Apps can
+// also call it at startup for an existing built-in server opt-in.
 func RecordChoice() error {
 	dir, err := DefaultDir()
 	if err != nil {
 		return fmt.Errorf("resolve embeddings directory: %w", err)
 	}
-	if err := safefileio.EnsurePrivateDir(dir); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("prepare embeddings directory: %w", err)
 	}
 	if err := atomicfile.WriteFile(filepath.Join(dir, "search-by-meaning"), []byte("yes\n")); err != nil {
@@ -27,6 +28,7 @@ func RecordChoice() error {
 }
 
 // ChoiceRecorded reports whether a user recorded a shared turn-on choice.
+// A non-regular marker path or a link at the marker path returns an error.
 func ChoiceRecorded() (bool, error) {
 	dir, err := DefaultDir()
 	if err != nil {

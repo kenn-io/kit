@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/fslink"
 )
 
 func TestChoiceRecorded(t *testing.T) {
@@ -78,4 +79,31 @@ func TestChoiceAcrossProcesses(t *testing.T) {
 	cmd.Env = append(os.Environ(), "KIT_CHOICE_CHILD=1")
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", output)
+}
+
+func TestRecordChoiceThroughLinkedDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	target := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".kenn"), 0o700))
+	_, err := fslink.LinkDir(target, filepath.Join(home, ".kenn", "embeddings"))
+	require.NoError(t, err)
+	require.NoError(t, RecordChoice())
+	data, err := os.ReadFile(filepath.Join(target, "search-by-meaning"))
+	require.NoError(t, err)
+	assert.Equal(t, "yes\n", string(data))
+	got, err := ChoiceRecorded()
+	require.NoError(t, err)
+	assert.True(t, got)
+}
+
+func TestChoiceRecordedNonRegularMarker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".kenn", "embeddings", "search-by-meaning"), 0o700))
+	got, err := ChoiceRecorded()
+	require.Error(t, err)
+	assert.False(t, got)
 }

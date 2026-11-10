@@ -18,6 +18,8 @@
 // The advisory snapshot leaves settings, endpoints, and indexing progress to apps.
 //
 // Call RecordChoice after a successful explicit turn-on with the built-in server.
-// Call ChoiceRecorded at startup to read that shared choice. Apps retain their
-// own provider and enabled settings.
+// At startup, call RecordChoice for an existing built-in server opt-in, and
+// call ChoiceRecorded to read the shared choice. A non-regular marker or link
+// at the marker path returns an error. Apps retain their own provider and
+// enabled settings.
 package embedlocal
