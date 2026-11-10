@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,7 +42,18 @@ type TransportError struct {
 	Err error
 }
 
-func (e *TransportError) Error() string { return "embed request failed" }
+func (e *TransportError) Error() string {
+	if e.Timeout() {
+		return "embed request timed out"
+	}
+	return "embed request failed"
+}
+
+// Timeout reports whether the underlying transport error timed out.
+func (e *TransportError) Timeout() bool {
+	err, ok := errors.AsType[net.Error](e.Err)
+	return ok && err.Timeout()
+}
 
 func (e *TransportError) Unwrap() error { return e.Err }
 

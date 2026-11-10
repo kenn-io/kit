@@ -31,7 +31,7 @@ type Retry struct {
 
 // retryCall runs call until it succeeds, fails with an error that a retry cannot
 // fix, runs out of attempts, or ctx ends.
-func retryCall[T any](ctx context.Context, r Retry, call func() (T, error)) (T, error) {
+func retryCall[T any](ctx context.Context, r Retry, splitTimeout bool, call func() (T, error)) (T, error) {
 	var zero T
 	if r.MaxAttempts <= 1 {
 		return call()
@@ -55,7 +55,10 @@ func retryCall[T any](ctx context.Context, r Retry, call func() (T, error)) (T, 
 			}
 			return zero, err
 		}
-		if _, ok := errors.AsType[*TransportError](err); ok {
+		if transport, ok := errors.AsType[*TransportError](err); ok {
+			if splitTimeout && transport.Timeout() {
+				return zero, backoff.Permanent(err)
+			}
 			return zero, err
 		}
 		return zero, backoff.Permanent(err)

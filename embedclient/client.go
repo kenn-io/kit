@@ -149,9 +149,7 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 			texts[i-start] = prepared[i].text
 		}
 		role := prepared[start].role
-		vectors, err := retryCall(ctx, c.retry, func() ([][]float32, error) {
-			return c.post(ctx, role, texts)
-		})
+		vectors, err := c.postBatch(ctx, role, texts)
 		if err != nil {
 			first := start
 			return nil, remapVectorIndex(err, func(i int) int { return prepared[first+i].index })
@@ -162,6 +160,26 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 		start = end
 	}
 	return out, nil
+}
+
+func (c *Client) postBatch(ctx context.Context, role embedconfig.Role, texts []string) ([][]float32, error) {
+	vectors, err := retryCall(ctx, c.retry, len(texts) > 1, func() ([][]float32, error) {
+		return c.post(ctx, role, texts)
+	})
+	transport, timedOut := errors.AsType[*TransportError](err)
+	if !timedOut || !transport.Timeout() || len(texts) < 2 || ctx.Err() != nil {
+		return vectors, err
+	}
+	middle := len(texts) / 2
+	left, err := c.postBatch(ctx, role, texts[:middle])
+	if err != nil {
+		return nil, err
+	}
+	right, err := c.postBatch(ctx, role, texts[middle:])
+	if err != nil {
+		return nil, remapVectorIndex(err, func(i int) int { return middle + i })
+	}
+	return append(left, right...), nil
 }
 
 // EmbedTexts encodes plain texts for one role, like Embed with a text Content

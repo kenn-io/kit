@@ -10,6 +10,8 @@
 // Without a caller deadline, startup waits at most two minutes. A detached
 // startup continues loading after cancellation, and later callers can join it.
 // Startup diagnostics live in kennembed.log in the shared data directory.
+// For a built-in server endpoint, use BatchItems and RequestTimeout when the
+// user has not set their own values, and send one request at a time.
 //
 // Call Inspect to check the shared installation and Ollama before presenting
 // download choices. Its approximate DownloadBytes uses file types and sizes,
