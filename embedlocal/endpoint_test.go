@@ -195,7 +195,7 @@ func TestEndpointJoinStartup(t *testing.T) {
 			}, time.Second, 10*time.Millisecond, "loading must not launch another child")
 			ready()
 			result := <-done
-			require.NoError(t, joining.Err(), "shared startup must finish before the 5s context deadline")
+			require.NotErrorIs(t, result.err, context.DeadlineExceeded, "shared startup must finish before the caller deadline")
 			if tc.status == http.StatusServiceUnavailable {
 				require.ErrorContains(t, result.err, "cache model.onnx: download: HTTP 503")
 			} else {
