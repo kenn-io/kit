@@ -30,7 +30,12 @@ func TestMain(m *testing.M) {
 
 func runClientHelper(mode string) int {
 	if mode == "hold-pipes" {
-		<-time.After(10 * time.Second)
+		// Only the test's cleanup releases stdout, so a blocked read cannot
+		// accidentally finish because this descendant's timer expired.
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt)
+		<-signals
+		signal.Stop(signals)
 		return 0
 	}
 	if file := os.Getenv("KIT_CODEXAPP_TEST_PID"); file != "" {
@@ -71,11 +76,7 @@ func runClientHelper(mode string) int {
 			return 9
 		}
 		if mode == "block" {
-			signals := make(chan os.Signal, 1)
-			signal.Notify(signals, os.Interrupt)
-			<-signals
-			signal.Stop(signals)
-			return 10
+			break
 		}
 		if request.ID != 2 || request.Method != "example/read" || request.Params["example"] != "value" {
 			return 11
@@ -86,7 +87,10 @@ func runClientHelper(mode string) int {
 		}
 		fmt.Println(`{"id":2,"result":{"ready":true}}`)
 	}
-	if mode == "block-close" {
+	if mode == "block" || mode == "block-close" {
+		if err := os.WriteFile(os.Getenv("KIT_CODEXAPP_TEST_EXIT"), []byte("blocked"), 0o600); err != nil {
+			return 10
+		}
 		signals := make(chan os.Signal, 1)
 		signal.Notify(signals, os.Interrupt)
 		<-signals
@@ -118,13 +122,11 @@ func TestClientCancellationAndEOF(t *testing.T) {
 					require.NoError(t, err)
 					child, err := os.FindProcess(pid)
 					require.NoError(t, err)
-					if err := child.Kill(); !errors.Is(err, os.ErrProcessDone) {
-						assert.NoError(t, err)
-					}
+					assert.NoError(t, child.Kill(), "the descendant must hold stdout open until cleanup")
 					_ = child.Release()
 				})
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			client, startErr := Start(ctx, executable, dir)
 			if mode == "initialize-eof" {
@@ -135,16 +137,33 @@ func TestClientCancellationAndEOF(t *testing.T) {
 					Ready bool `json:"ready"`
 				}
 				var callErr error
-				started := time.Now()
-				if mode == "normal" || mode == "rpc-error" || mode == "block" {
-					callErr = client.Call("example/read", map[string]any{"example": "value"}, &reply)
+				finished := make(chan struct{})
+				go func() {
+					if mode == "normal" || mode == "rpc-error" || mode == "block" {
+						callErr = client.Call("example/read", map[string]any{"example": "value"}, &reply)
+					}
+					client.Close()
+					close(finished)
+				}()
+				if mode == "block" || mode == "block-close" {
+					// Cancel only after the helper reaches its blocked read or EOF path.
+					require.Eventually(t, func() bool {
+						data, err := os.ReadFile(exitFile)
+						return err == nil && string(data) == "blocked"
+					}, 30*time.Second, 10*time.Millisecond)
+					cancel()
 				}
-				client.Close()
+				select {
+				case <-finished:
+				case <-time.After(30 * time.Second):
+					require.FailNow(t, "caller cancellation must unblock calls and Close")
+				}
 				if mode == "block" {
-					require.ErrorIs(t, callErr, context.DeadlineExceeded)
+					require.ErrorIs(t, callErr, context.Canceled)
 				}
 				if mode == "block" || mode == "block-close" {
-					assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound Close and pending reads")
+					// Distinguish caller cancellation from Start's ten-second ceiling.
+					require.ErrorIs(t, client.ctx.Err(), context.Canceled)
 				}
 				if mode == "normal" {
 					require.NoError(t, callErr)
