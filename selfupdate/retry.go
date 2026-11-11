@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -21,17 +20,36 @@ func checksumRetry(ctx context.Context, operation func() ([]byte, error)) ([]byt
 	body, err := backoff.Retry(ctx, operation, backoff.WithBackOff(policy), backoff.WithMaxTries(4), backoff.WithMaxElapsedTime(0))
 	if retryErr := backoff.AsRetryError(err); retryErr != nil {
 		err = retryErr.LastErr
-		if errors.Is(retryErr.Cause, context.Canceled) || errors.Is(retryErr.Cause, context.DeadlineExceeded) {
-			err = errors.Join(err, retryErr.Cause)
+		if ctx.Err() != nil && errors.Is(retryErr.Cause, context.Cause(ctx)) {
+			err = errors.Join(err, ctx.Err(), retryErr.Cause)
 		}
 	}
 	return body, err
 }
 
-func checksumTransportError(err error) bool {
-	if urlErr, ok := errors.AsType[*url.Error](err); ok {
-		err = urlErr.Err
+type checksumTransport struct {
+	base http.RoundTripper
+}
+
+func (t checksumTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return resp, checksumRequestError{err}
 	}
+	return resp, nil
+}
+
+type checksumRequestError struct{ err error }
+
+func (e checksumRequestError) Error() string { return e.err.Error() }
+func (e checksumRequestError) Unwrap() error { return e.err }
+
+func checksumTransportError(err error) bool {
+	_, transport := errors.AsType[checksumRequestError](err)
+	return transport
+}
+
+func checksumReadError(err error) bool {
 	_, network := errors.AsType[net.Error](err)
 	return network || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }

@@ -2074,27 +2074,23 @@ func TestChecksumRetryStatuses(t *testing.T) {
 func TestChecksumRetryExhaustionAndPermanent(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
-		status       int
+		statuses     []int
 		body         string
 		wantRequests int32
 		wantError    string
 	}{
-		{"exhausted", 503, "", 4, "503"},
-		{"forbidden", 403, "", 1, "403"},
-		{"missing", 404, "", 1, "checksum asset not found"},
-		{"malformed", 200, "invalid", 1, ""},
-		{"oversized", 200, strings.Repeat("x", maxChecksumBytes+1), 1, "byte limit"},
+		{"exhausted", []int{500, 500, 500, 503}, "", 4, "503"},
+		{"forbidden", []int{403}, "", 1, "403"},
+		{"missing", []int{404}, "", 1, "checksum asset not found"},
+		{"malformed", []int{200}, "invalid", 1, ""},
+		{"oversized", []int{200}, strings.Repeat("x", maxChecksumBytes+1), 1, "byte limit"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var requests atomic.Int32
 				server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					attempt := requests.Add(1)
-					if tt.name == "exhausted" && attempt < 4 {
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-					w.WriteHeader(tt.status)
+					w.WriteHeader(tt.statuses[min(int(attempt)-1, len(tt.statuses)-1)])
 					_, _ = io.WriteString(w, tt.body)
 				}))
 				client := server.Client()
@@ -2121,6 +2117,7 @@ func TestChecksumRetryTransport(t *testing.T) {
 		failure error
 	}{
 		{"network", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("disconnected")}},
+		{"plain transport error", errors.New("connection lost")},
 		{"truncated", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2204,6 +2201,74 @@ func TestChecksumRetryCancellation(t *testing.T) {
 		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(ctx, server.URL, "tool.tar.gz")
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 		require.ErrorContains(t, err, "503")
+		assert.EqualValues(t, 1, requests.Load())
+	})
+}
+
+func TestChecksumRetryAfterMissingAsset(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var missing, fallback atomic.Int32
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/SHA256SUMS":
+				missing.Add(1)
+				w.WriteHeader(http.StatusNotFound)
+			case "/checksums.txt":
+				if fallback.Add(1) == 1 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				_, _ = fmt.Fprintf(w, "%s  tool.tar.gz\n", testHash64)
+			}
+		}))
+		client := server.Client()
+		checksum, err := (Client{HTTPClient: client}).fetchChecksumFromAssets(t.Context(), []*Asset{
+			{Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/SHA256SUMS"},
+			{Name: "checksums.txt", BrowserDownloadURL: server.URL + "/checksums.txt"},
+		}, "tool.tar.gz")
+		require.NoError(t, err)
+		assert.Equal(t, testHash64, checksum)
+		assert.EqualValues(t, 1, missing.Load())
+		assert.EqualValues(t, 2, fallback.Load())
+	})
+}
+
+func TestChecksumRetryCancellationCause(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var requests atomic.Int32
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			w.Header().Set("Retry-After", "10")
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		client := server.Client()
+		ctx, cancel := context.WithCancelCause(t.Context())
+		cause := errors.New("update abandoned")
+		go func() {
+			time.Sleep(time.Second)
+			cancel(cause)
+		}()
+		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(ctx, server.URL, "tool.tar.gz")
+		require.ErrorIs(t, err, context.Canceled)
+		require.ErrorIs(t, err, cause)
+		require.ErrorContains(t, err, "503")
+		assert.EqualValues(t, 1, requests.Load())
+	})
+}
+
+func TestChecksumRetryStopsOnRedirectPolicyError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var requests atomic.Int32
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			http.Redirect(w, r, "/next", http.StatusFound)
+		}))
+		client := server.Client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return &net.OpError{Op: "redirect", Net: "tcp", Err: errors.New("policy refused")}
+		}
+		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
+		require.ErrorContains(t, err, "policy refused")
 		assert.EqualValues(t, 1, requests.Load())
 	})
 }

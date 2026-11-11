@@ -1185,6 +1185,14 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
+	client := *c.httpClient()
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	client.Transport = checksumTransport{base: transport}
+	c.HTTPClient = &client
+
 	body, err := checksumRetry(ctx, func() ([]byte, error) {
 		resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
 		if err != nil {
@@ -1211,7 +1219,7 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 
 		body, err := readLimited(resp.Body, maxChecksumBytes)
 		if err != nil {
-			if checksumTransportError(err) && ctx.Err() == nil {
+			if checksumReadError(err) && ctx.Err() == nil {
 				return nil, err
 			}
 			return nil, backoff.Permanent(err)
