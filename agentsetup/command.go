@@ -22,7 +22,7 @@ func NewCommand(setup Options) *cobra.Command {
 			setup.SetupCommand = cmd.CommandPath()
 		}
 		report, err := Run(cmd.Context(), setup)
-		if err != nil && report.Rows == nil {
+		if err != nil && len(report.Rows) == 0 {
 			return err
 		}
 		runErr := err

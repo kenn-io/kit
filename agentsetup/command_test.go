@@ -87,3 +87,18 @@ func TestCommandReportsCancellation(t *testing.T) {
 		cancel()
 	}
 }
+
+func TestCommandCancellationWithNoItems(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var out bytes.Buffer
+	root := &cobra.Command{Use: "app", SilenceErrors: true, SilenceUsage: true}
+	root.SetOut(&out)
+	root.AddCommand(NewCommand(Options{Items: func(string) ([]Item, error) {
+		cancel()
+		return nil, nil
+	}}))
+	root.SetArgs([]string{"setup", "--agent", "codex"})
+	require.ErrorIs(t, root.ExecuteContext(ctx), context.Canceled)
+	require.Empty(t, out.String())
+}
