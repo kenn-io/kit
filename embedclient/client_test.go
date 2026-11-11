@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -661,14 +662,28 @@ func TestEmbedClassifiesFailedResponses(t *testing.T) {
 }
 
 func TestEmbedRetryAfterOverflow(t *testing.T) {
-	client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Retry-After", "999999999999999999999999")
-		w.WriteHeader(http.StatusTooManyRequests)
-	})
-	_, err := client.Embed(t.Context(), oneText())
-	var api *embedclient.APIError
-	require.ErrorAs(t, err, &api)
-	assert.Zero(t, api.RetryAfter)
+	wrapped := time.Duration(0)
+	if strconv.IntSize == 64 {
+		wrapped = -9223372036709551616
+	}
+	for _, tt := range []struct {
+		header string
+		want   time.Duration
+	}{
+		{"999999999999999999999999", 0},
+		{"9223372037", wrapped},
+	} {
+		t.Run(tt.header, func(t *testing.T) {
+			client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Retry-After", tt.header)
+				w.WriteHeader(http.StatusTooManyRequests)
+			})
+			_, err := client.Embed(t.Context(), oneText())
+			var api *embedclient.APIError
+			require.ErrorAs(t, err, &api)
+			assert.Equal(t, tt.want, api.RetryAfter)
+		})
+	}
 }
 
 func TestAPIErrorRetryableRetainsHighStatuses(t *testing.T) {

@@ -6,8 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"go.kenn.io/kit/internal/httpretry"
@@ -144,21 +142,9 @@ func newAPIError(resp *http.Response) *APIError {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	return &APIError{
 		StatusCode: resp.StatusCode,
-		RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
+		RetryAfter: httpretry.RetryAfter(resp.Header.Get("Retry-After"), time.Now(), 0),
 		Reason:     classifyFailure(resp.StatusCode, body),
 	}
-}
-
-func retryAfter(header string) time.Duration {
-	header = strings.TrimSpace(header)
-	seconds, err := strconv.Atoi(header)
-	if err == nil && seconds >= 0 {
-		return time.Duration(seconds) * time.Second
-	}
-	if errors.Is(err, strconv.ErrRange) {
-		return 0
-	}
-	return httpretry.RetryAfter(header, time.Now())
 }
 
 func classifyTransport(err error) error {
