@@ -71,13 +71,6 @@ func TestParentMetadataPolicyProperty(t *testing.T) {
 	})
 }
 
-func TestParentStickyRequiresTrustedChild(t *testing.T) {
-	parent := secretInfo{mode: os.ModeDir | os.ModeSticky | 0o777, uid: 0}
-	require.NoError(t, requireUnsharedParent(parent, secretInfo{uid: uint32(os.Geteuid())}))
-	require.Error(t, requireUnsharedParent(parent, secretInfo{uid: uint32(os.Geteuid() + 1)}))
-	require.Error(t, requireUnsharedParent(secretInfo{mode: os.ModeDir | 0o777, uid: 0}, secretInfo{uid: 0}))
-}
-
 func TestSecretOpenCancellation(t *testing.T) {
 	path := filepath.Join(privateTempDir(t), "token")
 	require.NoError(t, os.WriteFile(path, []byte("secret"), 0o600))

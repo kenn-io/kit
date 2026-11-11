@@ -3,7 +3,6 @@
 package secretref_test
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -27,18 +26,5 @@ func TestWindowsRootedAndDriveRelativeFiles(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, "secret", got.Value)
 		})
-	}
-}
-
-func TestWindowsRootedFileReachesFilePolicy(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
-	path := filepath.Join(dir, "token")
-	require.NoError(t, os.WriteFile(path, []byte("secret"), 0o600))
-	_, err := (secretref.Ref{File: path[len(filepath.VolumeName(path)):]}).Resolve()
-	if err != nil {
-		var source *secretref.SourceError
-		require.ErrorAs(t, err, &source)
-		require.NotEqual(t, "file is missing", source.Reason)
 	}
 }

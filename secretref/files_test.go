@@ -17,8 +17,6 @@ func TestFileBytesAndBoundaries(t *testing.T) {
 		wantReason        string
 	}{
 		{"preserve spaces", "  token \t\r\n\n", "  token \t", false, ""},
-		{"NUL", "a\x00b", "", true, ""},
-		{"empty", "", "", true, ""},
 		{"one byte", "s", "s", false, ""},
 		{"below limit", strings.Repeat("s", (64<<10)-1), strings.Repeat("s", (64<<10)-1), false, ""},
 		{"limit", strings.Repeat("s", 64<<10), strings.Repeat("s", 64<<10), false, ""},

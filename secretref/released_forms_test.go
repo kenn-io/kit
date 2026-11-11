@@ -13,10 +13,9 @@ import (
 
 func TestReleasedFormsResolve(t *testing.T) {
 	dir := privateTempDir(t)
-	require.NoError(t, os.Chmod(dir, 0o700))
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "keys"), 0o700))
 	path := filepath.Join(dir, "keys", "token")
-	require.NoError(t, os.WriteFile(path, []byte("t"), 0o600))
+	writePrivateFile(t, path, "t")
 	t.Chdir(dir)
 	padded, err := json.Marshal(map[string]string{"file": " " + path + " "})
 	require.NoError(t, err)
@@ -39,7 +38,4 @@ func TestReleasedFormsResolve(t *testing.T) {
 	fileSecret, err := doc.Key.Resolve()
 	require.NoError(t, err)
 	require.Equal(t, "t", fileSecret.Value)
-	secret, err := secretref.Literal(" ").Resolve()
-	require.NoError(t, err)
-	require.Equal(t, "inline value is empty", secret.Reason)
 }

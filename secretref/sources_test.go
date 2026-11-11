@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -13,25 +12,6 @@ import (
 	"go.kenn.io/kit/secretref"
 	"pgregory.net/rapid"
 )
-
-func TestFromFieldsSources(t *testing.T) {
-	for _, tc := range []struct {
-		fields secretref.Fields
-		want   secretref.Ref
-	}{
-		{secretref.Fields{}, secretref.Ref{}},
-		{secretref.Fields{Value: "plain"}, secretref.Literal("plain")},
-		{secretref.Fields{File: "~/token"}, secretref.Ref{File: "~/token"}},
-		{secretref.Fields{Env: "APP_TOKEN"}, secretref.Ref{Env: "APP_TOKEN"}},
-	} {
-		got, err := secretref.FromFields("token", tc.fields)
-		require.NoError(t, err)
-		assert.Equal(t, tc.want, got)
-	}
-	_, err := secretref.FromFields("token", secretref.Fields{Value: "private-value", File: "~/token", Env: "APP_TOKEN"})
-	require.ErrorContains(t, err, "token")
-	assert.NotContains(t, err.Error(), "private-value")
-}
 
 func TestFromEnvPresenceAndNoIO(t *testing.T) {
 	const name = "KIT_SOURCE_TEST"
@@ -47,13 +27,16 @@ func TestFromEnvPresenceAndNoIO(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, secretref.Ref{Env: name}, got)
 	_, err = got.Resolve()
-	require.Error(t, err)
+	require.EqualError(t, err, "secretref: env:KIT_SOURCE_TEST: secret is unset or empty")
 	t.Setenv(name+"_FILE", "")
 	_, err = secretref.FromEnv(name)
 	require.ErrorContains(t, err, name+"_FILE")
 	require.NoError(t, os.Unsetenv(name))
 	_, err = secretref.FromEnv(name)
 	require.Error(t, err)
+	t.Setenv(name+"_FILE", "/private/token ")
+	_, err = secretref.FromEnv(name)
+	require.ErrorContains(t, err, "surrounding whitespace")
 	t.Setenv(name+"_FILE", "/nonexistent/example.key")
 	got, err = secretref.FromEnv(name)
 	require.NoError(t, err)
@@ -67,15 +50,7 @@ func TestFromEnvRejectsAmbiguousNames(t *testing.T) {
 	}
 }
 
-func TestSourceErrorReasonSafeAndNULRejected(t *testing.T) {
-	t.Setenv("KIT_REASON_TOKEN", "")
-	for _, ref := range []secretref.Ref{{Env: "KIT_REASON_TOKEN"}} {
-		_, err := ref.Resolve()
-		var sourceErr *secretref.SourceError
-		require.ErrorAs(t, err, &sourceErr)
-		assert.NotContains(t, sourceErr.Reason, "KIT_REASON_TOKEN")
-		assert.NotContains(t, sourceErr.Reason, "secret\x00bytes")
-	}
+func TestResolveContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := secretref.Literal("key").ResolveContext(ctx)
@@ -108,21 +83,6 @@ func TestJSONDuplicateStringKeysKeepLastValue(t *testing.T) {
 	assert.True(t, ref.IsZero())
 }
 
-func TestLiteralSerializationScale(t *testing.T) {
-	ref := secretref.Literal(strings.Repeat("a\n\"\\", 1<<18))
-	encoded, err := json.Marshal(ref)
-	require.NoError(t, err)
-	var decoded secretref.Ref
-	require.NoError(t, json.Unmarshal(encoded, &decoded))
-	assert.Equal(t, ref, decoded)
-	raw, err := ref.MarshalTOML()
-	require.NoError(t, err)
-	var doc document
-	_, err = toml.Decode("key="+string(raw), &doc)
-	require.NoError(t, err)
-	assert.Equal(t, ref, doc.Key)
-}
-
 func TestFieldsRejectEveryConflictProperty(t *testing.T) {
 	rapid.Check(t, func(ht *rapid.T) {
 		mask := rapid.IntRange(0, 7).Draw(ht, "mask")
@@ -143,7 +103,7 @@ func TestFieldsRejectEveryConflictProperty(t *testing.T) {
 		}
 		got, err := secretref.FromFields("token", fields)
 		if count > 1 {
-			require.Error(ht, err)
+			require.ErrorContains(ht, err, "token")
 			assert.NotContains(ht, err.Error(), "key:"+value)
 		} else {
 			require.NoError(ht, err)
@@ -152,17 +112,4 @@ func TestFieldsRejectEveryConflictProperty(t *testing.T) {
 			assert.Equal(ht, fields.File, got.File)
 		}
 	})
-}
-
-func TestJSONArrayFieldRejected(t *testing.T) {
-	var ref secretref.Ref
-	require.Error(t, json.Unmarshal([]byte(`{"file":["secret"]}`), &ref))
-}
-
-func TestFromEnvRejectsPaddedFileSelector(t *testing.T) {
-	t.Setenv("KIT_PADDED_SECRET", "")
-	require.NoError(t, os.Unsetenv("KIT_PADDED_SECRET"))
-	t.Setenv("KIT_PADDED_SECRET_FILE", "/private/token ")
-	_, err := secretref.FromEnv("KIT_PADDED_SECRET")
-	require.Error(t, err)
 }

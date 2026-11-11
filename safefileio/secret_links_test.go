@@ -3,6 +3,7 @@
 package safefileio_test
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +22,17 @@ func TestSecretLinkBoundProperty(t *testing.T) {
 	require.NoError(t, err)
 	target := filepath.Join(dir, "token")
 	require.NoError(t, os.WriteFile(target, []byte("secret"), 0o600))
+	version := filepath.Join(dir, "..version")
+	require.NoError(t, os.Mkdir(version, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(version, "token"), []byte("mounted"), 0o400))
+	require.NoError(t, os.Symlink("..version", filepath.Join(dir, "..data")))
+	require.NoError(t, os.Symlink("..data/token", filepath.Join(dir, "mounted")))
+	mounted, err := safefileio.OpenSecretFile(t.Context(), filepath.Join(dir, "mounted"))
+	require.NoError(t, err)
+	data, err := io.ReadAll(mounted)
+	require.NoError(t, err)
+	assert.Equal(t, "mounted", string(data))
+	require.NoError(t, mounted.Close())
 	paths := []string{target}
 	for i := 1; i <= 41; i++ {
 		path := filepath.Join(dir, strconv.Itoa(i))

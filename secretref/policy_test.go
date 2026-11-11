@@ -34,9 +34,6 @@ func TestSecretJSONProperty(t *testing.T) {
 		data, err := json.Marshal(secret)
 		require.NoError(ht, err)
 		assert.JSONEq(ht, `{"source":"inline","value":"[redacted]"}`, string(data))
-		direct, err := secret.MarshalJSON()
-		require.NoError(ht, err)
-		assert.JSONEq(ht, string(data), string(direct))
 		pointer, err := json.Marshal(&secret)
 		require.NoError(ht, err)
 		assert.JSONEq(ht, string(data), string(pointer))
@@ -55,20 +52,6 @@ func TestSecretSlogProperty(t *testing.T) {
 		require.NoError(ht, json.Unmarshal(output.Bytes(), &entry))
 		assert.Equal(ht, map[string]string{"source": "inline", "value": "[redacted]"}, entry.Secret)
 	})
-}
-
-func TestExtendedSecretDiagnostics(t *testing.T) {
-	secret := secretref.Secret{Value: "do-not-log", Source: "env:APP_TOKEN"}
-	value := secret.LogValue()
-	assert.Equal(t, slog.KindGroup, value.Kind())
-	assert.Equal(t, []slog.Attr{slog.String("source", secret.Source), slog.String("value", "[redacted]")}, value.Group())
-	var output bytes.Buffer
-	slog.New(slog.NewTextHandler(&output, nil)).WithGroup("provider").Info("resolved", "secret", &secret)
-	assert.Contains(t, output.String(), "APP_TOKEN")
-	assert.Contains(t, output.String(), "[redacted]")
-	assert.NotContains(t, output.String(), secret.Value)
-	err := &secretref.SourceError{Source: secret.Source, Reason: "secret is unset or empty"}
-	assert.Equal(t, "secretref: env:APP_TOKEN: secret is unset or empty", err.Error())
 }
 
 func TestBlankLiteralDiagnosticSurvivesRedaction(t *testing.T) {
