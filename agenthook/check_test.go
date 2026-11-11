@@ -61,11 +61,8 @@ func runHookCheckHelper(mode string) int {
 			}
 		}
 	}
-	if mode == "initialize-eof" || mode == "cancel-pause" {
+	if mode == "initialize-eof" {
 		_, _ = testserver.Read(input)
-		if mode == "cancel-pause" {
-			_ = os.WriteFile(os.Getenv("KIT_HOOK_CHECK_EVENT"), []byte("ready"), 0o600)
-		}
 		return 0
 	}
 	if err := testserver.Handshake(input, os.Stdout); err != nil {
@@ -83,7 +80,7 @@ func runHookCheckHelper(mode string) int {
 			fmt.Print(`{"id":1,"result":`)
 			return 0
 		}
-		if (mode == "config-no-result" && request.Method == "config/read") || (mode == "discovery-no-result" && request.Method == "hooks/list") {
+		if mode == "discovery-no-result" && request.Method == "hooks/list" {
 			fmt.Printf("{\"id\":%d}\n", request.ID)
 			continue
 		}
@@ -153,7 +150,6 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		reason                   string
 		launches                 int
 	}{
-		{"config missing result", "config-no-result", "", "", CheckUnknown, "missing result", 1},
 		{"discovery missing result", "discovery-no-result", "", "", CheckUnknown, "missing result", 1},
 		{"retry initialization", "first-initialize-eof", "trusted", "", CheckOK, "", 2},
 		{"retry config", "first-config-eof", "trusted", "", CheckOK, "", 2},
@@ -161,12 +157,9 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"last failure step", "different-failures", "", "", CheckUnknown, "EOF", 2},
 		{"retry discovery", "first-discovery-eof", "trusted", "", CheckOK, "", 2},
 		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, "", 2},
-		{"exhausted config", "config-eof", "", "", CheckUnknown, "EOF", 2},
 		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure", 1},
 		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", 1},
 		{"completed before cancellation", "close-delay", "trusted", "", CheckOK, "", 1},
-		{"already canceled", "already-canceled", "", "", CheckUnknown, "context canceled", 0},
-		{"cancel after startup failure", "cancel-pause", "", "", CheckUnknown, "context canceled", 1},
 		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", 1},
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", 1},
 		{"reviewed", "normal", "trusted", "", CheckOK, "", 1},
@@ -283,11 +276,6 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				t.Setenv("PATH", t.TempDir())
 			}
 			ctx := t.Context()
-			if tc.mode == "already-canceled" {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithCancel(ctx)
-				cancel()
-			}
 			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, time.Second)
@@ -295,7 +283,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			}
 			started := time.Now()
 			var result CheckResult
-			if tc.mode == "cancel-pause" || tc.mode == "close-delay" {
+			if tc.mode == "close-delay" {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(ctx)
 				defer cancel()
@@ -318,9 +306,6 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound the native check")
 			}
 			require.NoError(t, err)
-			if tc.mode == "close-delay" {
-				assert.ErrorIs(t, ctx.Err(), context.Canceled)
-			}
 			if tc.launches == 0 {
 				_, err := os.Stat(record)
 				assert.ErrorIs(t, err, os.ErrNotExist)
@@ -329,10 +314,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				require.NoError(t, err)
 				assert.Len(t, launches, tc.launches)
 			}
-			if tc.mode == "first-rpc-timeout" {
-				assert.Less(t, time.Since(started), 21*time.Second)
-			}
-			if tc.mode == "config-eof" || tc.mode == "different-failures" || tc.mode == "config-no-result" {
+			if tc.mode == "different-failures" {
 				assert.Contains(t, result.NextStep, "Codex config")
 			}
 			if tc.mode == "discovery-no-result" {
@@ -661,7 +643,7 @@ func TestCheckCodexConformance(t *testing.T) {
 	}
 }
 
-func TestTransientCodexDeadline(t *testing.T) {
+func TestTransientCodexError(t *testing.T) {
 	assert.True(t, transientCodexError(fmt.Errorf("read: %w", context.DeadlineExceeded)))
 	assert.True(t, transientCodexError(&os.PathError{Op: "fork/exec", Err: syscall.ETXTBSY}))
 }

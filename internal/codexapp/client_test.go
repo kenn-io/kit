@@ -206,7 +206,7 @@ func TestClientCallResult(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := Client{ctx: t.Context(), input: io.Discard, output: jsontext.NewDecoder(strings.NewReader(tc.frame))}
-			var result any
+			var result any = "previous value"
 			var destination any = &result
 			if tc.discard {
 				destination = nil
@@ -216,7 +216,9 @@ func TestClientCallResult(t *testing.T) {
 				require.ErrorContains(t, err, "codex example/read: missing result")
 			} else {
 				require.NoError(t, err)
-				assert.Nil(t, result)
+				if !tc.discard {
+					assert.Nil(t, result)
+				}
 			}
 		})
 	}
