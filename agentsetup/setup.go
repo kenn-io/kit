@@ -12,7 +12,7 @@ import (
 )
 
 // Options describes agent selection and the items each agent needs.
-// SetupCommand is required by Run and supplies missing next steps.
+// Items is required. SetupCommand is required by Run and supplies missing next steps.
 type Options struct {
 	Agents       []string
 	CheckOnly    bool
@@ -21,7 +21,7 @@ type Options struct {
 }
 
 // Item describes one independently installed and checked piece of setup.
-// Install must be idempotent and complete its item before returning nil.
+// Install must be idempotent and complete its item before returning nil. Check is required by Run.
 type Item struct {
 	Name       string
 	Install    func(context.Context) error
@@ -51,13 +51,12 @@ func normalizeAgents(names []string) ([]string, error) {
 }
 
 func resolve(ctx context.Context, opts Options) ([]entry, error) {
+	if opts.Items == nil {
+		return nil, errors.New("items callback is required")
+	}
 	names := opts.Agents
 	if len(names) == 0 {
-		for _, name := range []string{"claude", "codex"} {
-			if _, err := exec.LookPath(name); err == nil {
-				names = append(names, name)
-			}
-		}
+		names = detectedAgents()
 		if len(names) == 0 {
 			return nil, errors.New("no supported agent found; install Claude Code or Codex, or pass --agent")
 		}
@@ -84,6 +83,16 @@ func resolve(ctx context.Context, opts Options) ([]entry, error) {
 	return entries, nil
 }
 
+func detectedAgents() []string {
+	var names []string
+	for _, name := range []string{"claude", "codex"} {
+		if _, err := exec.LookPath(name); err == nil {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 func (opts Options) repairCommand() string {
 	if len(opts.Agents) == 0 {
 		return opts.SetupCommand
@@ -99,7 +108,8 @@ func nextStep(e entry, opts Options, status Status) string {
 	return status.NextStep
 }
 
-// Run installs each item once in order, then checks final readiness.
+// Run installs each item once in order, then checks final readiness. On cancellation,
+// it returns completed checks and marks unchecked items unknown.
 func Run(ctx context.Context, opts Options) (Report, error) {
 	if strings.TrimSpace(opts.SetupCommand) == "" {
 		return Report{}, errors.New("setup command is required")
@@ -108,21 +118,36 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	report := Report{Rows: make([]Row, len(entries))}
+	for i, e := range entries {
+		if e.item.Check == nil {
+			return Report{}, fmt.Errorf("%s %s: check callback is required", e.name, e.item.Name)
+		}
+		report.Rows[i] = Row{Agent: string(e.agent), AgentName: e.name, Piece: e.item.Name, State: StateUnknown, Reason: "Setup interrupted; readiness was not checked", NextStep: opts.repairCommand()}
+	}
 	installErrors := make([]error, len(entries))
 	for i, e := range entries {
 		if err := ctx.Err(); err != nil {
-			return Report{}, err
+			return report, err
 		}
 		if e.item.Install != nil && !opts.CheckOnly {
 			installErrors[i] = e.item.Install(ctx)
+			if installErrors[i] != nil {
+				report.Rows[i].Status = Status{State: StateFailed, Reason: installErrors[i].Error(), NextStep: opts.repairCommand()}
+				if ctx.Err() != nil {
+					report.Rows[i].Reason = "Setup interrupted: " + report.Rows[i].Reason
+				}
+			}
 		}
 	}
-	report := Report{Rows: []Row{}}
 	for i, e := range entries {
 		if err := ctx.Err(); err != nil {
-			return Report{}, err
+			return report, err
 		}
 		status, err := e.item.Check(ctx)
+		if ctx.Err() != nil {
+			return report, ctx.Err()
+		}
 		status.NextStep = nextStep(e, opts, status)
 		if installErrors[i] != nil {
 			installReason := installErrors[i].Error()
@@ -136,7 +161,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 				status.NextStep = opts.repairCommand()
 			}
 		}
-		report.Rows = append(report.Rows, Row{Agent: string(e.agent), AgentName: e.name, Piece: e.item.Name, Status: status})
+		report.Rows[i].Status = status
 	}
 	return report, ctx.Err()
 }

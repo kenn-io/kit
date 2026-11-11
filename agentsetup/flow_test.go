@@ -40,10 +40,14 @@ func TestOrderedInstallAndFinalCheck(t *testing.T) {
 				calls = append(calls, "check broken")
 				return Status{State: StateOK}, nil
 			}},
+			{Name: "independent", Install: func(context.Context) error { calls = append(calls, "install independent"); return nil }, Check: func(context.Context) (Status, error) {
+				calls = append(calls, "check independent")
+				return Status{State: StateOK}, nil
+			}},
 		}, nil
 	}})
 	require.NoError(t, err)
-	require.Equal(t, []string{"install prerequisite", "install dependent", "install broken", "check prerequisite", "check dependent", "check broken"}, calls)
+	require.Equal(t, []string{"install prerequisite", "install dependent", "install broken", "install independent", "check prerequisite", "check dependent", "check broken", "check independent"}, calls)
 	require.Equal(t, StateFailed, report.Rows[2].State)
 	require.Equal(t, "write failed", report.Rows[2].Reason)
 	require.Equal(t, "app setup --agent codex", report.Rows[2].NextStep)
@@ -54,6 +58,58 @@ func TestSetupCommandRequiredBeforeCallbacks(t *testing.T) {
 	_, err := Run(t.Context(), Options{Agents: []string{"codex"}, Items: func(string) ([]Item, error) { called = true; return nil, nil }})
 	require.Error(t, err)
 	require.False(t, called)
+}
+
+func TestInvalidCallbacksBeforeInstall(t *testing.T) {
+	installed := false
+	for name, items := range map[string]func(string) ([]Item, error){
+		"missing items": nil,
+		"missing check": func(string) ([]Item, error) {
+			return []Item{{Name: "first", Install: func(context.Context) error { installed = true; return nil }, Check: func(context.Context) (Status, error) { return Status{State: StateOK}, nil }}, {Name: "missing check"}}, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var err error
+			require.NotPanics(t, func() {
+				_, err = Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", Items: items})
+			})
+			require.Error(t, err)
+			require.False(t, installed)
+		})
+	}
+}
+
+func TestCancellationRetainsReadinessReport(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	report, err := Run(ctx, Options{Agents: []string{"codex"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) {
+		return []Item{
+			{Name: "checked", Check: func(context.Context) (Status, error) { return Status{State: StateOK}, nil }},
+			{Name: "interrupted", Check: func(context.Context) (Status, error) { cancel(); return Status{State: StateOK}, nil }},
+			{Name: "unchecked", Check: func(context.Context) (Status, error) { return Status{State: StateOK}, nil }},
+		}, nil
+	}})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Len(t, report.Rows, 3)
+	require.Equal(t, StateOK, report.Rows[0].State)
+	require.NotEqual(t, StateOK, report.Rows[1].State)
+	require.NotEqual(t, StateOK, report.Rows[2].State)
+	require.NotZero(t, report.ExitCode())
+	var out bytes.Buffer
+	require.NoError(t, report.WriteText(&out, ""))
+	require.Contains(t, out.String(), "interrupted")
+}
+
+func TestCancellationDuringInstallRetainsFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	report, err := Run(ctx, Options{Agents: []string{"codex"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) {
+		return []Item{{Name: "item", Install: func(context.Context) error { cancel(); return errors.New("write failed") }, Check: func(context.Context) (Status, error) { return Status{State: StateOK}, nil }}}, nil
+	}})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, StateFailed, report.Rows[0].State)
+	require.Contains(t, report.Rows[0].Reason, "Setup interrupted")
+	require.Contains(t, report.Rows[0].Reason, "write failed")
 }
 
 func TestDefaultAndExplicitSelection(t *testing.T) {

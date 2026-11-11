@@ -22,9 +22,10 @@ func NewCommand(setup Options) *cobra.Command {
 			setup.SetupCommand = cmd.CommandPath()
 		}
 		report, err := Run(cmd.Context(), setup)
-		if err != nil {
+		if err != nil && report.Rows == nil {
 			return err
 		}
+		runErr := err
 		if jsonOutput {
 			err = json.MarshalEncode(jsontext.NewEncoder(cmd.OutOrStdout()), report)
 		} else {
@@ -32,6 +33,9 @@ func NewCommand(setup Options) *cobra.Command {
 		}
 		if err != nil {
 			return err
+		}
+		if runErr != nil {
+			return runErr
 		}
 		if report.ExitCode() != 0 {
 			cmd.SilenceUsage = true

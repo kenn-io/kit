@@ -70,3 +70,20 @@ func TestCommandInstallFailureGuidance(t *testing.T) {
 		})
 	}
 }
+
+func TestCommandReportsCancellation(t *testing.T) {
+	for _, args := range [][]string{{"setup", "--agent", "codex"}, {"setup", "--agent", "codex", "--json"}} {
+		ctx, cancel := context.WithCancel(t.Context())
+		var out bytes.Buffer
+		root := &cobra.Command{Use: "app", SilenceErrors: true, SilenceUsage: true}
+		root.SetOut(&out)
+		root.AddCommand(NewCommand(Options{Items: func(string) ([]Item, error) {
+			return []Item{{Name: "interrupted", Check: func(context.Context) (Status, error) { cancel(); return Status{State: StateOK}, nil }}}, nil
+		}}))
+		root.SetArgs(args)
+		require.ErrorIs(t, root.ExecuteContext(ctx), context.Canceled)
+		require.Contains(t, out.String(), "interrupted")
+		require.Contains(t, out.String(), "unknown")
+		cancel()
+	}
+}

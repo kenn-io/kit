@@ -1,7 +1,6 @@
 package agentsetup
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -51,13 +50,15 @@ func MCP(agent, name string, server agentmcp.Server) Item {
 // Print writes manual MCP commands without installing or checking items.
 func Print(w io.Writer, opts Options) error {
 	if len(opts.Agents) == 0 {
-		opts.Agents = []string{"claude", "codex"}
+		opts.Agents = detectedAgents()
+		if len(opts.Agents) == 0 {
+			opts.Agents = []string{"claude", "codex"}
+		}
 	}
 	entries, err := resolve(context.Background(), opts)
 	if err != nil {
 		return err
 	}
-	var output bytes.Buffer
 	for _, e := range entries {
 		if e.item.Commands == nil {
 			continue
@@ -70,8 +71,9 @@ func Print(w io.Writer, opts Options) error {
 		if runtime.GOOS == "windows" {
 			command = commands.PowerShell
 		}
-		output.WriteString(command + "\n")
+		if _, err := fmt.Fprintln(w, command); err != nil {
+			return err
+		}
 	}
-	_, err = output.WriteTo(w)
-	return err
+	return nil
 }

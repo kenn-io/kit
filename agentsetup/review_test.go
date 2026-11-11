@@ -63,7 +63,7 @@ func TestPrint(t *testing.T) {
 			return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
 		}})
 		require.Error(t, err)
-		require.Empty(t, out.String())
+		require.Contains(t, out.String(), "claude")
 	})
 	t.Run("defaults without installed agents", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
@@ -79,6 +79,17 @@ func TestPrint(t *testing.T) {
 			require.Contains(t, out.String(), "claude mcp add")
 			require.Contains(t, out.String(), "codex mcp add")
 		}
+	})
+	t.Run("defaults to installed agent", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		testserver.InstallExecutable(t, "codex")
+		var out bytes.Buffer
+		err := Print(&out, Options{Items: func(agent string) ([]Item, error) {
+			return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
+		}})
+		require.NoError(t, err)
+		require.Contains(t, out.String(), "codex")
+		require.NotContains(t, out.String(), "claude")
 	})
 }
 
