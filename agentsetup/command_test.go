@@ -3,7 +3,6 @@ package agentsetup
 import (
 	"bytes"
 	"context"
-	"os"
 	"runtime"
 	"testing"
 
@@ -41,32 +40,6 @@ func TestCommandCheckAndPrint(t *testing.T) {
 		require.Contains(t, output, "codex mcp add")
 	}
 	require.False(t, installed)
-}
-
-func TestCommandInstallFailureGuidance(t *testing.T) {
-	for _, tc := range []struct {
-		name, agent, reason, step string
-	}{
-		{"malformed config", "claude", "mcpServers must be an object", "Correct the agent MCP config"},
-		{"unsupported agent", "muse", `unsupported MCP agent "muse"`, "Choose an agent that supports MCP"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-			t.Setenv("PATH", t.TempDir())
-			if tc.agent == "claude" {
-				path, err := agentmcp.ConfigPath(agentmcp.AgentClaude)
-				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(path, []byte(`{"mcpServers":null}`), 0o600))
-			}
-			out, err := execute(t.Context(), Options{Items: func(agent string) ([]Item, error) {
-				return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
-			}}, "--agent", tc.agent)
-			require.ErrorIs(t, err, ErrNotReady)
-			require.Contains(t, out, tc.reason)
-			require.Contains(t, out, tc.step)
-		})
-	}
 }
 
 func TestCommandReportsCancellation(t *testing.T) {

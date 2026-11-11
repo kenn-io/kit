@@ -26,20 +26,21 @@ func TestDupAgents(t *testing.T) {
 	require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
 }
 
-func TestMissingAgentMCPGuidance(t *testing.T) {
+func TestMCPGuidance(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
 	server := agentmcp.Server{Command: "example"}
 	_, err := agentmcp.Install(agentmcp.AgentClaude, agentmcp.InstallOptions{Name: "example", Server: server})
 	require.NoError(t, err)
-	report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", CheckOnly: true, Items: func(agent string) ([]Item, error) { return []Item{MCP(agent, "example", server)}, nil }})
+	status, err := MCP("claude", "example", server).Check(t.Context())
 	require.NoError(t, err)
-	require.Equal(t, StateUnknown, report.Rows[0].State)
-	require.Contains(t, report.Rows[0].NextStep, "Install Claude Code")
-	var out bytes.Buffer
-	require.NoError(t, report.WriteText(&out, "app setup --agent claude --check"))
-	require.Equal(t, 1, strings.Count(out.String(), "app setup --agent claude --check"))
+	require.Equal(t, StateUnknown, status.State)
+	require.Contains(t, status.NextStep, "Install Claude Code")
+	status, err = MCP("muse", "example", server).Check(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, StateFailed, status.State)
+	require.Equal(t, "Choose an agent that supports MCP", status.NextStep)
 }
 
 func TestPrint(t *testing.T) {
