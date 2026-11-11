@@ -152,7 +152,7 @@ func TestRetryRateLimitsAloneRetriesOnlyRateLimits(t *testing.T) {
 
 func TestRetryRateLimitsRetriesEachSplitRequestAlone(t *testing.T) {
 	var inputs atomic.Int32
-	var rateLimited atomic.Bool
+	var rateLimited, unavailable atomic.Bool
 	client := timeoutClient(t, func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Input []string `json:"input"`
@@ -169,6 +169,10 @@ func TestRetryRateLimitsRetriesEachSplitRequestAlone(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
+		if len(body.Input) == 2 && body.Input[0] == "item0" && unavailable.CompareAndSwap(false, true) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		data := make([]map[string]any, len(body.Input))
 		for i := range body.Input {
 			data[i] = map[string]any{"index": i, "embedding": []float32{1, 1}}
@@ -177,5 +181,6 @@ func TestRetryRateLimitsRetriesEachSplitRequestAlone(t *testing.T) {
 	}, embedclient.Retry{MaxAttempts: 2, InitialBackoff: time.Millisecond, RetryRateLimits: true})
 	_, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"item0", "item1", "item2", "item3"})
 	require.NoError(t, err)
-	assert.Equal(t, int32(4+2+2+2), inputs.Load(), "a 429 inside a split resends that half, not the whole batch")
+	assert.Equal(t, int32(4+2+2+2+2), inputs.Load(),
+		"a 429 or 503 inside a split resends that half alone and the parent timeout spends no budget")
 }
