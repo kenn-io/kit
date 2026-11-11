@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -661,7 +662,7 @@ func TestTransientCodexError(t *testing.T) {
 		{"EOF", io.EOF, true},
 		{"truncated", io.ErrUnexpectedEOF, true},
 		{"pipe read", &os.PathError{Op: "read", Err: os.ErrClosed}, true},
-		{"pipe write", &os.PathError{Op: "write", Err: os.ErrClosed}, true},
+		{"pipe write", &os.PathError{Op: "write", Err: syscall.EPIPE}, true},
 		{"permission", &os.PathError{Op: "read", Err: os.ErrPermission}, false},
 		{"canceled", context.Canceled, false},
 	} {
