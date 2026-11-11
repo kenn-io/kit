@@ -125,7 +125,11 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		status, err := e.item.Check(ctx)
 		status.NextStep = nextStep(e, opts, status)
 		if installErrors[i] != nil {
-			status.State, status.Reason, status.NextStep = StateFailed, installErrors[i].Error(), opts.repairCommand()
+			installReason := installErrors[i].Error()
+			if err != nil || status.NextStep == "" || status.Reason == "" || !strings.Contains(installReason, status.Reason) {
+				status.NextStep = opts.repairCommand()
+			}
+			status.State, status.Reason = StateFailed, installReason
 		} else if err != nil {
 			status.State, status.Reason = StateFailed, err.Error()
 			if status.NextStep == "" {

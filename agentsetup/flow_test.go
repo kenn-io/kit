@@ -138,7 +138,7 @@ func TestItemRepairGuidance(t *testing.T) {
 	}})
 	require.NoError(t, err)
 	require.Equal(t, StateFailed, report.Rows[0].State)
-	require.Equal(t, "app setup --agent muse", report.Rows[0].NextStep)
+	require.Equal(t, "Choose an agent that supports MCP", report.Rows[0].NextStep)
 }
 
 func TestFailedInstallOverridesUntrustedCheck(t *testing.T) {
