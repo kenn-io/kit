@@ -150,6 +150,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"retry truncated reply", "first-truncated", "trusted", "", CheckOK, "", 2},
 		{"last failure step", "different-failures", "", "", CheckUnknown, "EOF", 2},
 		{"retry discovery", "first-discovery-eof", "trusted", "", CheckOK, "", 2},
+		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, "", 2},
 		{"exhausted config", "config-eof", "", "", CheckUnknown, "EOF", 2},
 		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure", 1},
 		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", 1},
@@ -304,6 +305,9 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				launches, err := os.ReadFile(record)
 				require.NoError(t, err)
 				assert.Len(t, launches, tc.launches)
+			}
+			if tc.mode == "first-rpc-timeout" {
+				assert.Less(t, time.Since(started), 21*time.Second)
 			}
 			if tc.mode == "config-eof" || tc.mode == "different-failures" || tc.mode == "config-no-result" {
 				assert.Contains(t, result.NextStep, "Codex config")
