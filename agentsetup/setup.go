@@ -1,6 +1,7 @@
 package agentsetup
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -66,9 +67,6 @@ func defaultAgents() ([]string, error) {
 }
 
 func resolve(ctx context.Context, opts Options) ([]selection, error) {
-	if opts.Items == nil {
-		return nil, errors.New("setup items are required")
-	}
 	names := opts.Agents
 	if len(names) == 0 {
 		var err error
@@ -116,12 +114,6 @@ func nextStep(item Item, s selection, opts Options, status Status) string {
 	return status.NextStep
 }
 
-func checkItem(ctx context.Context, item Item, s selection, opts Options) (Status, error) {
-	status, err := item.Check(ctx)
-	status.NextStep = nextStep(item, s, opts, status)
-	return status, err
-}
-
 // Run installs each item once in order, then checks final readiness.
 func Run(ctx context.Context, opts Options) (Report, error) {
 	if strings.TrimSpace(opts.SetupCommand) == "" {
@@ -131,24 +123,14 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	for _, s := range selected {
-		for _, item := range s.items {
-			if item.Check == nil {
-				return Report{}, fmt.Errorf("%s: item %q has no check", s.name, item.Name)
-			}
-		}
-	}
 	installErrors := make([][]error, len(selected))
 	for i, s := range selected {
 		installErrors[i] = make([]error, len(s.items))
-		if opts.CheckOnly {
-			continue
-		}
 		for j, item := range s.items {
 			if err := ctx.Err(); err != nil {
 				return Report{}, err
 			}
-			if item.Install != nil {
+			if item.Install != nil && !opts.CheckOnly {
 				installErrors[i][j] = item.Install(ctx)
 			}
 		}
@@ -159,15 +141,13 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 			if err := ctx.Err(); err != nil {
 				return Report{}, err
 			}
-			status, err := checkItem(ctx, item, s, opts)
+			status, err := item.Check(ctx)
+			status.NextStep = nextStep(item, s, opts, status)
 			if installErrors[i][j] != nil {
 				err = installErrors[i][j]
 			}
 			if err != nil {
-				status.State, status.Reason = StateFailed, err.Error()
-			}
-			if status.State != StateOK && status.NextStep == "" {
-				status.NextStep = opts.repairCommand()
+				status.State, status.Reason, status.NextStep = StateFailed, err.Error(), cmp.Or(status.NextStep, opts.repairCommand())
 			}
 			report.Rows = append(report.Rows, Row{Agent: string(s.agent), AgentName: s.name, Piece: item.Name, Status: status})
 		}

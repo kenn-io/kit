@@ -51,15 +51,6 @@ func MCP(agent, name string, server agentmcp.Server) Item {
 
 // Print writes manual MCP commands without installing or checking items.
 func Print(w io.Writer, opts Options) error {
-	var output bytes.Buffer
-	if err := printCommands(&output, opts); err != nil {
-		return err
-	}
-	_, err := output.WriteTo(w)
-	return err
-}
-
-func printCommands(w io.Writer, opts Options) error {
 	if len(opts.Agents) == 0 {
 		opts.Agents = []string{"claude", "codex"}
 	}
@@ -67,7 +58,7 @@ func printCommands(w io.Writer, opts Options) error {
 	if err != nil {
 		return err
 	}
-	printed := false
+	var output bytes.Buffer
 	for _, s := range selected {
 		for _, item := range s.items {
 			if item.Commands == nil {
@@ -81,14 +72,12 @@ func printCommands(w io.Writer, opts Options) error {
 			if runtime.GOOS == "windows" {
 				command = commands.PowerShell
 			}
-			if _, err := fmt.Fprintln(w, command); err != nil {
-				return err
-			}
-			printed = true
+			output.WriteString(command + "\n")
 		}
 	}
-	if !printed {
+	if output.Len() == 0 {
 		return errors.New("no manual MCP commands available")
 	}
-	return nil
+	_, err = output.WriteTo(w)
+	return err
 }

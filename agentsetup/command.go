@@ -31,11 +31,7 @@ func NewCommand(setup Options) *cobra.Command {
 				_, err = cmd.OutOrStdout().Write(append(data, '\n'))
 			}
 		} else {
-			checkCommand := setup.repairCommand()
-			if checkCommand != "" {
-				checkCommand += " --check"
-			}
-			err = report.WriteText(cmd.OutOrStdout(), checkCommand)
+			err = report.WriteText(cmd.OutOrStdout(), setup.repairCommand()+" --check")
 		}
 		if err != nil {
 			return err
@@ -51,7 +47,5 @@ func NewCommand(setup Options) *cobra.Command {
 	cmd.Flags().BoolVar(&setup.CheckOnly, "check", setup.CheckOnly, "check without installing")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output JSON")
 	cmd.Flags().BoolVar(&printOnly, "print", false, "print manual MCP commands")
-	cmd.MarkFlagsMutuallyExclusive("print", "check")
-	cmd.MarkFlagsMutuallyExclusive("print", "json")
 	return cmd
 }

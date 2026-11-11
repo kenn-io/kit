@@ -70,6 +70,10 @@ func runHelper() int {
 			if testserver.CheckMCPList(request, "example") != nil {
 				return 7
 			}
+			if os.Getenv("SETUP_ZERO_TOOLS") != "" {
+				_ = testserver.Reply(os.Stdout, request, `{"data":[{"name":"example","tools":{},"toolsError":null}]}`)
+				continue
+			}
 			data, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"name": "example", "tools": map[string]any{"search": map[string]any{}}, "toolsError": nil}}})
 			_ = testserver.Reply(os.Stdout, request, string(data))
 		default:
