@@ -43,6 +43,12 @@ func TestSecretOwnerModePolicy(t *testing.T) {
 			}
 		})
 	}
+	path := filepath.Join(privateTempDir(t), "token")
+	require.NoError(t, os.WriteFile(path, []byte("secret"), 0o600))
+	require.NoError(t, os.Chmod(path, 0o666))
+	file, err := OpenSecretFile(path)
+	require.Error(t, err)
+	assert.Nil(t, file)
 }
 
 func TestOpenSecretFileTraversesExecutableOnlyParentProperty(t *testing.T) {
@@ -89,4 +95,28 @@ func TestOpenSecretFilePreservesTraversedComponents(t *testing.T) {
 	file, err := OpenSecretFile(path)
 	require.ErrorIs(t, err, ErrWritableParent)
 	assert.Nil(t, file)
+
+	target := filepath.Join(root, "target")
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "inner"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "token"), []byte("target"), 0o600))
+	require.NoError(t, os.Symlink("target/inner", filepath.Join(root, "link")))
+	for _, tc := range []struct {
+		suffix string
+		ok     bool
+	}{
+		{"link/../token", true}, {"target//./token", true},
+		{"target/inner/../token", true}, {"target/token/", false},
+		{"missing/../target/token", false},
+	} {
+		opened, err := OpenSecretFile(root + "/" + tc.suffix)
+		if tc.ok {
+			require.NoError(t, err, tc.suffix)
+			got, err := io.ReadAll(opened)
+			require.NoError(t, err)
+			assert.Equal(t, "target", string(got))
+			require.NoError(t, opened.Close())
+		} else {
+			require.Error(t, err, tc.suffix)
+		}
+	}
 }

@@ -14,13 +14,37 @@ import (
 	"go.kenn.io/kit/secretref"
 )
 
-func TestRefFilePermissionPolicy(t *testing.T) {
-	dir := privateTempDir(t)
-	shared := filepath.Join(dir, "shared.key")
-	require.NoError(t, os.WriteFile(shared, []byte("secret"), 0o600))
-	require.NoError(t, os.Chmod(shared, 0o666))
-	_, err := (secretref.Ref{File: shared}).Resolve()
-	require.ErrorContains(t, err, "file must be a regular file with trusted ownership")
+func TestRefFileOpenReasons(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		mode                    os.FileMode
+		missing, writableParent bool
+		reason                  string
+	}{
+		{"bad mode", 0o666, false, false, "file must be a regular file with trusted ownership, trusted permissions and parents"},
+		{"writable parent", 0o600, false, true, "parent directory is writable by group or others"},
+		{"unreadable", 0, false, false, "file is unreadable"},
+		{"missing", 0, true, false, "file is missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "unreadable" && os.Geteuid() == 0 {
+				t.Skip("root can read the file")
+			}
+			dir := privateTempDir(t)
+			path := filepath.Join(dir, "token")
+			if !tc.missing {
+				writePrivateFile(t, path, "secret")
+				require.NoError(t, os.Chmod(path, tc.mode))
+			}
+			if tc.writableParent {
+				require.NoError(t, os.Chmod(dir, 0o775))
+			}
+			_, err := (secretref.Ref{File: path}).Resolve()
+			var source *secretref.SourceError
+			require.ErrorAs(t, err, &source)
+			require.Equal(t, tc.reason, source.Reason)
+		})
+	}
 }
 
 func TestRefFileRefusesAFIFOWithoutBlocking(t *testing.T) {
@@ -44,17 +68,4 @@ func TestRefFileRefusesAFIFOWithoutBlocking(t *testing.T) {
 		<-done
 		require.FailNow(t, "resolving a FIFO key file must not block")
 	}
-}
-
-func TestUnreadableFileReportsAccessFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root can read the file")
-	}
-	path := filepath.Join(privateTempDir(t), "token")
-	writePrivateFile(t, path, "secret")
-	require.NoError(t, os.Chmod(path, 0))
-	_, err := (secretref.Ref{File: path}).Resolve()
-	var sourceErr *secretref.SourceError
-	require.ErrorAs(t, err, &sourceErr)
-	require.Equal(t, "file is unreadable", sourceErr.Reason)
 }

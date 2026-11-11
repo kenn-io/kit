@@ -28,34 +28,37 @@ func TestSecretFormatting(t *testing.T) {
 }
 
 func TestSecretJSON(t *testing.T) {
-	secret := secretref.Secret{Value: "sample-token", Source: "inline"}
-	data, err := json.Marshal(secret)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"source":"inline","value":"[redacted]"}`, string(data))
-	pointer, err := json.Marshal(&secret)
-	require.NoError(t, err)
-	assert.JSONEq(t, string(data), string(pointer))
-	nested, err := json.Marshal([]secretref.Secret{secret})
-	require.NoError(t, err)
-	assert.JSONEq(t, "["+string(data)+"]", string(nested))
+	for _, tc := range []struct {
+		secret secretref.Secret
+		want   string
+	}{
+		{secretref.Secret{Value: "sample-token", Source: "inline"}, `{"source":"inline","value":"[redacted]"}`},
+		{secretref.Secret{Source: "inline", Reason: "inline value is empty"}, `{"source":"inline","value":"[redacted]","reason":"inline value is empty"}`},
+	} {
+		data, err := json.Marshal(tc.secret)
+		require.NoError(t, err)
+		assert.JSONEq(t, tc.want, string(data))
+		pointer, err := json.Marshal(&tc.secret)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(data), string(pointer))
+		nested, err := json.Marshal([]secretref.Secret{tc.secret})
+		require.NoError(t, err)
+		assert.JSONEq(t, "["+string(data)+"]", string(nested))
+	}
 }
 
 func TestSecretSlog(t *testing.T) {
-	secret := secretref.Secret{Value: "sample-token", Source: "inline"}
-	var output bytes.Buffer
-	slog.New(slog.NewJSONHandler(&output, nil)).Info("resolved", "secret", secret)
-	var entry struct{ Secret map[string]string }
-	require.NoError(t, json.Unmarshal(output.Bytes(), &entry))
-	assert.Equal(t, map[string]string{"source": "inline", "value": "[redacted]"}, entry.Secret)
-}
-
-func TestBlankLiteralDiagnosticSurvivesRedaction(t *testing.T) {
-	secret, err := secretref.Literal(" ").Resolve()
-	require.NoError(t, err)
-	data, err := json.Marshal(secret)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"source":"inline","value":"[redacted]","reason":"inline value is empty"}`, string(data))
-	var output bytes.Buffer
-	slog.New(slog.NewJSONHandler(&output, nil)).Info("resolved", "secret", secret)
-	assert.Contains(t, output.String(), `"reason":"inline value is empty"`)
+	for _, secret := range []secretref.Secret{
+		{Value: "sample-token", Source: "inline"},
+		{Source: "inline", Reason: "inline value is empty"},
+	} {
+		var output bytes.Buffer
+		slog.New(slog.NewTextHandler(&output, nil)).Info("resolved", "secret", secret)
+		assert.Contains(t, output.String(), "secret.source=inline")
+		assert.Contains(t, output.String(), "secret.value=[redacted]")
+		assert.NotContains(t, output.String(), "sample-token")
+		if secret.Reason != "" {
+			assert.Contains(t, output.String(), `secret.reason="inline value is empty"`)
+		}
+	}
 }

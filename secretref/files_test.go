@@ -29,10 +29,7 @@ func TestFileBytesAndBoundaries(t *testing.T) {
 				require.Error(t, err)
 				var source *secretref.SourceError
 				require.ErrorAs(t, err, &source)
-				assert.NotContains(t, source.Reason, path)
-				if tc.wantReason != "" {
-					assert.Equal(t, tc.wantReason, source.Reason)
-				}
+				assert.Equal(t, tc.wantReason, source.Reason)
 			} else {
 				require.NoError(t, err)
 				assert.Equal(t, tc.want, got.Value)

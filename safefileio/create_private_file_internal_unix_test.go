@@ -64,6 +64,7 @@ func TestRequireUnsharedParent(t *testing.T) {
 		mode       fs.FileMode
 		createdUID int
 		wantErr    string
+		parent     *ownedInfo
 	}{
 		{name: "private", mode: 0o700, createdUID: os.Getuid()},
 		{name: "group readable", mode: 0o750, createdUID: os.Getuid()},
@@ -72,41 +73,29 @@ func TestRequireUnsharedParent(t *testing.T) {
 		{name: "sticky shared with foreign file", mode: 0o777 | fs.ModeSticky, createdUID: os.Getuid() + 1, wantErr: "created file has an untrusted owner"},
 		{name: "group writable", mode: 0o770, createdUID: os.Getuid(), wantErr: "other users can rename entries"},
 		{name: "world writable", mode: 0o777, createdUID: os.Getuid(), wantErr: "other users can rename entries"},
+		{name: "foreign parent", parent: &ownedInfo{uid: 2, mode: os.ModeDir | 0o700}, wantErr: "owned by another user"},
+		{name: "private root", parent: &ownedInfo{uid: 0, mode: os.ModeDir | 0o755}},
+		{name: "not a directory", parent: &ownedInfo{uid: 1, mode: 0o700}, wantErr: "is not a directory"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require := require.New(t)
-			dir := t.TempDir()
-			require.NoError(os.Chmod(dir, tt.mode))
-			dirInfo, err := os.Stat(dir)
-			require.NoError(err)
-			created := ownedInfo{uid: uint32(tt.createdUID)}
-
-			err = requireUnsharedParent(dirInfo, created)
+			var err error
+			if tt.parent != nil {
+				err = requireUnsharedParentForUID(*tt.parent, ownedInfo{uid: 1}, 1)
+			} else {
+				dir := t.TempDir()
+				require.NoError(os.Chmod(dir, tt.mode))
+				dirInfo, statErr := os.Stat(dir)
+				require.NoError(statErr)
+				err = requireUnsharedParent(dirInfo, ownedInfo{uid: uint32(tt.createdUID)})
+			}
 
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 				return
 			}
 			assert.ErrorContains(t, err, tt.wantErr)
-		})
-	}
-	for _, tc := range []struct {
-		name    string
-		parent  ownedInfo
-		allowed bool
-	}{
-		{"foreign parent", ownedInfo{uid: 2, mode: os.ModeDir | 0o700}, false},
-		{"private root", ownedInfo{uid: 0, mode: os.ModeDir | 0o755}, true},
-		{"not a directory", ownedInfo{uid: 1, mode: 0o700}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := requireUnsharedParentForUID(tc.parent, ownedInfo{uid: 1}, 1)
-			if tc.allowed {
-				require.NoError(t, err)
-			} else {
-				require.Error(t, err)
-			}
 		})
 	}
 }
