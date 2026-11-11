@@ -3,6 +3,7 @@ package codexapp
 import (
 	"bufio"
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -187,6 +189,34 @@ func TestClientCancellationAndEOF(t *testing.T) {
 				require.NoError(t, err)
 				require.Error(t, process.Signal(syscall.Signal(0)), "the exact child must be reaped before returning")
 				_ = process.Release()
+			}
+		})
+	}
+}
+
+func TestClientCallResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, frame        string
+		discard, wantError bool
+	}{
+		{"missing result", `{"id":1}`, false, true},
+		{"missing discarded result", `{"id":1}`, true, true},
+		{"null result", `{"id":1,"result":null}`, false, false},
+		{"discarded null result", `{"id":1,"result":null}`, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := Client{ctx: t.Context(), input: io.Discard, output: jsontext.NewDecoder(strings.NewReader(tc.frame))}
+			var result any
+			var destination any = &result
+			if tc.discard {
+				destination = nil
+			}
+			err := client.Call("example/read", nil, destination)
+			if tc.wantError {
+				require.ErrorContains(t, err, "codex example/read: missing result")
+			} else {
+				require.NoError(t, err)
+				assert.Nil(t, result)
 			}
 		})
 	}

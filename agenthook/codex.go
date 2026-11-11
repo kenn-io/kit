@@ -44,6 +44,8 @@ func codexProfile() profileSpec {
 
 // checkCodex reads native discovery and consent state. It never writes trust.
 func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (CheckState, string, string) {
+	const retryPause = 500 * time.Millisecond
+	const addedWaitBudget = 10 * time.Second
 	var state CheckState
 	var reason, step string
 	attempt := 0
@@ -57,7 +59,7 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		cancel := func() {}
 		if attempt == 2 {
 			// The pause and second attempt together add at most ten seconds.
-			attemptCtx, cancel = context.WithTimeout(ctx, 9500*time.Millisecond)
+			attemptCtx, cancel = context.WithTimeout(ctx, addedWaitBudget-retryPause)
 		}
 		defer cancel()
 		var err error
@@ -69,7 +71,7 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 			return struct{}{}, backoff.Permanent(err)
 		}
 		return struct{}{}, err
-	}, backoff.WithBackOff(backoff.NewConstantBackOff(500*time.Millisecond)), backoff.WithMaxTries(2), backoff.WithMaxElapsedTime(0))
+	}, backoff.WithBackOff(backoff.NewConstantBackOff(retryPause)), backoff.WithMaxTries(2), backoff.WithMaxElapsedTime(0))
 	if err := ctx.Err(); retryErr != nil && err != nil {
 		state, reason, step = codexFailure(err, step)
 	}

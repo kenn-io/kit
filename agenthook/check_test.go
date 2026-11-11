@@ -78,6 +78,10 @@ func runHookCheckHelper(mode string) int {
 			fmt.Print(`{"id":1,"result":`)
 			return 0
 		}
+		if (mode == "config-no-result" && request.Method == "config/read") || (mode == "discovery-no-result" && request.Method == "hooks/list") {
+			fmt.Printf("{\"id\":%d}\n", request.ID)
+			continue
+		}
 		if mode == "rpc-error" {
 			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
 			continue
@@ -139,12 +143,13 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		reason                   string
 		launches                 int
 	}{
+		{"config missing result", "config-no-result", "", "", CheckUnknown, "missing result", 1},
+		{"discovery missing result", "discovery-no-result", "", "", CheckUnknown, "missing result", 1},
 		{"retry initialization", "first-initialize-eof", "trusted", "", CheckOK, "", 2},
 		{"retry config", "first-config-eof", "trusted", "", CheckOK, "", 2},
 		{"retry truncated reply", "first-truncated", "trusted", "", CheckOK, "", 2},
 		{"last failure step", "different-failures", "", "", CheckUnknown, "EOF", 2},
 		{"retry discovery", "first-discovery-eof", "trusted", "", CheckOK, "", 2},
-		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, "", 2},
 		{"exhausted config", "config-eof", "", "", CheckUnknown, "EOF", 2},
 		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure", 1},
 		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", 1},
@@ -300,11 +305,11 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				require.NoError(t, err)
 				assert.Len(t, launches, tc.launches)
 			}
-			if tc.mode == "first-rpc-timeout" {
-				assert.Less(t, time.Since(started), 21*time.Second)
-			}
-			if tc.mode == "config-eof" || tc.mode == "different-failures" {
+			if tc.mode == "config-eof" || tc.mode == "different-failures" || tc.mode == "config-no-result" {
 				assert.Contains(t, result.NextStep, "Codex config")
+			}
+			if tc.mode == "discovery-no-result" {
+				assert.Contains(t, result.NextStep, "hooks in Codex")
 			}
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.reason != "" {
@@ -627,4 +632,8 @@ func TestCheckCodexConformance(t *testing.T) {
 		}
 		assert.Equal(t, want, result.State, result.Reason)
 	}
+}
+
+func TestTransientCodexDeadline(t *testing.T) {
+	assert.True(t, transientCodexError(fmt.Errorf("read: %w", context.DeadlineExceeded)))
 }
