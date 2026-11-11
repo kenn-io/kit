@@ -25,6 +25,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"go.kenn.io/kit/internal/contextio"
@@ -203,7 +204,7 @@ func resolveFile(ctx context.Context, configured string) (Secret, error) {
 		// preceding components, and changes the meaning after a symlink.
 		path = home + strings.TrimPrefix(configured, "~")
 	}
-	if !filepath.IsAbs(path) {
+	if runtime.GOOS != "windows" && !filepath.IsAbs(path) {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return unavailable("file working directory is unavailable")
