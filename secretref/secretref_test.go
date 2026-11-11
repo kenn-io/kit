@@ -126,6 +126,7 @@ func TestRefResolve(t *testing.T) {
 		{name: "blank literal", ref: secretref.Literal(" "), want: secretref.Secret{Source: "inline", Reason: "inline value is empty"}},
 		{name: "env", ref: secretref.Ref{Env: "KIT_TEST_SECRET"}, want: secretref.Secret{Value: "from-env", Source: "env:KIT_TEST_SECRET"}},
 		{name: "empty env", ref: secretref.Ref{Env: "KIT_TEST_EMPTY"}, wantErr: "secretref: env:KIT_TEST_EMPTY: secret is unset or empty"},
+		{name: "blank file selector", ref: secretref.Ref{File: "  "}, wantErr: "file selector is empty"},
 		{name: "file", ref: secretref.Ref{File: keyFile}, want: secretref.Secret{Value: "from-file", Source: "file:" + keyFile}},
 		{name: "missing file", ref: secretref.Ref{File: absent}, wantErr: "file is missing"},
 	}

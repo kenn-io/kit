@@ -183,6 +183,9 @@ func resolveFile(configured string) (Secret, error) {
 	unavailable := func(reason string) (Secret, error) {
 		return Secret{}, &SourceError{Source: "file:" + configured, Reason: reason}
 	}
+	if configured == "" {
+		return unavailable("file selector is empty")
+	}
 	path := configured
 	if configured == "~" || strings.HasPrefix(configured, "~/") {
 		home, err := os.UserHomeDir()

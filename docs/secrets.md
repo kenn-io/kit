@@ -141,8 +141,9 @@ lookup in `Ref` strings.
 `Secret` exposes `Value`, `Source`, and `Reason`. Formatting a `Secret` directly
 with `%s`, `%q`, `%v`, `%+v`, or `%#v`, JSON marshaling, and `slog` redact the
 resolved value. Formatting a struct with an unexported `Secret` field can expose
-it because `fmt` cannot call the field's methods. Access `Value` explicitly only
-at the consumer boundary; logging that string directly will expose it. `Ref` is
+it because `fmt` cannot call the field's methods. Reflective encoders such as
+TOML and YAML can also expose `Value`. Access `Value` explicitly only at the
+consumer boundary; logging that string directly will expose it. `Ref` is
 serializable configuration and can contain a literal secret, so do not log the
 configuration itself.
 
