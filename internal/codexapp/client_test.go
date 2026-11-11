@@ -90,13 +90,9 @@ func runClientHelper(mode string) int {
 		fmt.Println(`{"id":2,"result":{"ready":true}}`)
 	}
 	if mode == "block" || mode == "block-close" {
-		if err := os.WriteFile(os.Getenv("KIT_CODEXAPP_TEST_EXIT"), []byte("blocked"), 0o600); err != nil {
+		if err := testserver.WaitForInterrupt(os.Getenv("KIT_CODEXAPP_TEST_EXIT")); err != nil {
 			return 10
 		}
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, os.Interrupt)
-		<-signals
-		signal.Stop(signals)
 	}
 	if file := os.Getenv("KIT_CODEXAPP_TEST_EXIT"); file != "" {
 		_ = os.WriteFile(file, []byte("EOF"), 0o600)

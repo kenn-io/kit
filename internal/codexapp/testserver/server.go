@@ -8,12 +8,25 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// WaitForInterrupt signals that a helper is blocked until it is interrupted.
+func WaitForInterrupt(marker string) error {
+	if err := os.WriteFile(marker, []byte("blocked"), 0o600); err != nil {
+		return err
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	<-signals
+	signal.Stop(signals)
+	return nil
+}
 
 // InstallExecutable copies the current test process onto PATH under name and
 // returns its original path. TestMain owns the copied process's behavior.

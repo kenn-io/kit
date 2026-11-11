@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -85,14 +84,12 @@ func runHookCheckHelper(mode string) int {
 		}
 		if mode == "cancel-eof" {
 			_ = os.Stdout.Close()
-			waitHookCleanup(input)
-			return 0
+			return waitHookCleanup(input)
 		}
 		if mode == "rpc-error" || mode == "error-cleanup" {
 			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
 			if mode == "error-cleanup" {
-				waitHookCleanup(input)
-				return 0
+				return waitHookCleanup(input)
 			}
 			continue
 		}
@@ -134,8 +131,7 @@ func runHookCheckHelper(mode string) int {
 			}
 			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, response)
 			if mode == "success-cleanup" {
-				waitHookCleanup(input)
-				return 0
+				return waitHookCleanup(input)
 			}
 		default:
 			return 13
@@ -145,13 +141,12 @@ func runHookCheckHelper(mode string) int {
 	return 0
 }
 
-func waitHookCleanup(input *bufio.Scanner) {
+func waitHookCleanup(input *bufio.Scanner) int {
 	input.Scan()
-	_ = os.WriteFile(os.Getenv("KIT_HOOK_CHECK_EVENT"), []byte("ready"), 0o600)
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt)
-	<-signals
-	signal.Stop(signals)
+	if err := testserver.WaitForInterrupt(os.Getenv("KIT_HOOK_CHECK_EVENT")); err != nil {
+		return 10
+	}
+	return 0
 }
 
 func TestCheckCodexNativeStates(t *testing.T) {
