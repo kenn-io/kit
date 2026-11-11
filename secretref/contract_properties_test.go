@@ -17,7 +17,7 @@ func TestLiteralAndTextKeepAllBytesProperty(t *testing.T) {
 		value := string(rapid.SliceOf(rapid.Byte()).Draw(ht, "bytes"))
 		ref := secretref.Ref{Env: "OLD", File: "/old"}
 		require.NoError(ht, ref.UnmarshalText([]byte(value)))
-		assert.Equal(ht, secretref.Literal(value), ref)
+		assert.Equal(ht, secretref.Ref{Value: value}, ref)
 	})
 }
 
