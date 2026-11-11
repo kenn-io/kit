@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -34,10 +33,7 @@ func runClientHelper(mode string) int {
 	if mode == "hold-pipes" {
 		// Only the test's cleanup releases stdout, so a blocked read cannot
 		// accidentally finish because this descendant's timer expired.
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, os.Interrupt)
-		<-signals
-		signal.Stop(signals)
+		testserver.WaitForSignal()
 		return 0
 	}
 	if file := os.Getenv("KIT_CODEXAPP_TEST_PID"); file != "" {
