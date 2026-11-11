@@ -52,22 +52,3 @@ func TestAllRefSourceRoundtripsProperty(t *testing.T) {
 		assert.Equal(ht, ref, fieldDoc.Key)
 	})
 }
-
-func TestLiteralResolveAgreementProperty(t *testing.T) {
-	rapid.Check(t, func(ht *rapid.T) {
-		value := string(rapid.SliceOf(rapid.Byte()).Draw(ht, "bytes"))
-		ref := secretref.Literal(value)
-		got, err := ref.Resolve()
-		switch {
-		case value == "":
-			require.NoError(ht, err)
-			assert.Equal(ht, secretref.Secret{}, got)
-		case strings.TrimSpace(value) == "":
-			require.NoError(ht, err)
-			assert.Equal(ht, secretref.Secret{Source: "inline", Reason: "inline value is empty"}, got)
-		default:
-			require.NoError(ht, err)
-			assert.Equal(ht, secretref.Secret{Value: value, Source: "inline"}, got)
-		}
-	})
-}

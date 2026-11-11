@@ -91,6 +91,24 @@ func TestRequireUnsharedParent(t *testing.T) {
 			assert.ErrorContains(t, err, tt.wantErr)
 		})
 	}
+	for _, tc := range []struct {
+		name    string
+		parent  ownedInfo
+		allowed bool
+	}{
+		{"foreign parent", ownedInfo{uid: 2, mode: os.ModeDir | 0o700}, false},
+		{"private root", ownedInfo{uid: 0, mode: os.ModeDir | 0o755}, true},
+		{"not a directory", ownedInfo{uid: 1, mode: 0o700}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireUnsharedParentForUID(tc.parent, ownedInfo{uid: 1}, 1)
+			if tc.allowed {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
 }
 
 // ownedInfo supplies file metadata for owners a test process cannot create files as.

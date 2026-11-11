@@ -49,6 +49,15 @@ func TestRefDecodesEveryFormFromTOMLAndJSON(t *testing.T) {
 			assert.Equal(t, test.want, again.Key, "encoded as %s", encoded)
 		})
 	}
+	for _, tc := range []struct{ input, want string }{
+		{`{"VALUE":"t"}`, "t"},
+		{`{"value":"t","env":null}`, "t"},
+		{`"t\u0000"`, "t\x00"},
+	} {
+		var ref secretref.Ref
+		require.NoError(t, json.Unmarshal([]byte(tc.input), &ref))
+		assert.Equal(t, secretref.Literal(tc.want), ref)
+	}
 }
 
 func TestRefRejectsAmbiguousOrUnknownSources(t *testing.T) {
@@ -87,6 +96,10 @@ func TestRefResolve(t *testing.T) {
 	emptyFile := filepath.Join(dir, "empty.key")
 	writePrivateFile(t, emptyFile, "\n")
 	absent := filepath.Join(dir, "absent.key")
+	t.Chdir(dir)
+	var relative document
+	_, err := toml.Decode(`key = {file = "app.key"}`, &relative)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name    string
@@ -95,13 +108,16 @@ func TestRefResolve(t *testing.T) {
 		wantErr string
 	}{
 		{name: "unset", ref: secretref.Ref{}, want: secretref.Secret{}},
+		{name: "literal NUL", ref: secretref.Literal("t\x00"), want: secretref.Secret{Value: "t\x00", Source: "inline"}},
+		{name: "relative file", ref: relative.Key, want: secretref.Secret{Value: "from-file", Source: "file:app.key"}},
+		{name: "padded file", ref: secretref.Ref{File: " " + keyFile + " "}, want: secretref.Secret{Value: "from-file", Source: "file:" + keyFile}},
 		{name: "literal", ref: secretref.Literal("sk-inline"), want: secretref.Secret{Value: "sk-inline", Source: "inline"}},
 		{name: "literal is not expanded", ref: secretref.Literal("${KIT_TEST_SECRET}"), want: secretref.Secret{
 			Value: "${KIT_TEST_SECRET}", Source: "inline",
 		}},
 		{name: "blank literal", ref: secretref.Literal(" "), want: secretref.Secret{Source: "inline", Reason: "inline value is empty"}},
 		{name: "env", ref: secretref.Ref{Env: "KIT_TEST_SECRET"}, want: secretref.Secret{Value: "from-env", Source: "env:KIT_TEST_SECRET"}},
-		{name: "empty env", ref: secretref.Ref{Env: "KIT_TEST_EMPTY"}, wantErr: "KIT_TEST_EMPTY"},
+		{name: "empty env", ref: secretref.Ref{Env: "KIT_TEST_EMPTY"}, wantErr: "secretref: env:KIT_TEST_EMPTY: secret is unset or empty"},
 		{name: "file", ref: secretref.Ref{File: keyFile}, want: secretref.Secret{Value: "from-file", Source: "file:" + keyFile}},
 		{name: "missing file", ref: secretref.Ref{File: absent}, wantErr: "file is missing"},
 		{name: "empty file", ref: secretref.Ref{File: emptyFile}, wantErr: "file is empty"},

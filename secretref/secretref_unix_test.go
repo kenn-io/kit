@@ -18,14 +18,7 @@ func TestRefFilePermissionPolicy(t *testing.T) {
 	dir := privateTempDir(t)
 	shared := filepath.Join(dir, "shared.key")
 	require.NoError(t, os.WriteFile(shared, []byte("secret"), 0o600))
-	require.NoError(t, os.Chmod(shared, 0o644))
-	if os.Geteuid() == 0 {
-		// Root-owned files may be readable by others if they are not writable.
-		got, err := (secretref.Ref{File: shared}).Resolve()
-		require.NoError(t, err)
-		require.Equal(t, "secret", got.Value)
-		return
-	}
+	require.NoError(t, os.Chmod(shared, 0o666))
 	_, err := (secretref.Ref{File: shared}).Resolve()
 	require.ErrorContains(t, err, "file must be a regular file with trusted ownership")
 }

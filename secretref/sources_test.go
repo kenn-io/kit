@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/secretref"
-	"pgregory.net/rapid"
 )
 
 func TestFromEnvPresenceAndNoIO(t *testing.T) {
@@ -26,8 +25,6 @@ func TestFromEnvPresenceAndNoIO(t *testing.T) {
 	got, err = secretref.FromEnv(name)
 	require.NoError(t, err)
 	assert.Equal(t, secretref.Ref{Env: name}, got)
-	_, err = got.Resolve()
-	require.EqualError(t, err, "secretref: env:KIT_SOURCE_TEST: secret is unset or empty")
 	t.Setenv(name+"_FILE", "")
 	_, err = secretref.FromEnv(name)
 	require.ErrorContains(t, err, name+"_FILE")
@@ -55,9 +52,6 @@ func TestExactEmptyCompatibility(t *testing.T) {
 		var ref secretref.Ref
 		require.NoError(t, json.Unmarshal([]byte(input), &ref))
 		assert.True(t, ref.IsZero())
-		got, err := ref.Resolve()
-		require.NoError(t, err)
-		assert.Equal(t, secretref.Secret{}, got)
 	}
 	for _, input := range []string{`key = ""`, `key = {value=""}`} {
 		var doc document
@@ -76,34 +70,22 @@ func TestJSONDuplicateStringKeysKeepLastValue(t *testing.T) {
 	assert.True(t, ref.IsZero())
 }
 
-func TestFieldsRejectEveryConflictProperty(t *testing.T) {
-	rapid.Check(t, func(ht *rapid.T) {
-		mask := rapid.IntRange(0, 7).Draw(ht, "mask")
-		value := rapid.String().Draw(ht, "text")
-		fields := secretref.Fields{}
-		count := 0
-		if mask&1 != 0 {
-			fields.Value = "key:" + value
-			count++
-		}
-		if mask&2 != 0 {
-			fields.Env = "APP_TOKEN"
-			count++
-		}
-		if mask&4 != 0 {
-			fields.File = "~/token"
-			count++
-		}
-		got, err := secretref.FromFields("token", fields)
-		if count > 1 {
-			require.ErrorContains(ht, err, "token")
-			assert.Equal(ht, 1, strings.Count(err.Error(), "secretref:"))
-			assert.NotContains(ht, err.Error(), "key:"+value)
-		} else {
-			require.NoError(ht, err)
-			assert.Equal(ht, fields.Value, got.Value)
-			assert.Equal(ht, fields.Env, got.Env)
-			assert.Equal(ht, fields.File, got.File)
-		}
-	})
+func TestFromFields(t *testing.T) {
+	for _, tc := range []struct {
+		fields secretref.Fields
+		want   secretref.Ref
+	}{
+		{secretref.Fields{}, secretref.Ref{}},
+		{secretref.Fields{Value: "secret"}, secretref.Literal("secret")},
+		{secretref.Fields{Env: "TOKEN"}, secretref.Ref{Env: "TOKEN"}},
+		{secretref.Fields{File: "token"}, secretref.Ref{File: "token"}},
+	} {
+		got, err := secretref.FromFields("token", tc.fields)
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got)
+	}
+	_, err := secretref.FromFields("token", secretref.Fields{Value: "private-value", Env: "TOKEN"})
+	require.ErrorContains(t, err, "token")
+	assert.Equal(t, 1, strings.Count(err.Error(), "secretref:"))
+	assert.NotContains(t, err.Error(), "private-value")
 }

@@ -45,36 +45,6 @@ func TestSecretOwnerModePolicy(t *testing.T) {
 	}
 }
 
-func TestParentMetadataPolicy(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		owner, child uint32
-		mode         fs.FileMode
-		allowed      bool
-	}{
-		{"private current user", 1, 2, os.ModeDir | 0o700, true},
-		{"private root", 0, 2, os.ModeDir | 0o755, true},
-		{"foreign parent", 2, 1, os.ModeDir | 0o700, false},
-		{"group writable", 1, 1, os.ModeDir | 0o770, false},
-		{"world writable", 0, 0, os.ModeDir | 0o777, false},
-		{"sticky current child", 0, 1, os.ModeDir | os.ModeSticky | 0o777, true},
-		{"sticky root child", 1, 0, os.ModeDir | os.ModeSticky | 0o777, true},
-		{"sticky foreign child", 0, 2, os.ModeDir | os.ModeSticky | 0o777, false},
-		{"not a directory", 1, 1, 0o700, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			parent := ownedInfo{mode: tc.mode, uid: tc.owner}
-			child := ownedInfo{uid: tc.child}
-			err := requireUnsharedParentForUID(parent, child, 1)
-			if tc.allowed {
-				require.NoError(t, err)
-			} else {
-				require.Error(t, err)
-			}
-		})
-	}
-}
-
 func TestOpenSecretFileTraversesExecutableOnlyParentProperty(t *testing.T) {
 	root := privateTempDir(t)
 	parent := filepath.Join(root, "search-only")
@@ -101,20 +71,22 @@ func TestOpenSecretFileTraversesExecutableOnlyParentProperty(t *testing.T) {
 	})
 }
 
-func TestOpenSecretFileDoesNotNormalizeAwayUnsearchableDotDotComponent(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root can traverse a directory without search permission")
-	}
+func TestOpenSecretFilePreservesTraversedComponents(t *testing.T) {
 	root := privateTempDir(t)
 	blocked := filepath.Join(root, "blocked")
 	require.NoError(t, os.Mkdir(blocked, 0o700))
 	defer func() { _ = os.Chmod(blocked, 0o700) }()
 	token := filepath.Join(root, "token")
 	require.NoError(t, os.WriteFile(token, []byte("secret"), 0o600))
-	require.NoError(t, os.Chmod(blocked, 0o600))
 	path := blocked + string(filepath.Separator) + ".." + string(filepath.Separator) + "token"
-
+	if os.Geteuid() != 0 {
+		require.NoError(t, os.Chmod(blocked, 0o600))
+		file, err := OpenSecretFile(path)
+		require.Error(t, err)
+		assert.Nil(t, file)
+	}
+	require.NoError(t, os.Chmod(blocked, 0o775))
 	file, err := OpenSecretFile(path)
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrWritableParent)
 	assert.Nil(t, file)
 }

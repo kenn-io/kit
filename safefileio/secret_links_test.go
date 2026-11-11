@@ -12,10 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/safefileio"
-	"pgregory.net/rapid"
 )
 
-func TestSecretLinkBoundProperty(t *testing.T) {
+func TestSecretLinks(t *testing.T) {
 	// Canonicalize only the fixture prefix, so /var's own link does not consume
 	// one of the deliberately generated chain's 40 hops on macOS.
 	dir, err := filepath.EvalSymlinks(privateTempDir(t))
@@ -39,16 +38,15 @@ func TestSecretLinkBoundProperty(t *testing.T) {
 		require.NoError(t, os.Symlink(filepath.Base(paths[i-1]), path))
 		paths = append(paths, path)
 	}
-	rapid.Check(t, func(ht *rapid.T) {
-		hops := rapid.OneOf(rapid.Uint32(), rapid.Uint32Range(0, 41)).Draw(ht, "hops")
-		// A longer chain must already fail at hop 41; bound fixture materialization.
-		file, err := safefileio.OpenSecretFile(paths[min(hops, 41)])
-		if hops > 40 {
-			require.Error(ht, err)
-			assert.Nil(ht, file)
-		} else {
-			require.NoError(ht, err)
-			require.NoError(ht, file.Close())
-		}
-	})
+	file, err := safefileio.OpenSecretFile(paths[40])
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	file, err = safefileio.OpenSecretFile(paths[41])
+	require.Error(t, err)
+	assert.Nil(t, file)
+	loop := filepath.Join(dir, "loop")
+	require.NoError(t, os.Symlink("loop", loop))
+	file, err = safefileio.OpenSecretFile(loop)
+	require.Error(t, err)
+	assert.Nil(t, file)
 }

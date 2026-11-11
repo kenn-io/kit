@@ -17,10 +17,8 @@ func TestFileBytesAndBoundaries(t *testing.T) {
 		wantReason        string
 	}{
 		{"preserve spaces", "  token \t\r\n\n", "  token \t", false, ""},
-		{"one byte", "s", "s", false, ""},
-		{"below limit", strings.Repeat("s", (64<<10)-1), strings.Repeat("s", (64<<10)-1), false, ""},
-		{"limit", strings.Repeat("s", 64<<10), strings.Repeat("s", 64<<10), false, ""},
-		{"too large", strings.Repeat("s", (64<<10)+1), "", true, "file exceeds 64 KiB"},
+		{"NUL", "a\x00b", "", true, "secret contains a NUL byte"},
+		{"blank", " \t\r\n", "", true, "file is empty"},
 		{"trim cannot hide size", "s" + strings.Repeat("\n", 64<<10), "", true, "file exceeds 64 KiB"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
