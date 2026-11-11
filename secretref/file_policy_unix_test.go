@@ -66,9 +66,11 @@ func TestUnsafeAncestorAndLoopRejected(t *testing.T) {
 	require.NoError(t, os.Mkdir(unsafe, 0o700))
 	key := filepath.Join(unsafe, "token")
 	writePrivateFile(t, key, "secret")
-	require.NoError(t, os.Chmod(unsafe, 0o777))
+	require.NoError(t, os.Chmod(unsafe, 0o775))
 	_, err := (secretref.Ref{File: key}).Resolve()
-	require.Error(t, err)
+	var source *secretref.SourceError
+	require.ErrorAs(t, err, &source)
+	require.Equal(t, "parent directory is writable by group or others", source.Reason)
 	require.NoError(t, os.Chmod(unsafe, 0o700))
 	link := filepath.Join(dir, "loop")
 	require.NoError(t, os.Symlink("loop", link))

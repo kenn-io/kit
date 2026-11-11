@@ -79,7 +79,8 @@ Direct `Ref{Env: name}` retains its existing trim-on-resolution behavior;
 ## File policy
 
 `safefileio.OpenSecretFile(path)` opens and validates the same regular-file
-handle returned to its caller. It never repairs permissions. Unix rules:
+handle returned to its caller. On Unix, `path` must be absolute. It never
+repairs permissions. Unix rules:
 
 - The final file belongs to the effective user with mode `0400` or `0600`, or
   belongs to root without group/other write permission. Root-owned files can
@@ -112,8 +113,9 @@ file fails without waiting for a writer.
 
 These rules broaden older `secretref` file support to read-only files, trusted
 root-owned mounts, and trusted links. They also reject unsafe ancestors, files
-over 64 KiB, and NUL-containing file secrets. Relative paths resolve from the working directory. Applications
-adopting this resolver must account for their previous limits and trimming.
+over 64 KiB, and NUL-containing file secrets. Relative `Ref.File` paths resolve
+from the working directory. Applications adopting this resolver must account for
+their previous limits and trimming.
 Error text for environment and file failures has changed; use `SourceError`
 fields instead of matching error strings.
 

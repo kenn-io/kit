@@ -202,13 +202,7 @@ func resolveFile(configured string) (Secret, error) {
 	}
 	file, err := safefileio.OpenSecretFile(path)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return unavailable("file is missing")
-		}
-		if errors.Is(err, fs.ErrPermission) {
-			return unavailable("file is unreadable")
-		}
-		return unavailable("file must be a regular file with trusted ownership, trusted permissions and parents")
+		return secretFileOpenError(configured, err)
 	}
 	defer func() { _ = file.Close() }()
 	data, err := readSecret(file)
@@ -217,6 +211,19 @@ func resolveFile(configured string) (Secret, error) {
 	}
 	value := strings.TrimRight(string(data), "\r\n")
 	return checkedSecret(value, "file:"+configured, "file is empty")
+}
+
+func secretFileOpenError(configured string, err error) (Secret, error) {
+	reason := "file must be a regular file with trusted ownership, trusted permissions and parents"
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		reason = "file is missing"
+	case errors.Is(err, fs.ErrPermission):
+		reason = "file is unreadable"
+	case errors.Is(err, safefileio.ErrWritableParent):
+		reason = "parent directory is writable by group or others"
+	}
+	return Secret{}, &SourceError{Source: "file:" + configured, Reason: reason}
 }
 
 // readSecret enforces the bound, including for growing files.
