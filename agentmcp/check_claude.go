@@ -17,6 +17,9 @@ func checkClaude(ctx context.Context, name string, result CheckResult) CheckResu
 	if ctx.Err() != nil {
 		return checkProbeError(ctx.Err(), result)
 	}
+	if err != nil && len(output) == 0 {
+		return checkProbeError(err, result)
+	}
 	fields := map[string]string{}
 	for line := range strings.SplitSeq(string(output), "\n") {
 		key, value, _ := strings.Cut(strings.TrimSpace(line), ":")

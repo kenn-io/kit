@@ -1,7 +1,6 @@
 package agentsetup
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -29,7 +28,6 @@ type Item struct {
 	Check      func(context.Context) (Status, error)
 	Commands   func() (agenthook.Commands, error)
 	retrySetup bool
-	nativeMCP  bool
 }
 
 type entry struct {
@@ -95,11 +93,6 @@ func (opts Options) repairCommand() string {
 }
 
 func nextStep(e entry, opts Options, status Status) string {
-	if e.item.nativeMCP && status.State == StateUnknown && (e.agent == agenthook.AgentClaude || e.agent == agenthook.AgentCodex) {
-		if _, err := exec.LookPath(string(e.agent)); err != nil {
-			return fmt.Sprintf("Install %s", e.name)
-		}
-	}
 	if status.State != StateOK && (status.NextStep == "" || e.item.retrySetup && (status.State == StateMissing || status.State == StateOutdated)) {
 		return opts.repairCommand()
 	}
@@ -131,8 +124,13 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		}
 		status, err := e.item.Check(ctx)
 		status.NextStep = nextStep(e, opts, status)
-		if err = cmp.Or(installErrors[i], err); err != nil {
-			status.State, status.Reason, status.NextStep = StateFailed, err.Error(), cmp.Or(status.NextStep, opts.repairCommand())
+		if installErrors[i] != nil {
+			status.State, status.Reason, status.NextStep = StateFailed, installErrors[i].Error(), opts.repairCommand()
+		} else if err != nil {
+			status.State, status.Reason = StateFailed, err.Error()
+			if status.NextStep == "" {
+				status.NextStep = opts.repairCommand()
+			}
 		}
 		report.Rows = append(report.Rows, Row{Agent: string(e.agent), AgentName: e.name, Piece: e.item.Name, Status: status})
 	}

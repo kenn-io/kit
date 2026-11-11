@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -78,7 +79,7 @@ func (r Report) WriteText(w io.Writer, checkCommand string) error {
 			}
 			detail += row.NextStep
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", row.AgentName, row.Piece, state, detail); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", textCell(row.AgentName), textCell(row.Piece), textCell(state), textCell(detail)); err != nil {
 			return err
 		}
 	}
@@ -94,6 +95,10 @@ func (r Report) WriteText(w io.Writer, checkCommand string) error {
 	}
 	_, err := fmt.Fprintln(w, summary)
 	return err
+}
+
+func textCell(s string) string {
+	return strings.NewReplacer("\n", " ", "\r", " ", "\t", " ", "\v", " ", "\f", " ", "\xff", " ").Replace(s)
 }
 
 func count(n int, noun string) string {

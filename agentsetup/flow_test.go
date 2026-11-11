@@ -3,7 +3,9 @@ package agentsetup
 import (
 	"bytes"
 	"context"
+	"encoding/json/v2"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -136,7 +138,33 @@ func TestItemRepairGuidance(t *testing.T) {
 	}})
 	require.NoError(t, err)
 	require.Equal(t, StateFailed, report.Rows[0].State)
-	require.Equal(t, "Choose an agent that supports MCP", report.Rows[0].NextStep)
+	require.Equal(t, "app setup --agent muse", report.Rows[0].NextStep)
+}
+
+func TestFailedInstallOverridesUntrustedCheck(t *testing.T) {
+	report, err := Run(t.Context(), Options{Agents: []string{"codex"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) {
+		return []Item{{Name: "custom", Install: func(context.Context) error { return errors.New("write failed") }, Check: func(context.Context) (Status, error) {
+			return Status{State: StateUntrusted, NextStep: "Open /hooks"}, nil
+		}}}, nil
+	}})
+	require.NoError(t, err)
+	require.Equal(t, StateFailed, report.Rows[0].State)
+	require.Equal(t, "write failed", report.Rows[0].Reason)
+	require.Equal(t, "app setup --agent codex", report.Rows[0].NextStep)
+}
+
+func TestReportFlattensCells(t *testing.T) {
+	r := Report{Rows: []Row{{AgentName: "Claude\nCode", Piece: "mcp\tserver", State: StateFailed, Reason: "failed\nissue\rnext\vline\fform\xffend", NextStep: "app  setup\nretry"}}}
+	var out bytes.Buffer
+	require.NoError(t, r.WriteText(&out, ""))
+	require.Equal(t, 2, strings.Count(out.String(), "\n"))
+	require.Contains(t, out.String(), "failed issue next line form end: app  setup retry")
+	require.Contains(t, out.String(), "Claude Code")
+	require.Contains(t, out.String(), "mcp server")
+	r.Rows[0].Reason = "failed\nissue\rnext"
+	data, err := json.Marshal(r)
+	require.NoError(t, err)
+	require.Contains(t, string(data), `failed\nissue\rnext`)
 }
 
 func TestFailedHookInstallKeepsSetupGuidance(t *testing.T) {

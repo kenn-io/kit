@@ -29,7 +29,7 @@ func Hooks(agent string, opts agenthook.InstallOptions) Item {
 // MCP installs and checks a named MCP server.
 func MCP(agent, name string, server agentmcp.Server) Item {
 	a := agentmcp.Agent(agent)
-	return Item{Name: "mcp " + name, retrySetup: true, nativeMCP: true, Install: func(context.Context) error {
+	return Item{Name: "mcp " + name, retrySetup: true, Install: func(context.Context) error {
 		_, err := agentmcp.Install(a, agentmcp.InstallOptions{Name: name, Server: server})
 		return err
 	}, Check: func(ctx context.Context) (Status, error) {

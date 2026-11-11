@@ -3,6 +3,7 @@ package agentsetup
 import (
 	"bytes"
 	"context"
+	"runtime"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -32,6 +33,10 @@ func TestCommandCheckAndPrint(t *testing.T) {
 	require.Contains(t, text, "app setup --agent claude")
 	output, err := run("--print", "--agent", "codex")
 	require.NoError(t, err)
-	require.Contains(t, output, "codex mcp add")
+	if runtime.GOOS == "windows" {
+		require.Contains(t, output, "'codex' 'mcp' 'add'")
+	} else {
+		require.Contains(t, output, "codex mcp add")
+	}
 	require.False(t, installed)
 }

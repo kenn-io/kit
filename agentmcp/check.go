@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 )
 
 // CheckState describes the native agent's view of one MCP registration.
@@ -73,7 +74,10 @@ func Check(ctx context.Context, agent Agent, name string, server Server) (CheckR
 
 func checkProbeError(err error, result CheckResult) CheckResult {
 	result.Reason = err.Error()
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, exec.ErrNotFound) {
+		profile, _ := LookupProfile(result.Agent)
+		result.NextStep = "Install " + profile.DisplayName + " and make it available on PATH"
+	} else if errors.Is(err, context.DeadlineExceeded) {
 		result.Reason += "; server startup may need longer"
 		result.NextStep = "Retry once the server is ready"
 	}
