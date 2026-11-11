@@ -9,16 +9,20 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -418,6 +422,7 @@ func TestCheckRejectsHTTPSManifestRedirectToHTTP(t *testing.T) {
 func TestCheckRejectsHTTPSChecksumRedirectToHTTPWhenUnsignedChecksumsAllowed(t *testing.T) {
 	t.Parallel()
 
+	var checksumRequests atomic.Int32
 	assetName := "tool_1.2.0_linux_amd64.tar.gz"
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -430,6 +435,7 @@ func TestCheckRejectsHTTPSChecksumRedirectToHTTPWhenUnsignedChecksumsAllowed(t *
 				},
 			})
 		case "/SHA256SUMS":
+			checksumRequests.Add(1)
 			http.Redirect(w, r, "http://example.invalid/SHA256SUMS", http.StatusFound)
 		default:
 			http.NotFound(w, r)
@@ -451,6 +457,7 @@ func TestCheckRejectsHTTPSChecksumRedirectToHTTPWhenUnsignedChecksumsAllowed(t *
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
+	assert.EqualValues(t, 1, checksumRequests.Load())
 }
 
 func TestCheckUsesConventionalChecksumAndSignatureFallbacks(t *testing.T) {
@@ -2010,4 +2017,193 @@ func signPayload(t *testing.T, payload []byte) (ed25519.PublicKey, []byte) {
 		require.FailNow(t, err.Error())
 	}
 	return publicKey, ed25519.Sign(privateKey, payload)
+}
+
+func TestCheckRetriesChecksum(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var requests atomic.Int32
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/kenn/tool/releases/latest":
+				_ = json.NewEncoder(w).Encode(Release{TagName: "v1.2.0", Assets: []Asset{
+					{Name: "tool_1.2.0_linux_amd64.tar.gz", BrowserDownloadURL: "https://example.invalid/tool"},
+					{Name: "SHA256SUMS", BrowserDownloadURL: "http://" + r.Host + "/SHA256SUMS"},
+				}})
+			case "/SHA256SUMS":
+				if requests.Add(1) == 1 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				_, _ = fmt.Fprintf(w, "%s  tool_1.2.0_linux_amd64.tar.gz\n", testHash64)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		client := server.Client()
+		c := Client{Owner: "kenn", Repo: "tool", BinaryName: "tool", CurrentVersion: "v1.1.0", CacheDir: t.TempDir(), GitHubAPIBaseURL: server.URL, GitHubWebBaseURL: server.URL, HTTPClient: client}
+		info, err := c.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, testHash64, info.Checksum)
+		assert.EqualValues(t, 2, requests.Load())
+	})
+}
+
+func TestChecksumRetryStatuses(t *testing.T) {
+	for _, status := range []int{408, 429, 500, 599} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var requests atomic.Int32
+				server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					if requests.Add(1) == 1 {
+						w.WriteHeader(status)
+						return
+					}
+					_, _ = fmt.Fprintf(w, "%s  tool.tar.gz\n", testHash64)
+				}))
+				client := server.Client()
+				checksum, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
+				require.NoError(t, err)
+				assert.Equal(t, testHash64, checksum)
+				assert.EqualValues(t, 2, requests.Load())
+			})
+		})
+	}
+}
+
+func TestChecksumRetryExhaustionAndPermanent(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		status       int
+		body         string
+		wantRequests int32
+		wantError    string
+	}{
+		{"exhausted", 503, "", 4, "503"},
+		{"forbidden", 403, "", 1, "403"},
+		{"missing", 404, "", 1, "checksum asset not found"},
+		{"malformed", 200, "invalid", 1, ""},
+		{"oversized", 200, strings.Repeat("x", maxChecksumBytes+1), 1, "byte limit"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var requests atomic.Int32
+				server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					attempt := requests.Add(1)
+					if tt.name == "exhausted" && attempt < 4 {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.WriteHeader(tt.status)
+					_, _ = io.WriteString(w, tt.body)
+				}))
+				client := server.Client()
+				checksum, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
+				assert.Empty(t, checksum)
+				if tt.wantError != "" {
+					require.ErrorContains(t, err, tt.wantError)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, tt.wantRequests, requests.Load())
+			})
+		})
+	}
+}
+
+type checksumRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f checksumRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestChecksumRetryTransport(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		failure error
+	}{
+		{"network", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("disconnected")}},
+		{"truncated", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var requests int
+				c := Client{HTTPClient: &http.Client{Transport: checksumRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+					requests++
+					if requests == 1 {
+						if tt.failure != nil {
+							return nil, tt.failure
+						}
+						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(&checksumBrokenReader{}), Header: make(http.Header), Request: r}, nil
+					}
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(testHash64 + "  tool.tar.gz\n")), Header: make(http.Header), Request: r}, nil
+				})}}
+				checksum, err := c.fetchChecksumFromFile(t.Context(), "http://example.invalid/checksums", "tool.tar.gz")
+				require.NoError(t, err)
+				assert.Equal(t, testHash64, checksum)
+				assert.Equal(t, 2, requests)
+			})
+		})
+	}
+}
+
+type checksumBrokenReader struct{}
+
+func (*checksumBrokenReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+func TestChecksumRetryAfter(t *testing.T) {
+	for _, tt := range []struct {
+		name, header string
+		wait         time.Duration
+	}{
+		{"seconds", "2", 2 * time.Second},
+		{"date", "Sat, 01 Jan 2000 00:00:03 GMT", 3 * time.Second},
+		{"cap", "999999999999999999999999", 10 * time.Second},
+		{"date cap", "Sat, 01 Jan 2000 00:01:00 GMT", 10 * time.Second},
+		{"invalid", "garbage", 0},
+		{"negative", "-1", 0},
+		{"expired", "Fri, 31 Dec 1999 23:59:59 GMT", 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				var requests atomic.Int32
+				server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					if requests.Add(1) == 1 {
+						w.Header().Set("Retry-After", tt.header)
+						w.WriteHeader(http.StatusTooManyRequests)
+						return
+					}
+					_, _ = fmt.Fprintf(w, "%s  tool.tar.gz\n", testHash64)
+				}))
+				client := server.Client()
+				checksum, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
+				require.NoError(t, err)
+				assert.Equal(t, testHash64, checksum)
+				if tt.wait == 0 {
+					assert.GreaterOrEqual(t, time.Since(start), 250*time.Millisecond)
+					assert.LessOrEqual(t, time.Since(start), 750*time.Millisecond)
+				} else {
+					assert.Equal(t, tt.wait, time.Since(start))
+				}
+				assert.EqualValues(t, 2, requests.Load())
+			})
+		})
+	}
+}
+
+func TestChecksumRetryCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var requests atomic.Int32
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			w.Header().Set("Retry-After", "10")
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		client := server.Client()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(ctx, server.URL, "tool.tar.gz")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.ErrorContains(t, err, "503")
+		assert.EqualValues(t, 1, requests.Load())
+	})
 }
