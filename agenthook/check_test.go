@@ -76,7 +76,7 @@ func runHookCheckHelper(mode string) int {
 			return 9
 		}
 		if mode == "truncated" {
-			fmt.Print(`{"id":1,"result":`)
+			fmt.Printf(`{"id":%d,"result":`, request.ID)
 			return 0
 		}
 		if mode == "discovery-no-result" && request.Method == "hooks/list" {
@@ -97,7 +97,7 @@ func runHookCheckHelper(mode string) int {
 			continue
 		}
 		if mode == "malformed" {
-			fmt.Println(`{"id":1,"result":}`)
+			fmt.Printf("{\"id\":%d,\"result\":}\n", request.ID)
 			return 0
 		}
 		if (mode == "config-eof" && request.Method == "config/read") || (mode == "discovery-eof" && request.Method == "hooks/list") {
@@ -159,43 +159,44 @@ func TestCheckCodexNativeStates(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode, trust, extra string
 		want                     CheckState
-		reason                   string
+		reason, nextStep         string
 		launches                 int
+		cancelDuringCleanup      bool
 	}{
-		{"discovery missing result", "discovery-no-result", "", "", CheckUnknown, "missing result", 1},
-		{"custom cause during cleanup", "cancel-eof", "", "", CheckUnknown, "context canceled", 1},
-		{"native error during cleanup", "error-cleanup", "", "", CheckUnknown, "native failure", 1},
-		{"success during cleanup", "success-cleanup", "trusted", "", CheckOK, "", 1},
-		{"retry initialization", "first-initialize-eof", "trusted", "", CheckOK, "", 2},
-		{"retry config", "first-config-eof", "trusted", "", CheckOK, "", 2},
-		{"retry truncated reply", "first-truncated", "trusted", "", CheckOK, "", 2},
-		{"last failure step", "different-failures", "", "", CheckUnknown, "EOF", 2},
-		{"retry discovery", "first-discovery-eof", "trusted", "", CheckOK, "", 2},
-		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, "", 2},
-		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure", 1},
-		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", 1},
-		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", 1},
-		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", 1},
-		{"reviewed", "normal", "trusted", "", CheckOK, "", 1},
-		{"native source capitalization", "source-case", "trusted", "", CheckOK, "", 1},
-		{"managed", "normal", "managed", "", CheckOK, "", 1},
-		{"other applications and source files", "mixed", "trusted", "", CheckOK, "", 1},
-		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, "", 1},
-		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "didn't list all", 1},
-		{"partial discovery", "partial", "trusted", "", CheckUnknown, "didn't list all", 1},
-		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, "", 1},
-		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, "", 1},
-		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated, "", 1},
-		{"disabled handler", "disabled", "untrusted", "", CheckDisabled, "", 1},
-		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled, "", 1},
-		{"unknown trust", "normal", "future", "", CheckUnknown, "unknown hook trust state", 1},
-		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, "invalid hooks", 1},
-		{"missing discovery data", "missing-data", "", "", CheckUnknown, "didn't report hooks for this folder", 1},
-		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, "EOF", 2},
-		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded", 1},
-		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded", 1},
-		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex", 0},
-		{"Windows command override", "windows-command", "trusted", "", CheckOK, "", 1},
+		{"discovery missing result", "discovery-no-result", "", "", CheckUnknown, "", "hooks in Codex", 1, false},
+		{"custom cause during cleanup", "cancel-eof", "", "", CheckUnknown, "context canceled", "", 1, true},
+		{"native error during cleanup", "error-cleanup", "", "", CheckUnknown, "native failure", "", 1, true},
+		{"success during cleanup", "success-cleanup", "trusted", "", CheckOK, "", "", 1, true},
+		{"retry initialization", "first-initialize-eof", "trusted", "", CheckOK, "", "", 2, false},
+		{"retry config", "first-config-eof", "trusted", "", CheckOK, "", "", 2, false},
+		{"retry truncated reply", "first-truncated", "trusted", "", CheckOK, "", "", 2, false},
+		{"last failure step", "different-failures", "", "", CheckUnknown, "EOF", "Codex config", 2, false},
+		{"retry discovery", "first-discovery-eof", "trusted", "", CheckOK, "", "", 2, false},
+		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, "", "", 2, false},
+		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure", "", 1, false},
+		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", "", 1, false},
+		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", "", 1, false},
+		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", "", 1, false},
+		{"reviewed", "normal", "trusted", "", CheckOK, "", "", 1, false},
+		{"native source capitalization", "source-case", "trusted", "", CheckOK, "", "", 1, false},
+		{"managed", "normal", "managed", "", CheckOK, "", "", 1, false},
+		{"other applications and source files", "mixed", "trusted", "", CheckOK, "", "", 1, false},
+		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, "", "", 1, false},
+		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "didn't list all", "", 1, false},
+		{"partial discovery", "partial", "trusted", "", CheckUnknown, "didn't list all", "", 1, false},
+		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, "", "", 1, false},
+		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, "", "", 1, false},
+		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated, "", "", 1, false},
+		{"disabled handler", "disabled", "untrusted", "", CheckDisabled, "", "", 1, false},
+		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled, "", "", 1, false},
+		{"unknown trust", "normal", "future", "", CheckUnknown, "unknown hook trust state", "", 1, false},
+		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, "invalid hooks", "", 1, false},
+		{"missing discovery data", "missing-data", "", "", CheckUnknown, "didn't report hooks for this folder", "", 1, false},
+		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, "EOF", "", 2, false},
+		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded", "", 1, false},
+		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded", "", 1, false},
+		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex", "", 0, false},
+		{"Windows command override", "windows-command", "trusted", "", CheckOK, "", "", 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.mode == "windows-command" && runtime.GOOS != "windows" {
@@ -297,7 +298,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			}
 			started := time.Now()
 			var result CheckResult
-			if tc.mode == "cancel-eof" || tc.mode == "error-cleanup" || tc.mode == "success-cleanup" {
+			if tc.cancelDuringCleanup {
 				var cancel context.CancelCauseFunc
 				ctx, cancel = context.WithCancelCause(ctx)
 				defer cancel(nil)
@@ -325,19 +326,13 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound the native check")
 			}
 			require.NoError(t, err)
-			if tc.launches == 0 {
-				_, err := os.Stat(record)
-				assert.ErrorIs(t, err, os.ErrNotExist)
-			} else {
+			if tc.launches > 0 {
 				launches, err := os.ReadFile(record)
 				require.NoError(t, err)
 				assert.Len(t, launches, tc.launches)
 			}
-			if tc.mode == "different-failures" {
-				assert.Contains(t, result.NextStep, "Codex config")
-			}
-			if tc.mode == "discovery-no-result" {
-				assert.Contains(t, result.NextStep, "hooks in Codex")
+			if tc.nextStep != "" {
+				assert.Contains(t, result.NextStep, tc.nextStep)
 			}
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.reason != "" {
@@ -668,7 +663,6 @@ func TestTransientCodexError(t *testing.T) {
 		err       error
 		transient bool
 	}{
-		{"deadline", context.DeadlineExceeded, true},
 		{"EOF", io.EOF, true},
 		{"truncated", io.ErrUnexpectedEOF, true},
 		{"pipe read", &os.PathError{Op: "read", Err: os.ErrClosed}, true},

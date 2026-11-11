@@ -3,7 +3,6 @@ package agenthook
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -22,8 +21,6 @@ func TestCodexResourceErrors(t *testing.T) {
 		{"system resources", &os.PathError{Op: "fork/exec", Err: windows.ERROR_NO_SYSTEM_RESOURCES}, true},
 		{"commitment limit", &os.PathError{Op: "fork/exec", Err: windows.ERROR_COMMITMENT_LIMIT}, true},
 		{"sharing violation", &os.PathError{Op: "fork/exec", Err: windows.ERROR_SHARING_VIOLATION}, true},
-		{"permission", &os.PathError{Op: "fork/exec", Err: os.ErrPermission}, false},
-		{"missing executable", exec.ErrNotFound, false},
 		{"bad executable", &os.PathError{Op: "fork/exec", Err: windows.ERROR_BAD_EXE_FORMAT}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

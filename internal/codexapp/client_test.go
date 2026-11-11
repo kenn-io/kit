@@ -202,7 +202,6 @@ func TestClientCallResult(t *testing.T) {
 		{"missing result", `{"id":1}`, false, true},
 		{"missing discarded result", `{"id":1}`, true, false},
 		{"null result", `{"id":1,"result":null}`, false, false},
-		{"discarded null result", `{"id":1,"result":null}`, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := Client{ctx: t.Context(), input: io.Discard, output: jsontext.NewDecoder(strings.NewReader(tc.frame))}

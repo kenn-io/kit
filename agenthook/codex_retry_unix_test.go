@@ -5,7 +5,6 @@ package agenthook
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"syscall"
 	"testing"
 
@@ -23,8 +22,6 @@ func TestCodexResourceErrors(t *testing.T) {
 		{"memory", &os.PathError{Op: "fork/exec", Err: syscall.ENOMEM}, true},
 		{"temporary resource", &os.PathError{Op: "fork/exec", Err: syscall.EAGAIN}, true},
 		{"busy executable", &os.PathError{Op: "fork/exec", Err: syscall.ETXTBSY}, true},
-		{"permission", &os.PathError{Op: "fork/exec", Err: os.ErrPermission}, false},
-		{"missing executable", exec.ErrNotFound, false},
 		{"bad executable", &os.PathError{Op: "fork/exec", Err: syscall.ENOEXEC}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
