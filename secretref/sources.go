@@ -13,21 +13,11 @@ type Fields struct{ Value, File, Env string }
 // FromFields converts base, base_file and base_env without resolving them.
 // Multiple nonempty fields are an error, never a precedence choice.
 func FromFields(base string, fields Fields) (Ref, error) {
-	var keys []string
-	if fields.Value != "" {
-		keys = append(keys, base)
-	}
-	if fields.File != "" {
-		keys = append(keys, base+"_file")
-	}
-	if fields.Env != "" {
-		keys = append(keys, base+"_env")
-	}
-	if len(keys) > 1 {
-		return Ref{}, fmt.Errorf("secretref: set one of %s", strings.Join(keys, ", "))
-	}
 	ref := Ref{Value: fields.Value, File: fields.File, Env: fields.Env}
-	return ref, ref.Validate()
+	if err := ref.Validate(); err != nil {
+		return ref, fmt.Errorf("secretref: %s: %w", base, err)
+	}
+	return ref, nil
 }
 
 // FromEnv selects NAME or NAME_FILE using presence, including empty values.

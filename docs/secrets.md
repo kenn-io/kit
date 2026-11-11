@@ -1,7 +1,7 @@
 ---
 title: Secret sources
 description: Configure literal, environment, and private-file secrets with secretref.
-last_edited: 2026-11-09
+last_edited: 2026-11-11
 ---
 
 # Secret sources
@@ -19,12 +19,12 @@ token = "literal-value"
 
 The same string/object forms work in JSON. Set only one nonempty source. An
 absent key, empty string, empty table, or `{ value = "" }` is unset. JSON `null`
-is also unset. Nonempty whitespace-only secrets and secrets containing NUL fail
-when resolved. Literal and environment values otherwise retain their bytes.
-JSON object keys are exactly `value`, `env`, and `file`, with string values;
-null object fields and case aliases are rejected. Repeated identical JSON keys
-retain the standard decoder's last-value behavior; avoid duplicate keys in
-configuration. The top-level null exception remains supported.
+is also unset. A whitespace-only literal resolves with `Reason` set to
+`inline value is empty`; literal bytes, including NUL, are preserved. Blank or
+NUL-containing environment and file values fail when resolved. JSON object keys
+match `value`, `env`, and `file` case-insensitively, and null fields are unset.
+Repeated identical JSON keys retain the standard decoder's last-value behavior;
+avoid duplicate keys in configuration.
 
 ## Load, then resolve
 
@@ -42,14 +42,12 @@ if err != nil {
 client.SetToken(secret.Value)
 ```
 
-Validation performs no source I/O. It rejects conflicting sources, invalid
-environment selectors, and file selectors that are neither absolute nor start
-with `~/`. It does not check whether a configured source exists. A configured
-source that is missing, unreadable, blank, or invalid returns an error; there is
-no fallback to another source. Callers decide whether an unset reference is
-allowed. `Resolve` remains a compatibility wrapper using a background context;
-new code should use `ResolveContext`. Cancellation is checked between filesystem
-operations and reads; it cannot interrupt every kernel call.
+Validation performs no source I/O. It rejects conflicting sources. A configured
+environment or file source that is missing, unreadable, blank, or invalid returns
+an error; there is no fallback to another source. Callers decide whether an unset
+reference is allowed. `Resolve` remains a compatibility wrapper using a background
+context; new code should use `ResolveContext`. Cancellation is checked between
+filesystem operations and reads; it cannot interrupt every kernel call.
 
 TOML decoders that invoke `UnmarshalTOML` reject unknown source fields. A decoder
 that fills exported struct fields can silently discard unknown keys before
@@ -68,7 +66,7 @@ ref, err := secretref.FromFields("token", secretref.Fields{
 })
 ```
 
-`FromFields` rejects multiple nonempty fields and names the conflicting keys.
+`FromFields` rejects multiple nonempty fields and names the base key.
 New configuration formats should use one `Ref` key instead.
 
 For process environment settings, `secretref.FromEnv("APP_TOKEN")` selects
@@ -90,6 +88,7 @@ handle returned to its caller. It never repairs permissions. Unix rules:
 - Every traversed directory belongs to root or the effective user and denies
   group/other write. A trusted sticky directory is allowed when its child also
   belongs to root or the effective user.
+- A group-writable parent such as a `0775` `~/.config/app` is refused.
 - Symlinks are allowed only through trusted parents and root/user-owned link
   entries. Every target path is checked too. This supports projected credential
   layouts such as Kubernetes `token -> ..data/token`. Loops and more than 40
@@ -114,10 +113,9 @@ tabs. It rejects blank results and NUL anywhere. A FIFO or other non-regular
 file fails without waiting for a writer.
 
 These rules broaden older `secretref` file support to read-only files, trusted
-root-owned mounts, and trusted links. They also reject relative file selectors,
-unsafe ancestors, files over 64 KiB, and NUL-containing secrets. Applications
-adopting this resolver must explicitly account for their previous limits,
-trimming, precedence, and relative-path rules.
+root-owned mounts, and trusted links. They also reject unsafe ancestors, files
+over 64 KiB, and NUL-containing file secrets. Relative paths resolve from the working directory. Applications
+adopting this resolver must account for their previous limits and trimming.
 
 ## systemd credentials
 
@@ -138,7 +136,7 @@ lookup in `Ref` strings.
 
 ## Diagnostics
 
-`Secret` exposes only `Value` and `Source`. Default formatting (`%s`, `%q`, `%v`,
+`Secret` exposes `Value`, `Source`, and `Reason`. Default formatting (`%s`, `%q`, `%v`,
 `%+v`, `%#v`), JSON marshaling, and `slog` redact the resolved value. Access
 `Value` explicitly only at the consumer boundary; logging that string directly
 will expose it. `Ref` is serializable configuration and can contain a literal
@@ -147,6 +145,5 @@ secret, so do not log the configuration itself.
 Resolution failures use `*secretref.SourceError`: `Source` names the configured
 path or environment selector, while `Reason` contains no secret or selector.
 Use `errors.As` to choose whether a log should include that source. Context
-cancellation and validation conflicts can return other errors. Removing the
-former `Secret.Reason` field makes every failed resolution an error instead of
-a success-shaped diagnostic.
+cancellation and validation conflicts can return other errors. A blank literal
+returns its diagnostic in `Secret.Reason`.

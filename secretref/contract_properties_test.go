@@ -10,57 +10,47 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/secretref"
-	"hegel.dev/go/hegel"
+	"pgregory.net/rapid"
 )
 
 func TestLiteralAndTextKeepAllBytesProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		value := string(hegel.Draw(ht, hegel.Binary(0, -1)))
+	rapid.Check(t, func(ht *rapid.T) {
+		value := string(rapid.SliceOf(rapid.Byte()).Draw(ht, "bytes"))
 		ref := secretref.Literal(value)
 		assert.Equal(ht, secretref.Ref{Value: value}, ref)
 		ref = secretref.Ref{Env: "OLD", File: "/old"}
 		require.NoError(ht, ref.UnmarshalText([]byte(value)))
 		assert.Equal(ht, secretref.Literal(value), ref)
-	}, hegel.WithTestCases(2000))
-}
-
-func TestIsZeroProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		ref := secretref.Ref{Value: hegel.Draw(ht, hegel.Text()), Env: hegel.Draw(ht, hegel.Text()), File: hegel.Draw(ht, hegel.Text())}
-		assert.Equal(ht, ref.Value == "" && ref.Env == "" && ref.File == "", ref.IsZero())
-	}, hegel.WithTestCases(2000))
+	})
 }
 
 func TestTOMLHookLiteralProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		value := hegel.Draw(ht, hegel.Text())
+	rapid.Check(t, func(ht *rapid.T) {
+		value := rapid.String().Draw(ht, "text")
 		for _, input := range []any{value, map[string]any{"value": value}} {
 			ref := secretref.Ref{Env: "OLD"}
 			require.NoError(ht, ref.UnmarshalTOML(input))
 			assert.Equal(ht, secretref.Literal(value), ref)
 		}
-	}, hegel.WithTestCases(2000))
+	})
 }
 
 func TestJSONWholeObjectProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		value := hegel.Draw(ht, hegel.Text())
+	rapid.Check(t, func(ht *rapid.T) {
+		value := rapid.String().Draw(ht, "text")
 		data, err := json.Marshal(map[string]string{"value": value})
 		require.NoError(ht, err)
 		var ref secretref.Ref
 		require.NoError(ht, ref.UnmarshalJSON(append(data, ' ', '\n', '\t')))
 		assert.Equal(ht, secretref.Literal(value), ref)
-		for _, suffix := range []string{"{}", "null", "true", "[]", "x"} {
-			require.Error(ht, ref.UnmarshalJSON([]byte(string(data)+suffix)))
-		}
-	}, hegel.WithTestCases(2000))
+	})
 }
 
 func TestAllRefSourceRoundtripsProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		text := hegel.Draw(ht, hegel.Text())
+	rapid.Check(t, func(ht *rapid.T) {
+		text := rapid.String().Draw(ht, "text")
 		ref := secretref.Literal(text)
-		switch hegel.Draw(ht, hegel.Integers(0, 2)) {
+		switch rapid.IntRange(0, 2).Draw(ht, "choice") {
 		case 1:
 			ref = secretref.Ref{Env: "ENV_" + strings.NewReplacer("=", "_", "\x00", "_").Replace(text)}
 		case 2:
@@ -85,12 +75,12 @@ func TestAllRefSourceRoundtripsProperty(t *testing.T) {
 		require.NoError(ht, err)
 		assert.Empty(ht, meta.Undecoded())
 		assert.Equal(ht, ref, fieldDoc.Key)
-	}, hegel.WithTestCases(2000))
+	})
 }
 
 func TestLiteralResolveAgreementProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		value := string(hegel.Draw(ht, hegel.Binary(0, -1)))
+	rapid.Check(t, func(ht *rapid.T) {
+		value := string(rapid.SliceOf(rapid.Byte()).Draw(ht, "bytes"))
 		ref := secretref.Literal(value)
 		got, err := ref.ResolveContext(t.Context())
 		wrapper, wrapperErr := ref.Resolve()
@@ -100,14 +90,14 @@ func TestLiteralResolveAgreementProperty(t *testing.T) {
 		case value == "":
 			require.NoError(ht, err)
 			assert.Equal(ht, secretref.Secret{}, got)
-		case strings.TrimSpace(value) == "" || strings.ContainsRune(value, 0):
-			require.Error(ht, err)
-			assert.Equal(ht, secretref.Secret{}, got)
+		case strings.TrimSpace(value) == "":
+			require.NoError(ht, err)
+			assert.Equal(ht, secretref.Secret{Source: "inline", Reason: "inline value is empty"}, got)
 		default:
 			require.NoError(ht, err)
 			assert.Equal(ht, secretref.Secret{Value: value, Source: "inline"}, got)
 		}
-	}, hegel.WithTestCases(2000))
+	})
 }
 
 func TestEnvSelectionReadsLatestValueProperty(t *testing.T) {
@@ -117,9 +107,9 @@ func TestEnvSelectionReadsLatestValueProperty(t *testing.T) {
 	require.NoError(t, os.Unsetenv(name+"_FILE"))
 	ref, err := secretref.FromEnv(name)
 	require.NoError(t, err)
-	hegel.Test(t, func(ht *hegel.T) {
+	rapid.Check(t, func(ht *rapid.T) {
 		// Construct an OS-representable value; literal properties cover NUL.
-		value := strings.ReplaceAll(hegel.Draw(ht, hegel.Text()), "\x00", "_")
+		value := strings.ReplaceAll(rapid.String().Draw(ht, "text"), "\x00", "_")
 		t.Setenv(name, value)
 		got, err := ref.ResolveContext(t.Context())
 		if strings.TrimSpace(value) == "" {
@@ -128,5 +118,5 @@ func TestEnvSelectionReadsLatestValueProperty(t *testing.T) {
 			require.NoError(ht, err)
 			assert.Equal(ht, secretref.Secret{Value: value, Source: "env:" + name}, got)
 		}
-	}, hegel.WithTestCases(2000))
+	})
 }

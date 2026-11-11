@@ -48,7 +48,7 @@ func Literal(secret string) Ref { return Ref{Value: secret} }
 // IsZero reports whether the reference is unset.
 func (r Ref) IsZero() bool { return r == Ref{} }
 
-// Validate checks source exclusivity and selector shape without reading a source.
+// Validate reports a reference that names more than one source.
 func (r Ref) Validate() error {
 	var sources []string
 	if r.Value != "" {
@@ -62,12 +62,6 @@ func (r Ref) Validate() error {
 	}
 	if len(sources) > 1 {
 		return fmt.Errorf("secretref: set one source, not %s", strings.Join(sources, " and "))
-	}
-	if r.File != "" && (!filepath.IsAbs(r.File) && !strings.HasPrefix(r.File, "~/") || strings.ContainsRune(r.File, 0)) {
-		return &SourceError{Source: "file:" + r.File, Reason: "file must use an absolute or ~/ path without NUL"}
-	}
-	if r.Env != "" && (strings.TrimSpace(r.Env) == "" || strings.ContainsAny(r.Env, "=\x00")) {
-		return &SourceError{Source: "environment", Reason: "invalid environment variable name"}
 	}
 	return nil
 }
@@ -117,28 +111,18 @@ func (r *Ref) UnmarshalJSON(data []byte) error {
 		*r = Literal(literal)
 		return nil
 	}
-	invalid := errors.New("secretref: a secret is a string or an object with known string fields")
-	var fields map[string]*string
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return invalid
+	type fields struct {
+		Value string `json:"value"`
+		Env   string `json:"env"`
+		File  string `json:"file"`
 	}
-	var decoded Ref
-	for key, value := range fields {
-		if value == nil {
-			return invalid
-		}
-		switch key {
-		case "value":
-			decoded.Value = *value
-		case "env":
-			decoded.Env = *value
-		case "file":
-			decoded.File = *value
-		default:
-			return invalid
-		}
+	var decoded fields
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("secretref: a secret is a string or an object: %w", err)
 	}
-	*r = decoded
+	*r = Ref(decoded)
 	return r.Validate()
 }
 
@@ -164,7 +148,7 @@ func (r Ref) MarshalTOML() ([]byte, error) {
 //
 // Files follow safefileio.OpenSecretFile's trusted-path policy, are bounded to
 // 64 KiB, and lose trailing CR/LF bytes. Other bytes are preserved. Blank and
-// NUL-containing secrets are errors; exact-empty literals remain unset.
+// NUL-containing file and environment secrets are errors; exact-empty literals remain unset.
 func (r Ref) Resolve() (Secret, error) {
 	return r.ResolveContext(context.Background())
 }
@@ -185,9 +169,12 @@ func (r Ref) ResolveContext(ctx context.Context) (Secret, error) {
 		name := strings.TrimSpace(r.Env)
 		return checkedSecret(os.Getenv(name), "env:"+name)
 	case r.File != "":
-		return resolveFile(ctx, r.File)
+		return resolveFile(ctx, strings.TrimSpace(r.File))
 	default:
-		return checkedSecret(r.Value, "inline")
+		if strings.TrimSpace(r.Value) == "" {
+			return Secret{Source: "inline", Reason: "inline value is empty"}, nil
+		}
+		return Secret{Value: r.Value, Source: "inline"}, nil
 	}
 }
 
@@ -206,14 +193,21 @@ func resolveFile(ctx context.Context, configured string) (Secret, error) {
 		return Secret{}, &SourceError{Source: "file:" + configured, Reason: reason}
 	}
 	path := configured
-	if strings.HasPrefix(configured, "~/") {
+	if configured == "~" || strings.HasPrefix(configured, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return unavailable("file home directory is unavailable")
 		}
 		// Joining would clean .. before the trusted walker can inspect its
 		// preceding components, and changes the meaning after a symlink.
-		path = home + string(os.PathSeparator) + strings.TrimPrefix(configured, "~/")
+		path = home + strings.TrimPrefix(configured, "~")
+	}
+	if !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return unavailable("file working directory is unavailable")
+		}
+		path = cwd + string(os.PathSeparator) + path
 	}
 	file, err := safefileio.OpenSecretFile(ctx, path)
 	if err != nil {

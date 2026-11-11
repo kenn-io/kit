@@ -11,6 +11,8 @@ import (
 type Secret struct {
 	Value  string
 	Source string
+	// Reason describes why a secret is unavailable.
+	Reason string
 }
 
 func (s Secret) String() string   { return s.Source + ": [redacted]" }

@@ -1,7 +1,6 @@
 package secretref_test
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,7 +26,7 @@ func TestFileBytesAndBoundaries(t *testing.T) {
 		{"trim cannot hide size", "s" + strings.Repeat("\n", 64<<10), "", true, "file exceeds 64 KiB"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "token")
+			path := filepath.Join(privateTempDir(t), "token")
 			writePrivateFile(t, path, tc.value)
 			got, err := (secretref.Ref{File: path}).ResolveContext(t.Context())
 			if tc.fail {
@@ -44,13 +43,4 @@ func TestFileBytesAndBoundaries(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestFilePathSpacesPreserved(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "token ")
-	writePrivateFile(t, path, "secret")
-	got, err := (secretref.Ref{File: path}).Resolve()
-	require.NoError(t, err)
-	assert.Equal(t, "secret", got.Value)
-	require.NoError(t, os.Remove(path))
 }

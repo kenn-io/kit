@@ -13,7 +13,7 @@ import (
 )
 
 func TestSecretWindowsJunctionBoundary(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	target := filepath.Join(dir, "target")
 	require.NoError(t, os.Mkdir(target, 0o700))
 	path := filepath.Join(target, "token")

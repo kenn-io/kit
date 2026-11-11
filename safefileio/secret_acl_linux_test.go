@@ -32,7 +32,7 @@ func secretAccessACL() []byte {
 }
 
 func TestSecretLinuxAccessACLBoundary(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	path := filepath.Join(dir, "token")
 	require.NoError(t, os.WriteFile(path, []byte("secret"), 0o600))
 	acl := secretAccessACL()

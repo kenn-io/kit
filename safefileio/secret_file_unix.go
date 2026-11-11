@@ -101,7 +101,7 @@ func trustedSecretPath(ctx context.Context, path string) (string, fs.FileInfo, e
 		}
 		info, err := dir.Stat()
 		if err == nil {
-			err = requireUnsharedParent(info, child)
+			err = requireUnsharedParentForUID(info, child, uint32(os.Geteuid()))
 		}
 		if err == nil {
 			err = validateSecretParentAccess(dir)

@@ -26,7 +26,7 @@ func TestSecretParentACLPolicy(t *testing.T) {
 		{[]string{"everyone deny delete", "everyone deny writeextattr", "everyone allow add_file"}, false},
 	} {
 		t.Run(strings.Join(tc.acl, ","), func(t *testing.T) {
-			dir := t.TempDir()
+			dir := privateTempDir(t)
 			path := filepath.Join(dir, "token")
 			require.NoError(t, os.WriteFile(path, []byte("token"), 0o600))
 			for i, entry := range tc.acl {

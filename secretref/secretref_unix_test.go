@@ -15,7 +15,7 @@ import (
 )
 
 func TestRefFilePermissionPolicy(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	shared := filepath.Join(dir, "shared.key")
 	require.NoError(t, os.WriteFile(shared, []byte("secret"), 0o600))
 	require.NoError(t, os.Chmod(shared, 0o644))
@@ -31,7 +31,7 @@ func TestRefFilePermissionPolicy(t *testing.T) {
 }
 
 func TestRefFileRefusesAFIFOWithoutBlocking(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "key.pipe")
+	path := filepath.Join(privateTempDir(t), "key.pipe")
 	require.NoError(t, syscall.Mkfifo(path, 0o600))
 	done := make(chan error, 1)
 	go func() {

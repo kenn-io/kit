@@ -111,6 +111,10 @@ func requireUnsharedRoot(parent *os.Root, created fs.FileInfo) error {
 // sticky bit set while created belongs to the current user or root, since the
 // sticky bit only stops others from renaming entries they do not own.
 func requireUnsharedParent(dir, created fs.FileInfo) error {
+	return requireUnsharedParentForUID(dir, created, uint32(os.Getuid()))
+}
+
+func requireUnsharedParentForUID(dir, created fs.FileInfo, uid uint32) error {
 	if !dir.IsDir() {
 		return fmt.Errorf("parent %s is not a directory", dir.Name())
 	}
@@ -118,7 +122,6 @@ func requireUnsharedParent(dir, created fs.FileInfo) error {
 	if !ok {
 		return fmt.Errorf("stat %s: missing owner information", dir.Name())
 	}
-	uid := uint32(os.Geteuid())
 	if stat.Uid != uid && stat.Uid != 0 {
 		return fmt.Errorf("parent %s is owned by another user", dir.Name())
 	}

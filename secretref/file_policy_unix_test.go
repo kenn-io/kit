@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/secretref"
-	"hegel.dev/go/hegel"
+	"pgregory.net/rapid"
 )
 
 func TestReadOnlyAndMountedLinks(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	version := filepath.Join(dir, "..version")
 	require.NoError(t, os.Mkdir(version, 0o700))
 	key := filepath.Join(version, "token")
@@ -30,25 +30,25 @@ func TestReadOnlyAndMountedLinks(t *testing.T) {
 }
 
 func TestHomeAndAbsolutePathAgreementProperty(t *testing.T) {
-	home := t.TempDir()
+	home := privateTempDir(t)
 	t.Setenv("HOME", home)
 	require.NoError(t, os.MkdirAll(filepath.Join(home, "target", "inner"), 0o700))
 	require.NoError(t, os.Symlink("target/inner", filepath.Join(home, "link")))
-	hegel.Test(t, func(ht *hegel.T) {
-		value := "token:" + hegel.Draw(ht, hegel.Text())
+	rapid.Check(t, func(ht *rapid.T) {
+		value := "token:" + rapid.String().Draw(ht, "text")
 		require.NoError(ht, os.WriteFile(filepath.Join(home, "target", "token"), []byte(value), 0o600))
-		suffix := hegel.Draw(ht, hegel.SampledFrom([]string{"link/../token", "target//./token", "target/inner/../token", "target/token/", "missing/../target/token"}))
+		suffix := rapid.SampledFrom([]string{"link/../token", "target//./token", "target/inner/../token", "target/token/", "missing/../target/token"}).Draw(ht, "suffix")
 		absolute, absErr := (secretref.Ref{File: home + "/" + suffix}).ResolveContext(t.Context())
 		relative, relErr := (secretref.Ref{File: "~/" + suffix}).ResolveContext(t.Context())
 		assert.Equal(ht, absErr == nil, relErr == nil)
 		assert.Equal(ht, absolute.Value, relative.Value)
-	}, hegel.WithTestCases(2000))
+	})
 }
 
 func TestFileTransformProperty(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "token")
-	hegel.Test(t, func(ht *hegel.T) {
-		data := hegel.Draw(ht, hegel.Binary(0, -1))
+	path := filepath.Join(privateTempDir(t), "token")
+	rapid.Check(t, func(ht *rapid.T) {
+		data := rapid.SliceOf(rapid.Byte()).Draw(ht, "bytes")
 		require.NoError(ht, os.WriteFile(path, data, 0o600))
 		got, err := (secretref.Ref{File: path}).ResolveContext(t.Context())
 		end := len(data)
@@ -63,11 +63,11 @@ func TestFileTransformProperty(t *testing.T) {
 			require.NoError(ht, err)
 			assert.Equal(ht, want, got.Value)
 		}
-	}, hegel.WithTestCases(2000))
+	})
 }
 
 func TestUnsafeAncestorAndLoopRejected(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	unsafe := filepath.Join(dir, "unsafe")
 	require.NoError(t, os.Mkdir(unsafe, 0o700))
 	key := filepath.Join(unsafe, "token")
@@ -88,7 +88,7 @@ func TestUnsafeAncestorAndLoopRejected(t *testing.T) {
 }
 
 func TestHomeExpansionKeepsTraversedComponents(t *testing.T) {
-	home := t.TempDir()
+	home := privateTempDir(t)
 	t.Setenv("HOME", home)
 	unsafe := filepath.Join(home, "unsafe")
 	require.NoError(t, os.Mkdir(unsafe, 0o700))
@@ -99,7 +99,7 @@ func TestHomeExpansionKeepsTraversedComponents(t *testing.T) {
 }
 
 func TestHomeExpansionPreservesSymlinkDotDotMeaning(t *testing.T) {
-	home := t.TempDir()
+	home := privateTempDir(t)
 	t.Setenv("HOME", home)
 	target := filepath.Join(home, "target", "inner")
 	require.NoError(t, os.MkdirAll(target, 0o700))

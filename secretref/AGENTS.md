@@ -19,15 +19,15 @@
 - An unset reference resolves successfully without a secret. A configured
   environment or file source that is missing, empty, or unreadable is an
   error. Callers decide whether to keep running without the provider.
-- Exact-empty literals remain unset; nonempty blank and NUL-containing values
-  fail with an error. Preserve literal/env bytes and file bytes except trailing
+- Exact-empty literals remain unset; blank literals return a reason. Preserve
+  literal/env bytes and file bytes except trailing
   CR/LF. Bound raw files to 64 KiB by both stat and bounded read.
-- `Secret` has only Value/Source and redacts default formatting, JSON and slog.
+- `Secret` redacts default formatting, JSON and slog.
   SourceError.Source may name a selector; Reason never contains selectors or
   secret values. Do not forward raw OS/decoder errors that can expose values.
 - Files open through `safefileio.OpenSecretFile`, whose trusted path permits
   controlled links and root-owned mounted files. Never repair permissions or
-  block on a FIFO. Relative paths fail at load; only absolute or ~/ paths work.
+  block on a FIFO.
 - Use ResolveContext when a context is available; Resolve is a compatibility
   wrapper. Check cancellation between I/O steps without promising kernel-call
   interruption.

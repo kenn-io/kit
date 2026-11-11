@@ -80,7 +80,7 @@ func TestRefRejectsAmbiguousOrUnknownSources(t *testing.T) {
 func TestRefResolve(t *testing.T) {
 	t.Setenv("KIT_TEST_SECRET", "from-env")
 	t.Setenv("KIT_TEST_EMPTY", "")
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	keyFile := filepath.Join(dir, "app.key")
 	writePrivateFile(t, keyFile, "from-file\r\n")
 	emptyFile := filepath.Join(dir, "empty.key")
@@ -98,7 +98,7 @@ func TestRefResolve(t *testing.T) {
 		{name: "literal is not expanded", ref: secretref.Literal("${KIT_TEST_SECRET}"), want: secretref.Secret{
 			Value: "${KIT_TEST_SECRET}", Source: "inline",
 		}},
-		{name: "blank literal", ref: secretref.Literal(" "), wantErr: "secret is unset or empty"},
+		{name: "blank literal", ref: secretref.Literal(" "), want: secretref.Secret{Source: "inline", Reason: "inline value is empty"}},
 		{name: "env", ref: secretref.Ref{Env: "KIT_TEST_SECRET"}, want: secretref.Secret{Value: "from-env", Source: "env:KIT_TEST_SECRET"}},
 		{name: "empty env", ref: secretref.Ref{Env: "KIT_TEST_EMPTY"}, wantErr: "KIT_TEST_EMPTY"},
 		{name: "file", ref: secretref.Ref{File: keyFile}, want: secretref.Secret{Value: "from-file", Source: "file:" + keyFile}},
@@ -119,7 +119,7 @@ func TestRefResolve(t *testing.T) {
 }
 
 func TestRefFileExpandsHome(t *testing.T) {
-	home := t.TempDir()
+	home := privateTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	writePrivateFile(t, filepath.Join(home, "app.key"), "from-home")
