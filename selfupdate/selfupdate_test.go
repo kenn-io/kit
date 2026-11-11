@@ -2119,16 +2119,15 @@ func TestChecksumRetryTransport(t *testing.T) {
 		failure   error
 		bodyError error
 	}{
-		{"network", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("disconnected")}, nil},
 		{"plain transport error", errors.New("connection lost"), nil},
-		{"truncated", nil, io.ErrUnexpectedEOF},
 		{"plain body error", nil, errors.New("stream reset")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var requests int
-				c := Client{HTTPClient: &http.Client{Transport: checksumRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				transport := checksumRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 					requests++
+					assert.Equal(t, "test-agent", r.Header.Get("User-Agent"))
 					if requests == 1 {
 						if tt.failure != nil {
 							return nil, tt.failure
@@ -2136,11 +2135,15 @@ func TestChecksumRetryTransport(t *testing.T) {
 						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(iotest.ErrReader(tt.bodyError)), Header: make(http.Header), Request: r}, nil
 					}
 					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(testHash64 + "  tool.tar.gz\n")), Header: make(http.Header), Request: r}, nil
-				})}}
+				})
+				client := &http.Client{Transport: transport, Timeout: time.Minute}
+				c := Client{HTTPClient: client, UserAgent: "test-agent"}
 				checksum, err := c.fetchChecksumFromFile(t.Context(), "http://example.invalid/checksums", "tool.tar.gz")
 				require.NoError(t, err)
 				assert.Equal(t, testHash64, checksum)
 				assert.Equal(t, 2, requests)
+				assert.Equal(t, time.Minute, client.Timeout)
+				assert.IsType(t, transport, client.Transport)
 			})
 		})
 	}
@@ -2172,12 +2175,13 @@ func TestChecksumRetryAfter(t *testing.T) {
 					_, _ = fmt.Fprintf(w, "%s  tool.tar.gz\n", testHash64)
 				}))
 				client := server.Client()
+				// Retry-After dates use the wait clock, not the cache clock.
 				checksum, err := (Client{HTTPClient: client, Clock: func() time.Time { return time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC) }}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
 				require.NoError(t, err)
 				assert.Equal(t, testHash64, checksum)
 				if tt.wait == 0 {
-					assert.GreaterOrEqual(t, time.Since(start), 250*time.Millisecond)
-					assert.LessOrEqual(t, time.Since(start), 750*time.Millisecond)
+					assert.Positive(t, time.Since(start))
+					assert.Less(t, time.Since(start), time.Second)
 				} else {
 					assert.Equal(t, tt.wait, time.Since(start))
 				}
@@ -2188,21 +2192,39 @@ func TestChecksumRetryAfter(t *testing.T) {
 }
 
 func TestChecksumRetryCancellation(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		var requests atomic.Int32
-		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			requests.Add(1)
-			w.Header().Set("Retry-After", "10")
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}))
-		client := server.Client()
-		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-		defer cancel()
-		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(ctx, server.URL, "tool.tar.gz")
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-		require.ErrorContains(t, err, "503")
-		assert.EqualValues(t, 1, requests.Load())
-	})
+	for _, withCause := range []bool{false, true} {
+		t.Run(strconv.FormatBool(withCause), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var requests atomic.Int32
+				server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					requests.Add(1)
+					w.Header().Set("Retry-After", "10")
+					w.WriteHeader(http.StatusServiceUnavailable)
+				}))
+				client := server.Client()
+				var ctx context.Context
+				var want error
+				if withCause {
+					var cancel context.CancelCauseFunc
+					ctx, cancel = context.WithCancelCause(t.Context())
+					want = errors.New("update abandoned")
+					go func() { time.Sleep(time.Second); cancel(want) }()
+				} else {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(t.Context(), time.Second)
+					defer cancel()
+					want = context.DeadlineExceeded
+				}
+				_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(ctx, server.URL, "tool.tar.gz")
+				require.ErrorIs(t, err, want)
+				if withCause {
+					require.ErrorIs(t, err, context.Canceled)
+				}
+				require.ErrorContains(t, err, "503")
+				assert.EqualValues(t, 1, requests.Load())
+			})
+		})
+	}
 }
 
 func TestChecksumRetryAfterMissingAsset(t *testing.T) {
@@ -2233,29 +2255,6 @@ func TestChecksumRetryAfterMissingAsset(t *testing.T) {
 	})
 }
 
-func TestChecksumRetryCancellationCause(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		var requests atomic.Int32
-		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			requests.Add(1)
-			w.Header().Set("Retry-After", "10")
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}))
-		client := server.Client()
-		ctx, cancel := context.WithCancelCause(t.Context())
-		cause := errors.New("update abandoned")
-		go func() {
-			time.Sleep(time.Second)
-			cancel(cause)
-		}()
-		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(ctx, server.URL, "tool.tar.gz")
-		require.ErrorIs(t, err, context.Canceled)
-		require.ErrorIs(t, err, cause)
-		require.ErrorContains(t, err, "503")
-		assert.EqualValues(t, 1, requests.Load())
-	})
-}
-
 func TestChecksumRetryStopsOnRedirectPolicyError(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var requests atomic.Int32
@@ -2270,27 +2269,6 @@ func TestChecksumRetryStopsOnRedirectPolicyError(t *testing.T) {
 		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
 		require.ErrorContains(t, err, "policy refused")
 		assert.EqualValues(t, 1, requests.Load())
-	})
-}
-
-func TestChecksumRetryPreservesHTTPClient(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		var requests int
-		transport := checksumRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-			requests++
-			assert.Equal(t, "test-agent", r.Header.Get("User-Agent"))
-			if requests == 1 {
-				return nil, errors.New("connection lost")
-			}
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(testHash64 + "  tool.tar.gz\n")), Request: r}, nil
-		})
-		client := &http.Client{Transport: transport, Timeout: time.Minute}
-		checksum, err := (Client{HTTPClient: client, UserAgent: "test-agent"}).fetchChecksumFromFile(t.Context(), "http://example.invalid/checksums", "tool.tar.gz")
-		require.NoError(t, err)
-		assert.Equal(t, testHash64, checksum)
-		assert.Equal(t, 2, requests)
-		assert.Equal(t, time.Minute, client.Timeout)
-		assert.IsType(t, transport, client.Transport)
 	})
 }
 

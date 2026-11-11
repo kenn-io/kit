@@ -142,7 +142,7 @@ func newAPIError(resp *http.Response) *APIError {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	return &APIError{
 		StatusCode: resp.StatusCode,
-		RetryAfter: httpretry.RetryAfter(resp.Header.Get("Retry-After"), time.Now(), 0),
+		RetryAfter: httpretry.RetryAfter(resp.Header.Get("Retry-After"), 0),
 		Reason:     classifyFailure(resp.StatusCode, body),
 	}
 }

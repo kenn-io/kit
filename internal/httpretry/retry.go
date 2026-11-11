@@ -14,9 +14,9 @@ func Retryable(status int) bool {
 	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
 }
 
-// RetryAfter parses the server's requested delay relative to now. A positive
+// RetryAfter parses the server's requested delay. A positive
 // limit caps the delay; zero leaves the parsed duration uncapped.
-func RetryAfter(header string, now time.Time, limit time.Duration) time.Duration {
+func RetryAfter(header string, limit time.Duration) time.Duration {
 	header = strings.TrimSpace(header)
 	if header == "" {
 		return 0
@@ -41,7 +41,7 @@ func RetryAfter(header string, now time.Time, limit time.Duration) time.Duration
 	if err != nil {
 		return 0
 	}
-	delay := max(0, when.Sub(now))
+	delay := max(0, time.Until(when))
 	if limit > 0 {
 		delay = min(delay, limit)
 	}
