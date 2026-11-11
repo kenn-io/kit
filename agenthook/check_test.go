@@ -9,9 +9,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -59,8 +61,11 @@ func runHookCheckHelper(mode string) int {
 			}
 		}
 	}
-	if mode == "initialize-eof" {
+	if mode == "initialize-eof" || mode == "cancel-pause" {
 		_, _ = testserver.Read(input)
+		if mode == "cancel-pause" {
+			_ = os.WriteFile(os.Getenv("KIT_HOOK_CHECK_EVENT"), []byte("ready"), 0o600)
+		}
 		return 0
 	}
 	if err := testserver.Handshake(input, os.Stdout); err != nil {
@@ -124,7 +129,12 @@ func runHookCheckHelper(mode string) int {
 			}
 			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, response)
 			if mode == "close-delay" {
-				time.Sleep(2 * time.Second)
+				input.Scan()
+				_ = os.WriteFile(os.Getenv("KIT_HOOK_CHECK_EVENT"), []byte("ready"), 0o600)
+				signals := make(chan os.Signal, 1)
+				signal.Notify(signals, os.Interrupt)
+				<-signals
+				signal.Stop(signals)
 				return 0
 			}
 		default:
@@ -156,7 +166,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", 1},
 		{"completed before cancellation", "close-delay", "trusted", "", CheckOK, "", 1},
 		{"already canceled", "already-canceled", "", "", CheckUnknown, "context canceled", 0},
-		{"cancel during pause", "cancel-pause", "", "", CheckUnknown, "context deadline exceeded", 1},
+		{"cancel after startup failure", "cancel-pause", "", "", CheckUnknown, "context canceled", 1},
 		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", 1},
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", 1},
 		{"reviewed", "normal", "trusted", "", CheckOK, "", 1},
@@ -265,11 +275,9 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			}
 			record := filepath.Join(dir, "launches")
 			t.Setenv("KIT_HOOK_CHECK_LAUNCHES", record)
-			mode := tc.mode
-			if mode == "cancel-pause" {
-				mode = "initialize-eof"
-			}
-			t.Setenv("KIT_HOOK_CHECK_HELPER", mode)
+			event := filepath.Join(dir, "event")
+			t.Setenv("KIT_HOOK_CHECK_EVENT", event)
+			t.Setenv("KIT_HOOK_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_HOOK_CHECK_REPLY", reply)
 			if tc.mode == "missing-cli" {
 				t.Setenv("PATH", t.TempDir())
@@ -280,23 +288,38 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				ctx, cancel = context.WithCancel(ctx)
 				cancel()
 			}
-			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" || tc.mode == "cancel-pause" || tc.mode == "close-delay" {
+			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" {
 				var cancel context.CancelFunc
-				timeout := time.Second
-				if tc.mode == "cancel-pause" || tc.mode == "close-delay" {
-					timeout = 200 * time.Millisecond
-				}
-				ctx, cancel = context.WithTimeout(ctx, timeout)
+				ctx, cancel = context.WithTimeout(ctx, time.Second)
 				defer cancel()
 			}
 			started := time.Now()
-			result, err := Check(ctx, AgentCodex, opts)
-			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" || tc.mode == "cancel-pause" {
+			var result CheckResult
+			if tc.mode == "cancel-pause" || tc.mode == "close-delay" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+				finished := make(chan struct{})
+				go func() {
+					result, err = Check(ctx, AgentCodex, opts)
+					close(finished)
+				}()
+				require.Eventually(t, func() bool { _, err := os.Stat(event); return err == nil }, 30*time.Second, 10*time.Millisecond)
+				cancel()
+				select {
+				case <-finished:
+				case <-time.After(30 * time.Second):
+					require.FailNow(t, "cancellation must finish the check")
+				}
+			} else {
+				result, err = Check(ctx, AgentCodex, opts)
+			}
+			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" {
 				assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound the native check")
 			}
 			require.NoError(t, err)
 			if tc.mode == "close-delay" {
-				assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+				assert.ErrorIs(t, ctx.Err(), context.Canceled)
 			}
 			if tc.launches == 0 {
 				_, err := os.Stat(record)
@@ -640,4 +663,5 @@ func TestCheckCodexConformance(t *testing.T) {
 
 func TestTransientCodexDeadline(t *testing.T) {
 	assert.True(t, transientCodexError(fmt.Errorf("read: %w", context.DeadlineExceeded)))
+	assert.True(t, transientCodexError(&os.PathError{Op: "fork/exec", Err: syscall.ETXTBSY}))
 }

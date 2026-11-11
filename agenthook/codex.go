@@ -79,7 +79,7 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 }
 
 func transientCodexError(err error) bool {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, syscall.EAGAIN) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.ETXTBSY) {
 		return true
 	}
 	var pathErr *os.PathError
