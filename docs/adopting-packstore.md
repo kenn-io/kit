@@ -1,7 +1,7 @@
 ---
 title: "Adopting packed content storage"
 description: "Integrate packed content storage and maintain its publication and recovery guarantees."
-last_edited: 2026-11-09
+last_edited: 2026-11-10
 ---
 
 # Adopting packed content storage
@@ -236,6 +236,11 @@ up to `TargetSize`. A quarter of `TargetSize` suits both. `RepackOptions.MaxByte
 admits whole merge groups, so a store with many small packs converges over
 successive passes. Merging only rewrites live entries through `CommitRepack`,
 so it needs no catalog changes.
+
+`Repack` copies each live entry's stored frame into the replacement pack
+without recompressing it, after checking the frame's CRC32C and decoding it to
+check its length and SHA-256. It holds one frame of up to 16 MiB in memory at a
+time; larger entries are recompressed through disk scratch.
 
 A pass that fails or reaches its deadline keeps the verification progress it
 made, so a bounded sweep with `MaxVerifyBytes` moves forward across passes even
