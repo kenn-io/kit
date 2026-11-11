@@ -14,7 +14,6 @@ import (
 // daemon's operation gate, End releases it (FORMAT.md, Freeze Protocol). The pinned read
 // transaction — which keeps the main DB file frozen afterwards — is owned by
 // FrozenSession, not the coordinator.
-// Create may repeat the freeze once if the scan file no longer matches the path.
 type FreezeCoordinator interface {
 	Begin(ctx context.Context) error
 	End(ctx context.Context) error

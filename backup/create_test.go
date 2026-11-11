@@ -362,6 +362,7 @@ func TestCreateReplacement(t *testing.T) {
 				return
 			}
 			require.Equal(t, 2, opens)
+			require.Equal(t, 2, coordinator.begins)
 			if tc.replacements == 2 {
 				require.ErrorContains(t, err, "was replaced")
 				require.Empty(t, list)
