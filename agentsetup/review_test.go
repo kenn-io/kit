@@ -83,9 +83,6 @@ func TestCodexZeroToolsInReport(t *testing.T) {
 	data, err = json.Marshal(report.Rows[1])
 	require.NoError(t, err)
 	require.NotContains(t, string(data), `"tool_count"`)
-	var out bytes.Buffer
-	require.NoError(t, report.WriteText(&out, ""))
-	require.Contains(t, out.String(), "0 tools")
 	t.Setenv("SETUP_ZERO_TOOLS", "")
 	status, err := MCP("codex", "example", server).Check(t.Context())
 	require.NoError(t, err)

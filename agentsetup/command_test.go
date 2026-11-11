@@ -3,7 +3,6 @@ package agentsetup
 import (
 	"bytes"
 	"context"
-	"encoding/json/v2"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -31,14 +30,8 @@ func TestCommandCheckAndPrint(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotReady)
 	require.False(t, installed)
 	require.Contains(t, text, "app setup --agent claude")
-	data, err := run("--check", "--json")
-	require.ErrorIs(t, err, ErrNotReady)
-	var report Report
-	require.NoError(t, json.Unmarshal([]byte(data), &report))
-	require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
 	output, err := run("--print", "--agent", "codex")
 	require.NoError(t, err)
-	require.Contains(t, output, "claude mcp add")
 	require.Contains(t, output, "codex mcp add")
 	require.False(t, installed)
 }

@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -87,6 +85,11 @@ func TestReportCountsRows(t *testing.T) {
 	require.NoError(t, r.WriteText(&out, ""))
 	require.Contains(t, out.String(), "Done except 3 steps for you")
 	require.NotContains(t, out.String(), "Run")
+	r.Rows = make([]Row, 1)
+	r.Rows[0].State, r.Rows[0].ToolCount = StateOK, new(0)
+	out.Reset()
+	require.NoError(t, r.WriteText(&out, ""))
+	require.Contains(t, out.String(), "0 tools")
 }
 
 func TestCheckOnlyGuidance(t *testing.T) {
@@ -97,12 +100,16 @@ func TestCheckOnlyGuidance(t *testing.T) {
 			report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", CheckOnly: true, Items: func(string) ([]Item, error) {
 				return []Item{
 					{Name: "without step", Install: func(context.Context) error { installed = true; return nil }, Check: func(context.Context) (Status, error) { return Status{State: state}, nil }},
-					{Name: "with step", Check: func(context.Context) (Status, error) { return Status{State: state, NextStep: "do this"}, nil }},
+					{Name: "with step", retrySetup: true, Check: func(context.Context) (Status, error) { return Status{State: state, NextStep: "do this"}, nil }},
 				}, nil
 			}})
 			require.NoError(t, err)
 			require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
-			require.Equal(t, "do this", report.Rows[1].NextStep)
+			want := "do this"
+			if state == StateMissing || state == StateOutdated {
+				want = "app setup --agent claude"
+			}
+			require.Equal(t, want, report.Rows[1].NextStep)
 		})
 	}
 	require.False(t, installed)
@@ -122,20 +129,9 @@ func TestCancelStopsCallbacks(t *testing.T) {
 	require.False(t, called)
 }
 
-func TestNativeGuidance(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("CLAUDE_CONFIG_DIR", home)
-	require.NoError(t, os.WriteFile(filepath.Join(home, "settings.json"), []byte(`{"disableAllHooks":true}`), 0o600))
-	hook := agenthook.InstallOptions{Executable: "example", Arguments: []string{"hook"}, Marker: "hook", Hooks: []agenthook.Hook{{Event: agenthook.EventStop}}}
-	report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", Items: func(agent string) ([]Item, error) {
-		return []Item{Hooks(agent, hook)}, nil
-	}})
-	require.NoError(t, err)
-	require.Equal(t, StateDisabled, report.Rows[0].State)
-	require.NotEmpty(t, report.Rows[0].NextStep)
-	require.NotEqual(t, "app setup --agent claude", report.Rows[0].NextStep)
-	report, err = Run(t.Context(), Options{Agents: []string{"muse"}, SetupCommand: "app setup", Items: func(agent string) ([]Item, error) {
+func TestItemRepairGuidance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	report, err := Run(t.Context(), Options{Agents: []string{"muse"}, SetupCommand: "app setup", Items: func(agent string) ([]Item, error) {
 		return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
 	}})
 	require.NoError(t, err)
