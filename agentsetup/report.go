@@ -95,9 +95,9 @@ func (r Report) WriteText(w io.Writer, checkCommand string) error {
 		_, err := fmt.Fprintln(w, "Done.")
 		return err
 	}
-	summary := fmt.Sprintf("%d items need attention.", failures)
+	summary := fmt.Sprintf("Done except %d steps for you.", failures)
 	if failures == 1 {
-		summary = "1 item needs attention."
+		summary = "Done except 1 step for you."
 	}
 	if checkCommand != "" {
 		summary += fmt.Sprintf(" Run `%s` afterwards.", checkCommand)

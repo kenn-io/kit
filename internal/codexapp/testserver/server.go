@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,6 +48,39 @@ func Read(input *bufio.Scanner) (Request, error) {
 	var request Request
 	err := json.Unmarshal(input.Bytes(), &request)
 	return request, err
+}
+
+// CheckConfigRead validates the hook check's configuration request.
+func CheckConfigRead(request Request) error {
+	cwd, err := os.Getwd()
+	if err != nil || request.Params["includeLayers"] != false || request.Params["cwd"] != cwd {
+		return errors.New("invalid config/read request")
+	}
+	return nil
+}
+
+// CheckHooksList validates the hook check's discovery request.
+func CheckHooksList(request Request) error {
+	cwd, err := os.Getwd()
+	args, _ := request.Params["cwds"].([]any)
+	if err != nil || len(args) != 1 || args[0] != cwd {
+		return errors.New("invalid hooks/list request")
+	}
+	return nil
+}
+
+// CheckMCPList validates a server-specific status request.
+func CheckMCPList(request Request, name string) error {
+	if request.Method != "mcpServerStatus/list" || request.Params["serverName"] != name || len(request.Params) != 1 {
+		return errors.New("invalid mcpServerStatus/list request")
+	}
+	return nil
+}
+
+// Reply writes a result frame for a request.
+func Reply(output io.Writer, request Request, result string) error {
+	_, err := fmt.Fprintf(output, "{\"id\":%d,\"result\":%s}\n", request.ID, result)
+	return err
 }
 
 // Handshake checks initialization and sends unrelated frames before its reply.

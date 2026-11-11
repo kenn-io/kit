@@ -92,11 +92,11 @@ func TestReportCountsRows(t *testing.T) {
 	require.Equal(t, r.Rows[0].NextStep, r.Rows[1].NextStep)
 	var out bytes.Buffer
 	require.NoError(t, r.WriteText(&out, ""))
-	require.Contains(t, out.String(), "2 items need attention")
+	require.Contains(t, out.String(), "Done except 2 steps for you")
 	r.Rows = append(r.Rows, r.Rows[0])
 	out.Reset()
 	require.NoError(t, r.WriteText(&out, ""))
-	require.Contains(t, out.String(), "3 items need attention")
+	require.Contains(t, out.String(), "Done except 3 steps for you")
 }
 
 func TestCheckOnlyGuidance(t *testing.T) {

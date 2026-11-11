@@ -30,10 +30,10 @@ func runCheckHelper(mode string) int {
 		return 3
 	}
 	request, err := testserver.Read(input)
-	if err != nil || request.Method != "mcpServerStatus/list" || request.Params["serverName"] != "example" || len(request.Params) != 1 {
+	if err != nil || testserver.CheckMCPList(request, "example") != nil {
 		return 4
 	}
-	fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, os.Getenv("KIT_MCP_CHECK_REPLY"))
+	_ = testserver.Reply(os.Stdout, request, os.Getenv("KIT_MCP_CHECK_REPLY"))
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	return 0
 }

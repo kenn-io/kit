@@ -21,6 +21,10 @@ func TestMain(m *testing.M) {
 }
 
 func runHelper() int {
+	if len(os.Args) == 5 && os.Args[1] == "mcp" && os.Args[2] == "get" && os.Args[3] == "--" && os.Args[4] == "example" {
+		fmt.Print("Scope: User config\nStatus: Connected\n")
+		return 0
+	}
 	input := bufio.NewScanner(os.Stdin)
 	if testserver.Handshake(input, os.Stdout) != nil {
 		return 2
@@ -35,8 +39,14 @@ func runHelper() int {
 		}
 		switch request.Method {
 		case "config/read":
-			fmt.Printf("{\"id\":%d,\"result\":{\"config\":{\"features\":{\"hooks\":true}}}}\n", request.ID)
+			if testserver.CheckConfigRead(request) != nil {
+				return 5
+			}
+			_ = testserver.Reply(os.Stdout, request, `{"config":{"features":{"hooks":true}}}`)
 		case "hooks/list":
+			if testserver.CheckHooksList(request) != nil {
+				return 6
+			}
 			path := filepath.Join(os.Getenv("CODEX_HOME"), "hooks.json")
 			trust := os.Getenv("SETUP_TRUST")
 			if trust == "" {
@@ -48,14 +58,20 @@ func runHelper() int {
 			}
 			result := map[string]any{"data": []any{map[string]any{"hooks": hooks, "errors": []any{}}}}
 			data, _ := json.Marshal(result)
-			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, data)
+			_ = testserver.Reply(os.Stdout, request, string(data))
 		case "mcpServerStatus/list":
 			if os.Getenv("SETUP_MCP_FAILURE") != "" {
-				fmt.Printf("{\"id\":%d,\"result\":{\"data\":[{\"name\":\"first\",\"toolsError\":\"failed\"},{\"name\":\"second\",\"toolsError\":\"failed\"}]}}\n", request.ID)
+				if testserver.CheckMCPList(request, "first") != nil && testserver.CheckMCPList(request, "second") != nil {
+					return 7
+				}
+				_ = testserver.Reply(os.Stdout, request, `{"data":[{"name":"first","toolsError":"failed"},{"name":"second","toolsError":"failed"}]}`)
 				continue
 			}
+			if testserver.CheckMCPList(request, "example") != nil {
+				return 7
+			}
 			data, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"name": "example", "tools": map[string]any{"search": map[string]any{}}, "toolsError": nil}}})
-			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, data)
+			_ = testserver.Reply(os.Stdout, request, string(data))
 		default:
 			return 4
 		}
