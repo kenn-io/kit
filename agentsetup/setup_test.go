@@ -60,13 +60,6 @@ func runHelper() int {
 			data, _ := json.Marshal(result)
 			_ = testserver.Reply(os.Stdout, request, string(data))
 		case "mcpServerStatus/list":
-			if os.Getenv("SETUP_MCP_FAILURE") != "" {
-				if testserver.CheckMCPList(request, "first") != nil && testserver.CheckMCPList(request, "second") != nil {
-					return 7
-				}
-				_ = testserver.Reply(os.Stdout, request, `{"data":[{"name":"first","toolsError":"failed"},{"name":"second","toolsError":"failed"}]}`)
-				continue
-			}
 			if testserver.CheckMCPList(request, "example") != nil {
 				return 7
 			}

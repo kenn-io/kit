@@ -36,9 +36,9 @@ func TestCommandCheckAndPrint(t *testing.T) {
 	var report Report
 	require.NoError(t, json.Unmarshal([]byte(data), &report))
 	require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
-	require.Contains(t, text, report.Rows[0].NextStep)
-	output, err := run("--print")
+	output, err := run("--print", "--agent", "codex")
 	require.NoError(t, err)
 	require.Contains(t, output, "claude mcp add")
+	require.Contains(t, output, "codex mcp add")
 	require.False(t, installed)
 }

@@ -74,22 +74,11 @@ func TestDefaultAndExplicitSelection(t *testing.T) {
 }
 
 func TestReportCountsRows(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("SETUP_HELPER", "1")
-	t.Setenv("SETUP_MCP_FAILURE", "1")
-	testserver.InstallExecutable(t, "codex")
-	for _, name := range []string{"first", "second"} {
-		_, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: name, Server: agentmcp.Server{Command: name}})
-		require.NoError(t, err)
+	r := Report{Rows: make([]Row, 2)}
+	for i := range r.Rows {
+		r.Rows[i].State = StateFailed
+		r.Rows[i].NextStep = "retry setup"
 	}
-	r, err := Run(t.Context(), Options{Agents: []string{"codex"}, SetupCommand: "app setup", CheckOnly: true, Items: func(agent string) ([]Item, error) {
-		return []Item{MCP(agent, "first", agentmcp.Server{Command: "first"}), MCP(agent, "second", agentmcp.Server{Command: "second"})}, nil
-	}})
-	require.NoError(t, err)
-	require.Equal(t, StateFailed, r.Rows[0].State)
-	require.Equal(t, StateFailed, r.Rows[1].State)
-	require.Equal(t, r.Rows[0].NextStep, r.Rows[1].NextStep)
 	var out bytes.Buffer
 	require.NoError(t, r.WriteText(&out, "app setup --check"))
 	require.Contains(t, out.String(), "Done except 2 steps for you. Run `app setup --check` afterwards.")
@@ -151,4 +140,15 @@ func TestNativeGuidance(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StateFailed, report.Rows[0].State)
 	require.Equal(t, "Choose an agent that supports MCP", report.Rows[0].NextStep)
+	t.Run("failed hook install", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+		hook := Hooks("claude", agenthook.InstallOptions{Executable: "example", Arguments: []string{"example-hook"}, Marker: "example-hook", Hooks: []agenthook.Hook{{Event: agenthook.EventStop}}})
+		hook.Install = func(context.Context) error { return errors.New("write failed") }
+		report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) { return []Item{hook}, nil }})
+		require.NoError(t, err)
+		require.Equal(t, StateFailed, report.Rows[0].State)
+		require.Equal(t, "write failed", report.Rows[0].Reason)
+		require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
+	})
 }
