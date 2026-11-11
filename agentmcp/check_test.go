@@ -55,6 +55,29 @@ func TestCheckConfigStates(t *testing.T) {
 	}
 }
 
+func TestCheckMissingAgent(t *testing.T) {
+	for _, tc := range []struct {
+		agent agentmcp.Agent
+		step  string
+	}{
+		{agentmcp.AgentClaude, "Install Claude Code and make it available on PATH"},
+		{agentmcp.AgentCodex, "Install Codex and make it available on PATH"},
+	} {
+		t.Run(string(tc.agent), func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+			t.Setenv("CODEX_HOME", t.TempDir())
+			t.Setenv("PATH", t.TempDir())
+			server := agentmcp.Server{Command: "example"}
+			_, err := agentmcp.Install(tc.agent, agentmcp.InstallOptions{Name: "example", Server: server})
+			require.NoError(t, err)
+			result, err := agentmcp.Check(t.Context(), tc.agent, "example", server)
+			require.NoError(t, err)
+			assert.Equal(t, agentmcp.CheckUnknown, result.State)
+			assert.Equal(t, tc.step, result.NextStep)
+		})
+	}
+}
+
 func TestCheckCodex(t *testing.T) {
 	testserver.InstallExecutable(t, "codex")
 	for _, tc := range []struct {
