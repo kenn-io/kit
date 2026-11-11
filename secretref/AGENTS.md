@@ -22,7 +22,8 @@
 - Exact-empty literals remain unset; blank literals return a reason. Preserve
   literal/env bytes and file bytes except trailing
   CR/LF. Bound raw files to 64 KiB by both stat and bounded read.
-- `Secret` redacts default formatting, JSON and slog.
+- `Secret` redacts direct formatting, JSON and slog; formatting an unexported
+  field containing it can expose the value.
   SourceError.Source may name a selector; Reason never contains selectors or
   secret values. Do not forward raw OS/decoder errors that can expose values.
 - Files open through `safefileio.OpenSecretFile`, whose trusted path permits

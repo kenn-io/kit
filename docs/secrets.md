@@ -137,11 +137,13 @@ lookup in `Ref` strings.
 
 ## Diagnostics
 
-`Secret` exposes `Value`, `Source`, and `Reason`. Default formatting (`%s`, `%q`, `%v`,
-`%+v`, `%#v`), JSON marshaling, and `slog` redact the resolved value. Access
-`Value` explicitly only at the consumer boundary; logging that string directly
-will expose it. `Ref` is serializable configuration and can contain a literal
-secret, so do not log the configuration itself.
+`Secret` exposes `Value`, `Source`, and `Reason`. Formatting a `Secret` directly
+with `%s`, `%q`, `%v`, `%+v`, or `%#v`, JSON marshaling, and `slog` redact the
+resolved value. Formatting a struct with an unexported `Secret` field can expose
+it because `fmt` cannot call the field's methods. Access `Value` explicitly only
+at the consumer boundary; logging that string directly will expose it. `Ref` is
+serializable configuration and can contain a literal secret, so do not log the
+configuration itself.
 
 Resolution failures use `*secretref.SourceError`: `Source` names the configured
 path or environment selector, while `Reason` contains no secret or selector.

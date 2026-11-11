@@ -7,7 +7,8 @@ import (
 )
 
 // Secret holds resolved bytes. Access Value explicitly to use the secret;
-// default formatting, JSON encoding and structured logging redact it.
+// direct formatting, JSON encoding and structured logging redact it. Formatting
+// an unexported field containing a Secret can expose its value.
 type Secret struct {
 	Value  string
 	Source string

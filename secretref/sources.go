@@ -46,6 +46,5 @@ func FromEnv(name string) (Ref, error) {
 	if strings.TrimSpace(path) != path {
 		return Ref{}, &SourceError{Source: "env:" + name + "_FILE", Reason: "file selector has surrounding whitespace"}
 	}
-	ref := Ref{File: path}
-	return ref, ref.Validate()
+	return Ref{File: path}, nil
 }
