@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v7"
@@ -49,14 +51,6 @@ func (e checksumRequestError) Timeout() bool {
 	return ok && err.Timeout()
 }
 
-func (e checksumRequestError) Temporary() bool {
-	err, ok := errors.AsType[interface {
-		error
-		Temporary() bool
-	}](e.err)
-	return ok && err.Temporary()
-}
-
 func checksumTransportError(err error) bool {
 	_, transport := errors.AsType[checksumRequestError](err)
 	return transport
@@ -70,4 +64,23 @@ func (b checksumBody) Read(p []byte) (int, error) {
 		return n, checksumRequestError{err}
 	}
 	return n, err
+}
+
+func checksumRetryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	seconds, err := strconv.ParseInt(header, 10, 64)
+	if err == nil {
+		return time.Duration(min(max(seconds, 0), 10)) * time.Second
+	}
+	if errors.Is(err, strconv.ErrRange) && header[0] != '-' {
+		return 10 * time.Second
+	}
+	when, err := http.ParseTime(header)
+	if err != nil {
+		return 0
+	}
+	return max(0, min(time.Until(when), 10*time.Second))
 }

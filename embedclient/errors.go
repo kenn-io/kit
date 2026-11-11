@@ -6,9 +6,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
-
-	"go.kenn.io/kit/internal/httpretry"
 )
 
 // ErrInvalidVector reports that the provider returned a vector that failed
@@ -130,7 +130,7 @@ func (e *APIError) CredentialsRejected() bool {
 // Retryable reports a response that may succeed later: 408, 429, or a 5xx.
 // Check RetryAfter for the delay the provider asked for.
 func (e *APIError) Retryable() bool {
-	return httpretry.Retryable(e.StatusCode)
+	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
 }
 
 // maxErrorBody bounds how much of a failed response Kit reads to classify it.
@@ -142,9 +142,27 @@ func newAPIError(resp *http.Response) *APIError {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	return &APIError{
 		StatusCode: resp.StatusCode,
-		RetryAfter: httpretry.RetryAfter(resp.Header.Get("Retry-After"), 0),
+		RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
 		Reason:     classifyFailure(resp.StatusCode, body),
 	}
+}
+
+func retryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(header); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(header)
+	if err != nil {
+		return 0
+	}
+	if delay := time.Until(when); delay > 0 {
+		return delay
+	}
+	return 0
 }
 
 func classifyTransport(err error) error {

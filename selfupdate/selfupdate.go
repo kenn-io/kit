@@ -26,7 +26,6 @@ import (
 	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/mod/semver"
 
-	"go.kenn.io/kit/internal/httpretry"
 	"go.kenn.io/kit/internal/renamebusy"
 	"go.kenn.io/kit/pathresolve"
 )
@@ -763,7 +762,7 @@ func (c Client) doHTTPRequest(req *http.Request, requireHTTPSRedirects bool) (*h
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return resp, err
 	}
 	if requireHTTPSRedirects && resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Scheme != "https" {
 		resp.Body.Close()
@@ -1180,12 +1179,6 @@ func releaseTagFromURL(u *url.URL) (string, error) {
 }
 
 func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", c.userAgent())
-
 	client := *c.httpClient()
 	transport := client.Transport
 	if transport == nil {
@@ -1195,9 +1188,14 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	c.HTTPClient = &client
 
 	body, err := checksumRetry(ctx, func() ([]byte, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, backoff.Permanent(err)
+		}
+		req.Header.Set("User-Agent", c.userAgent())
 		resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
 		if err != nil {
-			if checksumTransportError(err) && ctx.Err() == nil {
+			if resp == nil && ctx.Err() == nil && (checksumTransportError(err) || errors.Is(err, context.DeadlineExceeded)) {
 				return nil, err
 			}
 			return nil, backoff.Permanent(err)
@@ -1209,8 +1207,8 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 				return nil, backoff.Permanent(fmt.Errorf("%w: %s", errChecksumAssetNotFound, resp.Status))
 			}
 			err := fmt.Errorf("failed to fetch checksums: %s", resp.Status)
-			if resp.StatusCode <= 599 && httpretry.Retryable(resp.StatusCode) {
-				if delay := httpretry.RetryAfter(resp.Header.Get("Retry-After"), 10*time.Second); delay > 0 {
+			if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 && resp.StatusCode <= 599 {
+				if delay := checksumRetryAfter(resp.Header.Get("Retry-After")); delay > 0 {
 					return nil, backoff.RetryAfter(delay, err)
 				}
 				return nil, err
