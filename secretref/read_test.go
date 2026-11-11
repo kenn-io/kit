@@ -14,7 +14,7 @@ import (
 func TestReadSecretEnforcesLimitWithoutStat(t *testing.T) {
 	for _, size := range []int{0, 1, 64 << 10, (64 << 10) + 1, 128 << 10} {
 		reader := strings.NewReader(strings.Repeat("s", size))
-		data, err := readSecret(t.Context(), reader)
+		data, err := readSecret(reader)
 		if size > 64<<10 {
 			require.Error(t, err)
 			assert.Nil(t, data)
@@ -28,7 +28,7 @@ func TestReadSecretEnforcesLimitWithoutStat(t *testing.T) {
 
 func TestReadSecretDropsPartialDataOnError(t *testing.T) {
 	reader := io.MultiReader(strings.NewReader("partial-secret"), iotest.ErrReader(errors.New("private-path")))
-	data, err := readSecret(t.Context(), reader)
+	data, err := readSecret(reader)
 	require.EqualError(t, err, "file is unreadable")
 	assert.Nil(t, data)
 }

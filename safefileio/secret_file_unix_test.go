@@ -3,7 +3,6 @@
 package safefileio
 
 import (
-	"context"
 	"io"
 	"io/fs"
 	"os"
@@ -71,16 +70,6 @@ func TestParentMetadataPolicyProperty(t *testing.T) {
 	})
 }
 
-func TestSecretOpenCancellation(t *testing.T) {
-	path := filepath.Join(privateTempDir(t), "token")
-	require.NoError(t, os.WriteFile(path, []byte("secret"), 0o600))
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	file, err := OpenSecretFile(ctx, path)
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Nil(t, file)
-}
-
 func TestOpenSecretFileTraversesExecutableOnlyParentProperty(t *testing.T) {
 	root := privateTempDir(t)
 	parent := filepath.Join(root, "search-only")
@@ -93,7 +82,7 @@ func TestOpenSecretFileTraversesExecutableOnlyParentProperty(t *testing.T) {
 	rapid.Check(t, func(ht *rapid.T) {
 		mode := fs.FileMode(rapid.Uint32Range(0, 0o777).Draw(ht, "mode"))
 		require.NoError(ht, os.Chmod(parent, mode))
-		file, err := OpenSecretFile(t.Context(), path)
+		file, err := OpenSecretFile(path)
 		if (os.Geteuid() != 0 && mode&0o100 == 0) || mode.Perm()&0o022 != 0 {
 			require.Error(ht, err)
 			assert.Nil(ht, file)
@@ -120,7 +109,7 @@ func TestOpenSecretFileDoesNotNormalizeAwayUnsearchableDotDotComponent(t *testin
 	require.NoError(t, os.Chmod(blocked, 0o600))
 	path := blocked + string(filepath.Separator) + ".." + string(filepath.Separator) + "token"
 
-	file, err := OpenSecretFile(t.Context(), path)
+	file, err := OpenSecretFile(path)
 	require.Error(t, err)
 	assert.Nil(t, file)
 }

@@ -26,7 +26,7 @@ func TestFileBytesAndBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(privateTempDir(t), "token")
 			writePrivateFile(t, path, tc.value)
-			got, err := (secretref.Ref{File: path}).ResolveContext(t.Context())
+			got, err := (secretref.Ref{File: path}).Resolve()
 			if tc.fail {
 				require.Error(t, err)
 				var source *secretref.SourceError

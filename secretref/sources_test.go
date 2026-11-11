@@ -1,7 +1,6 @@
 package secretref_test
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"testing"
@@ -48,13 +47,6 @@ func TestFromEnvRejectsAmbiguousNames(t *testing.T) {
 		_, err := secretref.FromEnv(name)
 		require.Error(t, err)
 	}
-}
-
-func TestResolveContextCanceled(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	_, err := secretref.Literal("key").ResolveContext(ctx)
-	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestExactEmptyCompatibility(t *testing.T) {

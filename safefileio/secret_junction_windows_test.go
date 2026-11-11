@@ -24,11 +24,11 @@ func TestSecretWindowsJunctionBoundary(t *testing.T) {
 	require.NoError(t, file.Close())
 	link := filepath.Join(dir, "junction")
 	require.NoError(t, fslink.CreateJunction(target, link))
-	file, err = safefileio.OpenSecretFile(t.Context(), link)
+	file, err = safefileio.OpenSecretFile(link)
 	require.Error(t, err)
 	assert.Nil(t, file)
 	// The retained policy checks the final entry, not ancestor reparse points.
-	file, err = safefileio.OpenSecretFile(t.Context(), filepath.Join(link, "token"))
+	file, err = safefileio.OpenSecretFile(filepath.Join(link, "token"))
 	require.NoError(t, err)
 	defer func() { assert.NoError(t, file.Close()) }()
 	data, err := io.ReadAll(file)

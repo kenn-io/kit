@@ -43,13 +43,13 @@ func TestSecretLinuxAccessACLBoundary(t *testing.T) {
 		t.Skip("fixture filesystem does not support POSIX ACLs")
 	}
 	require.NoError(t, err)
-	file, err := safefileio.OpenSecretFile(t.Context(), path)
+	file, err := safefileio.OpenSecretFile(path)
 	require.Error(t, err)
 	assert.Nil(t, file)
 	require.NoError(t, unix.Removexattr(path, "system.posix_acl_access"))
 	// Harmless parent ACLs retain the existing Linux mask-based policy.
 	require.NoError(t, unix.Setxattr(dir, "system.posix_acl_access", secretAccessACL(), 0))
-	file, err = safefileio.OpenSecretFile(t.Context(), path)
+	file, err = safefileio.OpenSecretFile(path)
 	require.NoError(t, err)
 	require.NoError(t, file.Close())
 }

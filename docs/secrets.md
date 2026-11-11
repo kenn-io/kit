@@ -35,7 +35,7 @@ secret is needed:
 if err := cfg.Token.Validate(); err != nil {
     return err
 }
-secret, err := cfg.Token.ResolveContext(ctx)
+secret, err := cfg.Token.Resolve()
 if err != nil {
     return err
 }
@@ -45,9 +45,7 @@ client.SetToken(secret.Value)
 Validation performs no source I/O. It rejects conflicting sources. A configured
 environment or file source that is missing, unreadable, blank, or invalid returns
 an error; there is no fallback to another source. Callers decide whether an unset
-reference is allowed. `Resolve` remains a compatibility wrapper using a background
-context; new code should use `ResolveContext`. Cancellation is checked between
-filesystem operations and reads; it cannot interrupt every kernel call.
+reference is allowed.
 
 TOML decoders that invoke `UnmarshalTOML` reject unknown source fields. A decoder
 that fills exported struct fields can silently discard unknown keys before
@@ -80,7 +78,7 @@ Direct `Ref{Env: name}` retains its existing trim-on-resolution behavior;
 
 ## File policy
 
-`safefileio.OpenSecretFile(ctx, path)` opens and validates the same regular-file
+`safefileio.OpenSecretFile(path)` opens and validates the same regular-file
 handle returned to its caller. It never repairs permissions. Unix rules:
 
 - The final file belongs to the effective user with mode `0400` or `0600`, or
@@ -107,10 +105,9 @@ It does not apply Unix root or mode-bit rules. Other
 platforms that cannot enforce the policy fail closed. Existing runtime-state
 helpers retain their stricter policy; this API is for reading secrets.
 
-`secretref` additionally limits the raw file to **64 KiB**, checking both metadata
-and a bounded read so a growing file cannot bypass the limit. It strips all
-trailing CR and LF bytes and preserves all other bytes, including spaces and
-tabs. It rejects blank results and NUL anywhere. A FIFO or other non-regular
+`secretref` additionally limits the raw file to **64 KiB** with a bounded read,
+so a growing file cannot bypass the limit. It strips all trailing CR and LF
+bytes and preserves all other bytes, including spaces and tabs. It rejects blank results and NUL anywhere. A FIFO or other non-regular
 file fails without waiting for a writer.
 
 These rules broaden older `secretref` file support to read-only files, trusted
@@ -147,6 +144,6 @@ configuration itself.
 
 Resolution failures use `*secretref.SourceError`: `Source` names the configured
 path or environment selector, while `Reason` contains no secret or selector.
-Use `errors.As` to choose whether a log should include that source. Context
-cancellation and validation conflicts can return other errors. A blank literal
-returns its diagnostic in `Secret.Reason`.
+Use `errors.As` to choose whether a log should include that source. Validation
+conflicts can return other errors. A blank literal returns its diagnostic in
+`Secret.Reason`.

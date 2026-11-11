@@ -25,15 +25,15 @@ func TestHomeAndAbsolutePathAgreementProperty(t *testing.T) {
 	require.NoError(t, os.Chmod(filepath.Join(version, "token"), 0o400))
 	require.NoError(t, os.Symlink("..version", filepath.Join(home, "..data")))
 	require.NoError(t, os.Symlink("..data/token", filepath.Join(home, "mounted")))
-	mounted, err := (secretref.Ref{File: "~/mounted"}).ResolveContext(t.Context())
+	mounted, err := (secretref.Ref{File: "~/mounted"}).Resolve()
 	require.NoError(t, err)
 	assert.Equal(t, "mounted", mounted.Value)
 	rapid.Check(t, func(ht *rapid.T) {
 		value := "token:" + rapid.String().Draw(ht, "text")
 		require.NoError(ht, os.WriteFile(filepath.Join(home, "target", "token"), []byte(value), 0o600))
 		suffix := rapid.SampledFrom([]string{"link/../token", "target//./token", "target/inner/../token", "target/token/", "missing/../target/token"}).Draw(ht, "suffix")
-		absolute, absErr := (secretref.Ref{File: home + "/" + suffix}).ResolveContext(t.Context())
-		relative, relErr := (secretref.Ref{File: "~/" + suffix}).ResolveContext(t.Context())
+		absolute, absErr := (secretref.Ref{File: home + "/" + suffix}).Resolve()
+		relative, relErr := (secretref.Ref{File: "~/" + suffix}).Resolve()
 		assert.Equal(ht, absErr == nil, relErr == nil)
 		assert.Equal(ht, absolute.Value, relative.Value)
 	})
@@ -44,7 +44,7 @@ func TestFileTransformProperty(t *testing.T) {
 	rapid.Check(t, func(ht *rapid.T) {
 		data := rapid.OneOf(rapid.SliceOf(rapid.Byte()), rapid.Just([]byte("a\x00b"))).Draw(ht, "bytes")
 		require.NoError(ht, os.WriteFile(path, data, 0o600))
-		got, err := (secretref.Ref{File: path}).ResolveContext(t.Context())
+		got, err := (secretref.Ref{File: path}).Resolve()
 		end := len(data)
 		for end > 0 && (data[end-1] == '\r' || data[end-1] == '\n') {
 			end--

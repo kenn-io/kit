@@ -37,7 +37,7 @@ func TestSecretParentACLPolicy(t *testing.T) {
 				ctx := context.Background() //nolint:usetesting // t.Context is canceled before cleanup.
 				require.NoError(t, exec.CommandContext(ctx, "chmod", "-N", dir).Run())
 			})
-			file, err := safefileio.OpenSecretFile(t.Context(), path)
+			file, err := safefileio.OpenSecretFile(path)
 			if tc.accept {
 				require.NoError(t, err)
 				require.NoError(t, file.Close())

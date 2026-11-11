@@ -17,7 +17,6 @@
 package secretref
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,7 +27,6 @@ import (
 	"runtime"
 	"strings"
 
-	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/safefileio"
 )
 
@@ -152,15 +150,6 @@ func (r Ref) MarshalTOML() ([]byte, error) {
 // 64 KiB, and lose trailing CR/LF bytes. Other bytes are preserved. Blank and
 // NUL-containing file and environment secrets are errors; exact-empty literals remain unset.
 func (r Ref) Resolve() (Secret, error) {
-	return r.ResolveContext(context.Background())
-}
-
-// ResolveContext resolves a source, checking cancellation between I/O steps.
-// Cancellation cannot interrupt every operating-system filesystem call.
-func (r Ref) ResolveContext(ctx context.Context) (Secret, error) {
-	if err := ctx.Err(); err != nil {
-		return Secret{}, err
-	}
 	if err := r.Validate(); err != nil {
 		return Secret{}, err
 	}
@@ -171,7 +160,7 @@ func (r Ref) ResolveContext(ctx context.Context) (Secret, error) {
 		name := strings.TrimSpace(r.Env)
 		return checkedSecret(os.Getenv(name), "env:"+name, "secret is unset or empty")
 	case r.File != "":
-		return resolveFile(ctx, strings.TrimSpace(r.File))
+		return resolveFile(strings.TrimSpace(r.File))
 	default:
 		if strings.TrimSpace(r.Value) == "" {
 			return Secret{Source: "inline", Reason: "inline value is empty"}, nil
@@ -190,7 +179,7 @@ func checkedSecret(value, source, emptyReason string) (Secret, error) {
 	return Secret{Value: value, Source: source}, nil
 }
 
-func resolveFile(ctx context.Context, configured string) (Secret, error) {
+func resolveFile(configured string) (Secret, error) {
 	unavailable := func(reason string) (Secret, error) {
 		return Secret{}, &SourceError{Source: "file:" + configured, Reason: reason}
 	}
@@ -211,7 +200,7 @@ func resolveFile(ctx context.Context, configured string) (Secret, error) {
 		}
 		path = cwd + string(os.PathSeparator) + path
 	}
-	file, err := safefileio.OpenSecretFile(ctx, path)
+	file, err := safefileio.OpenSecretFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return unavailable("file is missing")
@@ -219,34 +208,21 @@ func resolveFile(ctx context.Context, configured string) (Secret, error) {
 		if errors.Is(err, fs.ErrPermission) {
 			return unavailable("file is unreadable")
 		}
-		if ctx.Err() != nil {
-			return Secret{}, ctx.Err()
-		}
 		return unavailable("file must be a regular file with trusted ownership, private permissions and parents")
 	}
 	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
+	data, err := readSecret(file)
 	if err != nil {
-		return unavailable("file is unreadable")
-	}
-	if info.Size() > 64<<10 {
-		return unavailable("file exceeds 64 KiB")
-	}
-	data, err := readSecret(ctx, file)
-	if err != nil {
-		if ctx.Err() != nil {
-			return Secret{}, ctx.Err()
-		}
 		return unavailable(err.Error())
 	}
 	value := strings.TrimRight(string(data), "\r\n")
 	return checkedSecret(value, "file:"+configured, "file is empty")
 }
 
-// readSecret enforces the bound independently of stat, including growing files.
+// readSecret enforces the bound, including for growing files.
 // Its errors are public-safe; reader errors must not escape with file names.
-func readSecret(ctx context.Context, reader io.Reader) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(&contextio.Reader{Context: ctx, Reader: reader}, (64<<10)+1))
+func readSecret(reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, (64<<10)+1))
 	if err != nil {
 		return nil, errors.New("file is unreadable")
 	}

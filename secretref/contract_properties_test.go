@@ -57,7 +57,7 @@ func TestLiteralResolveAgreementProperty(t *testing.T) {
 	rapid.Check(t, func(ht *rapid.T) {
 		value := string(rapid.SliceOf(rapid.Byte()).Draw(ht, "bytes"))
 		ref := secretref.Literal(value)
-		got, err := ref.ResolveContext(t.Context())
+		got, err := ref.Resolve()
 		switch {
 		case value == "":
 			require.NoError(ht, err)

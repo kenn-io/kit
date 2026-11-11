@@ -21,7 +21,7 @@
   error. Callers decide whether to keep running without the provider.
 - Exact-empty literals remain unset; blank literals return a reason. Preserve
   literal/env bytes and file bytes except trailing
-  CR/LF. Bound raw files to 64 KiB by both stat and bounded read.
+  CR/LF. Bound raw files to 64 KiB by a bounded read.
 - `Secret` redacts direct formatting, JSON and slog; formatting an unexported
   field containing it can expose the value.
   SourceError.Source may name a selector; Reason never contains selectors or
@@ -29,9 +29,6 @@
 - Files open through `safefileio.OpenSecretFile`, whose trusted path permits
   controlled links and root-owned mounted files. Never repair permissions or
   block on a FIFO.
-- Use ResolveContext when a context is available; Resolve is a compatibility
-  wrapper. Check cancellation between I/O steps without promising kernel-call
-  interruption.
 - The literal secret is also the exported `Value` field, so encoders that
   write struct fields instead of calling `MarshalTOML` still keep it; they
   write `{ value = "..." }`, which every decoder reads back.

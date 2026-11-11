@@ -3,7 +3,6 @@
 package safefileio
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -17,13 +16,9 @@ import (
 // Every directory and symlink hop must be controlled by root or the effective
 // user. Current-user files require 0400/0600; root files deny group/other write.
 // Platform ACL/filesystem checks apply; permissions are never repaired.
-// Cancellation is checked between operations, not inside kernel calls.
-func OpenSecretFile(ctx context.Context, path string) (*os.File, error) {
-	resolved, expected, err := trustedSecretPath(ctx, path)
+func OpenSecretFile(path string) (*os.File, error) {
+	resolved, expected, err := trustedSecretPath(path)
 	if err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	file, err := os.OpenFile(resolved, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
@@ -39,9 +34,6 @@ func OpenSecretFile(ctx context.Context, path string) (*os.File, error) {
 	}
 	if err == nil {
 		err = validateSecretAccess(file)
-	}
-	if err == nil {
-		err = ctx.Err()
 	}
 	if err != nil {
 		_ = file.Close()
@@ -71,7 +63,7 @@ func validateSecretInfo(info fs.FileInfo, uid uint32) error {
 	return errors.New("secret must be private (0400/0600) or root-owned without group/other write")
 }
 
-func trustedSecretPath(ctx context.Context, path string) (string, fs.FileInfo, error) {
+func trustedSecretPath(path string) (string, fs.FileInfo, error) {
 	if !filepath.IsAbs(path) {
 		return "", nil, errors.New("secret path must be absolute")
 	}
@@ -79,9 +71,6 @@ func trustedSecretPath(ctx context.Context, path string) (string, fs.FileInfo, e
 	current := "/"
 	links := 0
 	for len(pending) > 0 {
-		if err := ctx.Err(); err != nil {
-			return "", nil, err
-		}
 		part := pending[0]
 		pending = pending[1:]
 		// Preserve dot components so the kernel enforces search permissions on

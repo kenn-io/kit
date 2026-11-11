@@ -27,7 +27,7 @@ func TestSecretLinkBoundProperty(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(version, "token"), []byte("mounted"), 0o400))
 	require.NoError(t, os.Symlink("..version", filepath.Join(dir, "..data")))
 	require.NoError(t, os.Symlink("..data/token", filepath.Join(dir, "mounted")))
-	mounted, err := safefileio.OpenSecretFile(t.Context(), filepath.Join(dir, "mounted"))
+	mounted, err := safefileio.OpenSecretFile(filepath.Join(dir, "mounted"))
 	require.NoError(t, err)
 	data, err := io.ReadAll(mounted)
 	require.NoError(t, err)
@@ -42,7 +42,7 @@ func TestSecretLinkBoundProperty(t *testing.T) {
 	rapid.Check(t, func(ht *rapid.T) {
 		hops := rapid.OneOf(rapid.Uint32(), rapid.Uint32Range(0, 41)).Draw(ht, "hops")
 		// A longer chain must already fail at hop 41; bound fixture materialization.
-		file, err := safefileio.OpenSecretFile(t.Context(), paths[min(hops, 41)])
+		file, err := safefileio.OpenSecretFile(paths[min(hops, 41)])
 		if hops > 40 {
 			require.Error(ht, err)
 			assert.Nil(ht, file)
