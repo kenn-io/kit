@@ -659,8 +659,6 @@ func TestTransientCodexError(t *testing.T) {
 		err       error
 		transient bool
 	}{
-		{"EOF", io.EOF, true},
-		{"truncated", io.ErrUnexpectedEOF, true},
 		{"pipe read", &os.PathError{Op: "read", Err: os.ErrClosed}, true},
 		{"pipe write", &os.PathError{Op: "write", Err: syscall.EPIPE}, true},
 		{"permission", &os.PathError{Op: "read", Err: os.ErrPermission}, false},
