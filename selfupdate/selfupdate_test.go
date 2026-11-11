@@ -2113,12 +2113,14 @@ func (f checksumRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error
 
 func TestChecksumRetryTransport(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		failure error
+		name      string
+		failure   error
+		bodyError error
 	}{
-		{"network", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("disconnected")}},
-		{"plain transport error", errors.New("connection lost")},
-		{"truncated", nil},
+		{"network", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("disconnected")}, nil},
+		{"plain transport error", errors.New("connection lost"), nil},
+		{"truncated", nil, io.ErrUnexpectedEOF},
+		{"plain body error", nil, errors.New("stream reset")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -2129,7 +2131,7 @@ func TestChecksumRetryTransport(t *testing.T) {
 						if tt.failure != nil {
 							return nil, tt.failure
 						}
-						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(&checksumBrokenReader{}), Header: make(http.Header), Request: r}, nil
+						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(&checksumBrokenReader{err: tt.bodyError}), Header: make(http.Header), Request: r}, nil
 					}
 					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(testHash64 + "  tool.tar.gz\n")), Header: make(http.Header), Request: r}, nil
 				})}}
@@ -2142,9 +2144,9 @@ func TestChecksumRetryTransport(t *testing.T) {
 	}
 }
 
-type checksumBrokenReader struct{}
+type checksumBrokenReader struct{ err error }
 
-func (*checksumBrokenReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (r *checksumBrokenReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestChecksumRetryAfter(t *testing.T) {
 	for _, tt := range []struct {
@@ -2270,5 +2272,47 @@ func TestChecksumRetryStopsOnRedirectPolicyError(t *testing.T) {
 		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
 		require.ErrorContains(t, err, "policy refused")
 		assert.EqualValues(t, 1, requests.Load())
+	})
+}
+
+func TestChecksumRetryPreservesHTTPClient(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var requests int
+		transport := checksumRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requests++
+			assert.Equal(t, "test-agent", r.Header.Get("User-Agent"))
+			if requests == 1 {
+				return nil, errors.New("connection lost")
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(testHash64 + "  tool.tar.gz\n")), Request: r}, nil
+		})
+		client := &http.Client{Transport: transport, Timeout: time.Minute}
+		checksum, err := (Client{HTTPClient: client, UserAgent: "test-agent"}).fetchChecksumFromFile(t.Context(), "http://example.invalid/checksums", "tool.tar.gz")
+		require.NoError(t, err)
+		assert.Equal(t, testHash64, checksum)
+		assert.Equal(t, 2, requests)
+		assert.Equal(t, time.Minute, client.Timeout)
+		assert.IsType(t, transport, client.Transport)
+	})
+}
+
+func TestChecksumRetryAllowsThreeCappedWaits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		var requests atomic.Int32
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if requests.Add(1) < 4 {
+				w.Header().Set("Retry-After", "30")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = fmt.Fprintf(w, "%s  tool.tar.gz\n", testHash64)
+		}))
+		client := server.Client()
+		checksum, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
+		require.NoError(t, err)
+		assert.Equal(t, testHash64, checksum)
+		assert.EqualValues(t, 4, requests.Load())
+		assert.Equal(t, 30*time.Second, time.Since(start))
 	})
 }

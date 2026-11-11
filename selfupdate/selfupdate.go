@@ -26,6 +26,7 @@ import (
 	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/mod/semver"
 
+	"go.kenn.io/kit/internal/httpretry"
 	"go.kenn.io/kit/internal/renamebusy"
 	"go.kenn.io/kit/pathresolve"
 )
@@ -1196,7 +1197,7 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	body, err := checksumRetry(ctx, func() ([]byte, error) {
 		resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
 		if err != nil {
-			if checksumTransportError(err) && !errors.Is(err, errNonHTTPSRedirect) && ctx.Err() == nil {
+			if checksumTransportError(err) && ctx.Err() == nil {
 				return nil, err
 			}
 			return nil, backoff.Permanent(err)
@@ -1208,8 +1209,8 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 				return nil, backoff.Permanent(fmt.Errorf("%w: %s", errChecksumAssetNotFound, resp.Status))
 			}
 			err := fmt.Errorf("failed to fetch checksums: %s", resp.Status)
-			if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 && resp.StatusCode <= 599 {
-				if delay := checksumRetryAfter(resp.Header.Get("Retry-After"), c.now()); delay > 0 {
+			if httpretry.Retryable(resp.StatusCode) {
+				if delay := min(httpretry.RetryAfter(resp.Header.Get("Retry-After"), c.now()), 10*time.Second); delay > 0 {
 					return nil, backoff.RetryAfter(delay, err)
 				}
 				return nil, err
@@ -1219,7 +1220,7 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 
 		body, err := readLimited(resp.Body, maxChecksumBytes)
 		if err != nil {
-			if checksumReadError(err) && ctx.Err() == nil {
+			if checksumTransportError(err) && ctx.Err() == nil {
 				return nil, err
 			}
 			return nil, backoff.Permanent(err)

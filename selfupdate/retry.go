@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v7"
@@ -36,6 +33,9 @@ func (t checksumTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if err != nil {
 		return resp, checksumRequestError{err}
 	}
+	if resp != nil && resp.Body != nil {
+		resp.Body = checksumBody{resp.Body}
+	}
 	return resp, nil
 }
 
@@ -49,27 +49,12 @@ func checksumTransportError(err error) bool {
 	return transport
 }
 
-func checksumReadError(err error) bool {
-	_, network := errors.AsType[net.Error](err)
-	return network || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
-}
+type checksumBody struct{ io.ReadCloser }
 
-func checksumRetryAfter(value string, now time.Time) time.Duration {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0
+func (b checksumBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF {
+		return n, checksumRequestError{err}
 	}
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds <= 0 {
-			return 0
-		}
-		return time.Duration(min(seconds, 10)) * time.Second
-	} else if errors.Is(err, strconv.ErrRange) && value[0] != '-' {
-		return 10 * time.Second
-	}
-	date, err := http.ParseTime(value)
-	if err != nil {
-		return 0
-	}
-	return max(0, min(date.Sub(now), 10*time.Second))
+	return n, err
 }

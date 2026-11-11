@@ -134,7 +134,7 @@ func TestEmbedRejectsBadResponses(t *testing.T) {
 
 func TestEmbedFailedResponseDoesNotEchoTheBody(t *testing.T) {
 	client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Retry-After", "3")
+		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = io.WriteString(w, `{"error":"secret prompt alpha"}`)
 	})
@@ -142,7 +142,7 @@ func TestEmbedFailedResponseDoesNotEchoTheBody(t *testing.T) {
 	var api *embedclient.APIError
 	require.ErrorAs(t, err, &api)
 	assert.Equal(t, http.StatusTooManyRequests, api.StatusCode)
-	assert.Equal(t, 3*time.Second, api.RetryAfter)
+	assert.Equal(t, 30*time.Second, api.RetryAfter)
 	assert.True(t, api.Retryable())
 	assert.False(t, api.InputRejected())
 	assert.NotContains(t, err.Error(), "secret")
@@ -658,4 +658,15 @@ func TestEmbedClassifiesFailedResponses(t *testing.T) {
 			assert.Contains(t, err.Error(), test.want.String())
 		})
 	}
+}
+
+func TestEmbedRetryAfterOverflow(t *testing.T) {
+	client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "999999999999999999999999")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	_, err := client.Embed(t.Context(), oneText())
+	var api *embedclient.APIError
+	require.ErrorAs(t, err, &api)
+	assert.Equal(t, time.Duration(1<<63-1), api.RetryAfter)
 }
