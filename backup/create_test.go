@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -295,6 +296,136 @@ func TestVerifyScanFileIdentityDetectsReplacement(t *testing.T) {
 		t.Skip("cannot replace an open file on this platform")
 	}
 	require.ErrorContains(verifyScanFileIdentity(f, path), "was replaced")
+}
+
+type createRetryCoordinator struct {
+	begins   int
+	beginErr error
+	end      func()
+}
+
+func (c *createRetryCoordinator) Begin(context.Context) error {
+	c.begins++
+	return c.beginErr
+}
+
+func (c *createRetryCoordinator) End(context.Context) error {
+	if c.end != nil {
+		c.end()
+	}
+	return nil
+}
+
+func TestCreateReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		replacements int
+		cancel       bool
+	}{
+		{name: "retry succeeds", replacements: 1},
+		{name: "both attempts replaced", replacements: 2},
+		{name: "canceled before retry", replacements: 1, cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := initTestRepo(t)
+			path, content, data, writer := seedBackupFixture(t)
+			require.NoError(t, writer.Close())
+			var replacements []string
+			for range tc.replacements {
+				replacement, _, _, db := seedBackupFixture(t)
+				_, err := db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-02-01'), ('2026-03-01')`)
+				require.NoError(t, err)
+				require.NoError(t, db.Close())
+				replacements = append(replacements, replacement)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			coordinator := &createRetryCoordinator{}
+			if tc.cancel {
+				coordinator.end = cancel
+			}
+			opens := 0
+			var first *sql.DB
+			var renameErr error
+			opts := createOpts(path, content, data, t.TempDir())
+			opts.Freezer = coordinator
+			opts.SQLiteOpener = SQLiteOpenFunc(func(path string, opts SQLiteOpenOptions) (*sql.DB, error) {
+				if opens == 1 {
+					require.Error(t, first.PingContext(t.Context()), "first connection should be closed")
+				}
+				if opens < len(replacements) {
+					if renameErr = os.Rename(replacements[opens], path); renameErr != nil {
+						return nil, renameErr
+					}
+				}
+				opens++
+				db, err := (DefaultSQLiteOpener{}).OpenSQLite(path, opts)
+				if opens == 1 {
+					first = db
+				}
+				return db, err
+			})
+			m, err := Create(ctx, r, newTestApp(), opts)
+			if renameErr != nil {
+				t.Skip("cannot replace an open file on this platform")
+			}
+			list, listErr := r.ListSnapshots()
+			require.NoError(t, listErr)
+			if tc.cancel {
+				require.ErrorIs(t, err, context.Canceled)
+				require.Equal(t, 1, coordinator.begins)
+				require.Empty(t, list)
+				return
+			}
+			require.Equal(t, 2, opens)
+			if tc.replacements == 2 {
+				require.ErrorContains(t, err, "was replaced")
+				require.Empty(t, list)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, list, 1)
+			require.Equal(t, int64(3), mustParseStats(t, m.Stats).Notes)
+			target := filepath.Join(t.TempDir(), "restored")
+			_, err = Restore(t.Context(), r, newTestApp(), RestoreOptions{TargetDir: target})
+			require.NoError(t, err)
+			db, err := sql.Open("sqlite3", filepath.Join(target, "app.db"))
+			require.NoError(t, err)
+			defer func() { _ = db.Close() }()
+			var count int
+			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT count(*) FROM notes").Scan(&count))
+			require.Equal(t, 3, count)
+		})
+	}
+}
+
+func TestCreateReplacementTerminalErrors(t *testing.T) {
+	for _, tc := range []string{"freezer", "opener"} {
+		t.Run(tc, func(t *testing.T) {
+			r := initTestRepo(t)
+			path, content, data, _ := seedBackupFixture(t)
+			failure := errors.New("test failure")
+			coordinator := &createRetryCoordinator{}
+			opens := 0
+			if tc == "freezer" {
+				coordinator.beginErr = failure
+			}
+			opts := createOpts(path, content, data, t.TempDir())
+			opts.Freezer = coordinator
+			opts.SQLiteOpener = SQLiteOpenFunc(func(string, SQLiteOpenOptions) (*sql.DB, error) {
+				opens++
+				return nil, failure
+			})
+			_, err := Create(t.Context(), r, newTestApp(), opts)
+			require.ErrorIs(t, err, failure)
+			require.Equal(t, 1, coordinator.begins)
+			if tc == "opener" {
+				require.Equal(t, 1, opens)
+			} else {
+				require.Zero(t, opens)
+			}
+		})
+	}
 }
 
 // TestCreateSameSecondChainOrder covers the bug where two Create calls

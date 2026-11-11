@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -9,6 +10,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/cenkalti/backoff/v7"
 
 	"go.kenn.io/kit/pack"
 )
@@ -108,21 +111,14 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	// first and re-checking after fails closed on any replacement that
 	// persists; only a swap-in/swap-out timed exactly around SQLite's own
 	// open remains outside what path-based opens can detect.
-	dbFile, err := os.Open(opts.DBPath)
-	if err != nil {
-		return nil, fmt.Errorf("backup: opening DB for scan: %w", err)
-	}
-	defer func() { _ = dbFile.Close() }()
-
 	pr.emit(ProgressEvent{Stage: ProgressStageFreeze, Total: 1})
-	session, err := OpenFrozenSessionWithOpener(ctx, opts.DBPath, opts.Freezer, opts.SQLiteOpener)
+	pair, err := acquireScanSession(ctx, opts.DBPath, opts.Freezer, opts.SQLiteOpener)
 	if err != nil {
 		return nil, err
 	}
+	dbFile, session := pair.file, pair.session
+	defer func() { _ = dbFile.Close() }()
 	defer func() { _ = session.Close() }()
-	if err := verifyScanFileIdentity(dbFile, opts.DBPath); err != nil {
-		return nil, err
-	}
 	dbBytes := int64(session.PageCount * uint64(session.PageSize))
 	pr.emit(ProgressEvent{
 		Stage: ProgressStageFreeze, Done: 1, Total: 1,
@@ -323,10 +319,44 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	return m, nil
 }
 
-// verifyScanFileIdentity requires that path still resolves to the already-open
-// scan handle's file, tying the file the page scan will read to the file the
-// frozen SQLite session opened by the same path moments earlier. See the
-// comment at the os.Open in Create for the race this closes.
+var errScanFileReplaced = errors.New("was replaced while opening the freeze; retry the backup")
+
+type scanSession struct {
+	file    *os.File
+	session *FrozenSession
+}
+
+func acquireScanSession(ctx context.Context, path string, freezer FreezeCoordinator, opener SQLiteOpener) (scanSession, error) {
+	pair, err := backoff.Retry(ctx, func() (scanSession, error) {
+		var empty scanSession
+		file, err := os.Open(path)
+		if err != nil {
+			return empty, backoff.Permanent(fmt.Errorf("backup: opening DB for scan: %w", err))
+		}
+		session, err := OpenFrozenSessionWithOpener(ctx, path, freezer, opener)
+		if err != nil {
+			return empty, backoff.Permanent(errors.Join(err, file.Close()))
+		}
+		if err := verifyScanFileIdentity(file, path); err != nil {
+			closeErr := errors.Join(session.Close(), file.Close())
+			if closeErr != nil || !errors.Is(err, errScanFileReplaced) {
+				return empty, backoff.Permanent(errors.Join(err, closeErr))
+			}
+			return empty, err
+		}
+		return scanSession{file: file, session: session}, nil
+	}, backoff.WithBackOff(backoff.NewConstantBackOff(100*time.Millisecond)),
+		backoff.WithMaxTries(2), backoff.WithMaxElapsedTime(0))
+	if retryErr := backoff.AsRetryError(err); retryErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return scanSession{}, errors.Join(retryErr.LastErr, ctxErr)
+		}
+		return scanSession{}, retryErr.LastErr
+	}
+	return pair, err
+}
+
+// verifyScanFileIdentity ties the scan handle to the frozen database path.
 func verifyScanFileIdentity(f *os.File, path string) error {
 	held, err := f.Stat()
 	if err != nil {
@@ -337,8 +367,7 @@ func verifyScanFileIdentity(f *os.File, path string) error {
 		return fmt.Errorf("backup: re-checking database path: %w", err)
 	}
 	if !os.SameFile(held, byPath) {
-		return fmt.Errorf(
-			"backup: database at %s was replaced while opening the freeze; retry the backup", path)
+		return fmt.Errorf("backup: database at %s %w", path, errScanFileReplaced)
 	}
 	return nil
 }
