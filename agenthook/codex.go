@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/cenkalti/backoff/v7"
@@ -72,14 +71,14 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		}
 		return struct{}{}, err
 	}, backoff.WithBackOff(backoff.NewConstantBackOff(retryPause)), backoff.WithMaxTries(2), backoff.WithMaxElapsedTime(0))
-	if err := ctx.Err(); retryErr != nil && err != nil {
+	if err := ctx.Err(); err != nil && retryErr != nil && errors.Is(backoff.AsRetryError(retryErr).Cause, err) {
 		state, reason, step = codexFailure(err, step)
 	}
 	return state, reason, step
 }
 
 func transientCodexError(err error) bool {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.ETXTBSY) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.DeadlineExceeded) || transientCodexResourceError(err) {
 		return true
 	}
 	var pathErr *os.PathError

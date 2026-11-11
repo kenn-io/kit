@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -84,8 +83,17 @@ func runHookCheckHelper(mode string) int {
 			fmt.Printf("{\"id\":%d}\n", request.ID)
 			continue
 		}
-		if mode == "rpc-error" {
+		if mode == "rpc-error" || mode == "rpc-error-close" {
 			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
+			if mode == "rpc-error-close" {
+				input.Scan()
+				_ = os.WriteFile(os.Getenv("KIT_HOOK_CHECK_EVENT"), []byte("ready"), 0o600)
+				signals := make(chan os.Signal, 1)
+				signal.Notify(signals, os.Interrupt)
+				<-signals
+				signal.Stop(signals)
+				return 0
+			}
 			continue
 		}
 		if mode == "malformed" {
@@ -159,6 +167,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, "", 2},
 		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure", 1},
 		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", 1},
+		{"native error before cancellation", "rpc-error-close", "", "", CheckUnknown, "native failure", 1},
 		{"completed before cancellation", "close-delay", "trusted", "", CheckOK, "", 1},
 		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", 1},
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", 1},
@@ -283,7 +292,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			}
 			started := time.Now()
 			var result CheckResult
-			if tc.mode == "close-delay" {
+			if tc.mode == "close-delay" || tc.mode == "rpc-error-close" {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(ctx)
 				defer cancel()
@@ -645,5 +654,4 @@ func TestCheckCodexConformance(t *testing.T) {
 
 func TestTransientCodexError(t *testing.T) {
 	assert.True(t, transientCodexError(fmt.Errorf("read: %w", context.DeadlineExceeded)))
-	assert.True(t, transientCodexError(&os.PathError{Op: "fork/exec", Err: syscall.ETXTBSY}))
 }
