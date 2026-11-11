@@ -26,6 +26,7 @@ func (s Secret) Format(state fmt.State, verb rune) {
 	}
 	_, _ = state.Write([]byte(s.String()))
 }
+
 func (s Secret) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Source string `json:"source"`

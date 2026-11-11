@@ -104,8 +104,10 @@ func TestOpenSecretFilePreservesTraversedComponents(t *testing.T) {
 		suffix string
 		ok     bool
 	}{
-		{"link/../token", true}, {"target//./token", true},
-		{"target/inner/../token", true}, {"target/token/", false},
+		{"link/../token", true},
+		{"target//./token", true},
+		{"target/inner/../token", true},
+		{"target/token/", false},
 		{"missing/../target/token", false},
 	} {
 		opened, err := OpenSecretFile(root + "/" + tc.suffix)

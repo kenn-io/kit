@@ -40,7 +40,6 @@ func TestRefDecodesEveryFormFromTOMLAndJSON(t *testing.T) {
 			var fromJSON document
 			require.NoError(t, json.Unmarshal([]byte(test.json), &fromJSON))
 			assert.Equal(t, test.want, fromJSON.Key)
-
 		})
 	}
 	for _, tc := range []struct{ input, want string }{
