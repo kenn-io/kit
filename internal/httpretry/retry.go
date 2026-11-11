@@ -12,7 +12,7 @@ import (
 
 // Retryable reports whether the status can succeed on a later request.
 func Retryable(status int) bool {
-	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500 && status <= 599
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
 }
 
 // RetryAfter parses the server's requested delay relative to now.

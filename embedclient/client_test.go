@@ -668,5 +668,9 @@ func TestEmbedRetryAfterOverflow(t *testing.T) {
 	_, err := client.Embed(t.Context(), oneText())
 	var api *embedclient.APIError
 	require.ErrorAs(t, err, &api)
-	assert.Equal(t, time.Duration(1<<63-1), api.RetryAfter)
+	assert.Zero(t, api.RetryAfter)
+}
+
+func TestAPIErrorRetryableRetainsHighStatuses(t *testing.T) {
+	assert.True(t, (&embedclient.APIError{StatusCode: 600}).Retryable())
 }

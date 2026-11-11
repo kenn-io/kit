@@ -2082,6 +2082,7 @@ func TestChecksumRetryExhaustionAndPermanent(t *testing.T) {
 	}{
 		{"exhausted", []int{500, 500, 500, 503}, "", 4, "503"},
 		{"forbidden", []int{403}, "", 1, "403"},
+		{"non-server status", []int{600}, "", 1, "600"},
 		{"missing", []int{404}, "", 1, "checksum asset not found"},
 		{"malformed", []int{200}, "invalid", 1, ""},
 		{"oversized", []int{200}, strings.Repeat("x", maxChecksumBytes+1), 1, "byte limit"},
@@ -2171,7 +2172,7 @@ func TestChecksumRetryAfter(t *testing.T) {
 					_, _ = fmt.Fprintf(w, "%s  tool.tar.gz\n", testHash64)
 				}))
 				client := server.Client()
-				checksum, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
+				checksum, err := (Client{HTTPClient: client, Clock: func() time.Time { return time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC) }}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
 				require.NoError(t, err)
 				assert.Equal(t, testHash64, checksum)
 				if tt.wait == 0 {

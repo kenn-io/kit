@@ -1209,8 +1209,8 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 				return nil, backoff.Permanent(fmt.Errorf("%w: %s", errChecksumAssetNotFound, resp.Status))
 			}
 			err := fmt.Errorf("failed to fetch checksums: %s", resp.Status)
-			if httpretry.Retryable(resp.StatusCode) {
-				if delay := min(httpretry.RetryAfter(resp.Header.Get("Retry-After"), c.now()), 10*time.Second); delay > 0 {
+			if resp.StatusCode <= 599 && httpretry.Retryable(resp.StatusCode) {
+				if delay := min(httpretry.RetryAfter(resp.Header.Get("Retry-After"), time.Now()), 10*time.Second); delay > 0 {
 					return nil, backoff.RetryAfter(delay, err)
 				}
 				return nil, err
