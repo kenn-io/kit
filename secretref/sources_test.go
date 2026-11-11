@@ -3,6 +3,7 @@ package secretref_test
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -96,6 +97,7 @@ func TestFieldsRejectEveryConflictProperty(t *testing.T) {
 		got, err := secretref.FromFields("token", fields)
 		if count > 1 {
 			require.ErrorContains(ht, err, "token")
+			assert.Equal(ht, 1, strings.Count(err.Error(), "secretref:"))
 			assert.NotContains(ht, err.Error(), "key:"+value)
 		} else {
 			require.NoError(ht, err)

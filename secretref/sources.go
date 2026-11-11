@@ -15,7 +15,7 @@ type Fields struct{ Value, File, Env string }
 func FromFields(base string, fields Fields) (Ref, error) {
 	ref := Ref{Value: fields.Value, File: fields.File, Env: fields.Env}
 	if err := ref.Validate(); err != nil {
-		return ref, fmt.Errorf("secretref: %s: %w", base, err)
+		return ref, fmt.Errorf("%s: %w", base, err)
 	}
 	return ref, nil
 }

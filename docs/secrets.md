@@ -82,8 +82,8 @@ Direct `Ref{Env: name}` retains its existing trim-on-resolution behavior;
 handle returned to its caller. It never repairs permissions. Unix rules:
 
 - The final file belongs to the effective user with mode `0400` or `0600`, or
-  belongs to root without group/other write permission. Root-owned mounted
-  credentials can therefore be readable without being user-owned.
+  belongs to root without group/other write permission. Root-owned files can
+  be world-readable, so check who can read mounted credentials.
 - Every traversed directory belongs to root or the effective user and denies
   group/other write. A trusted sticky directory is allowed when its child also
   belongs to root or the effective user.
@@ -114,6 +114,8 @@ These rules broaden older `secretref` file support to read-only files, trusted
 root-owned mounts, and trusted links. They also reject unsafe ancestors, files
 over 64 KiB, and NUL-containing file secrets. Relative paths resolve from the working directory. Applications
 adopting this resolver must account for their previous limits and trimming.
+Error text for environment and file failures has changed; use `SourceError`
+fields instead of matching error strings.
 
 ## systemd credentials
 

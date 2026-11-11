@@ -40,7 +40,7 @@ func TestRefFileRefusesAFIFOWithoutBlocking(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		require.ErrorContains(t, err, "file must be a regular file with trusted ownership")
+		require.ErrorContains(t, err, "trusted permissions")
 	case <-time.After(5 * time.Second):
 		// A blocked open waits for a FIFO writer, kernel state that synctest
 		// cannot observe, so this wait is wall-clock. Open a writer to

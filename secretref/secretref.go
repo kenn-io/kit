@@ -208,7 +208,7 @@ func resolveFile(configured string) (Secret, error) {
 		if errors.Is(err, fs.ErrPermission) {
 			return unavailable("file is unreadable")
 		}
-		return unavailable("file must be a regular file with trusted ownership, private permissions and parents")
+		return unavailable("file must be a regular file with trusted ownership, trusted permissions and parents")
 	}
 	defer func() { _ = file.Close() }()
 	data, err := readSecret(file)

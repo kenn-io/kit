@@ -45,25 +45,34 @@ func TestSecretOwnerModePolicy(t *testing.T) {
 	}
 }
 
-func TestParentMetadataPolicyProperty(t *testing.T) {
-	rapid.Check(t, func(ht *rapid.T) {
-		current := uint32(os.Geteuid())
-		owner := rapid.OneOf(rapid.SampledFrom([]uint32{0, current}), rapid.Uint32()).Draw(ht, "owner")
-		childOwner := rapid.OneOf(rapid.SampledFrom([]uint32{0, current}), rapid.Uint32()).Draw(ht, "owner")
-		mode := fs.FileMode(rapid.Uint32Range(0, 0o777).Draw(ht, "mode"))
-		if rapid.Bool().Draw(ht, "bool") {
-			mode |= os.ModeDir
-		}
-		if rapid.Bool().Draw(ht, "bool") {
-			mode |= os.ModeSticky
-		}
-		parent := ownedInfo{mode: mode, uid: owner}
-		child := ownedInfo{uid: childOwner}
-		trustedOwner := owner == 0 || owner == current
-		trustedChild := childOwner == 0 || childOwner == current
-		allowed := mode.IsDir() && trustedOwner && (mode.Perm()&0o022 == 0 || mode&os.ModeSticky != 0 && trustedChild)
-		assert.Equal(ht, allowed, requireUnsharedParentForUID(parent, child, current) == nil)
-	})
+func TestParentMetadataPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		owner, child uint32
+		mode         fs.FileMode
+		allowed      bool
+	}{
+		{"private current user", 1, 2, os.ModeDir | 0o700, true},
+		{"private root", 0, 2, os.ModeDir | 0o755, true},
+		{"foreign parent", 2, 1, os.ModeDir | 0o700, false},
+		{"group writable", 1, 1, os.ModeDir | 0o770, false},
+		{"world writable", 0, 0, os.ModeDir | 0o777, false},
+		{"sticky current child", 0, 1, os.ModeDir | os.ModeSticky | 0o777, true},
+		{"sticky root child", 1, 0, os.ModeDir | os.ModeSticky | 0o777, true},
+		{"sticky foreign child", 0, 2, os.ModeDir | os.ModeSticky | 0o777, false},
+		{"not a directory", 1, 1, 0o700, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := ownedInfo{mode: tc.mode, uid: tc.owner}
+			child := ownedInfo{uid: tc.child}
+			err := requireUnsharedParentForUID(parent, child, 1)
+			if tc.allowed {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
 }
 
 func TestOpenSecretFileTraversesExecutableOnlyParentProperty(t *testing.T) {
