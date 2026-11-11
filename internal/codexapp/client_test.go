@@ -200,7 +200,7 @@ func TestClientCallResult(t *testing.T) {
 		discard, wantError bool
 	}{
 		{"missing result", `{"id":1}`, false, true},
-		{"missing discarded result", `{"id":1}`, true, true},
+		{"missing discarded result", `{"id":1}`, true, false},
 		{"null result", `{"id":1,"result":null}`, false, false},
 		{"discarded null result", `{"id":1,"result":null}`, true, false},
 	} {

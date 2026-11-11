@@ -67,8 +67,11 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		}
 		return struct{}{}, err
 	}, backoff.WithBackOff(backoff.NewConstantBackOff(retryPause)), backoff.WithMaxTries(2), backoff.WithMaxElapsedTime(0))
-	if err := ctx.Err(); err != nil && retryErr != nil && errors.Is(backoff.AsRetryError(retryErr).Cause, err) {
-		state, reason, step = codexFailure(err, step)
+	if retryErr != nil {
+		cause := backoff.AsRetryError(retryErr).Cause
+		if !errors.Is(cause, backoff.ErrPermanent) && !errors.Is(cause, backoff.ErrExhausted) && ctx.Err() != nil {
+			state, reason, step = codexFailure(ctx.Err(), step)
+		}
 	}
 	return state, reason, step
 }

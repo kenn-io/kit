@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -82,8 +83,17 @@ func runHookCheckHelper(mode string) int {
 			fmt.Printf("{\"id\":%d}\n", request.ID)
 			continue
 		}
-		if mode == "rpc-error" {
+		if mode == "cancel-eof" {
+			_ = os.Stdout.Close()
+			waitHookCleanup(input)
+			return 0
+		}
+		if mode == "rpc-error" || mode == "error-cleanup" {
 			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
+			if mode == "error-cleanup" {
+				waitHookCleanup(input)
+				return 0
+			}
 			continue
 		}
 		if mode == "malformed" {
@@ -123,12 +133,25 @@ func runHookCheckHelper(mode string) int {
 				response = strings.ReplaceAll(os.Getenv("KIT_HOOK_CHECK_REPLY"), "CWD", strings.ReplaceAll(cwd, `\`, `\\`))
 			}
 			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, response)
+			if mode == "success-cleanup" {
+				waitHookCleanup(input)
+				return 0
+			}
 		default:
 			return 13
 		}
 	}
 
 	return 0
+}
+
+func waitHookCleanup(input *bufio.Scanner) {
+	input.Scan()
+	_ = os.WriteFile(os.Getenv("KIT_HOOK_CHECK_EVENT"), []byte("ready"), 0o600)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	<-signals
+	signal.Stop(signals)
 }
 
 func TestCheckCodexNativeStates(t *testing.T) {
@@ -140,6 +163,9 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		launches                 int
 	}{
 		{"discovery missing result", "discovery-no-result", "", "", CheckUnknown, "missing result", 1},
+		{"custom cause during cleanup", "cancel-eof", "", "", CheckUnknown, "context canceled", 1},
+		{"native error during cleanup", "error-cleanup", "", "", CheckUnknown, "native failure", 1},
+		{"success during cleanup", "success-cleanup", "trusted", "", CheckOK, "", 1},
 		{"retry initialization", "first-initialize-eof", "trusted", "", CheckOK, "", 2},
 		{"retry config", "first-config-eof", "trusted", "", CheckOK, "", 2},
 		{"retry truncated reply", "first-truncated", "trusted", "", CheckOK, "", 2},
@@ -256,6 +282,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			}
 			record := filepath.Join(dir, "launches")
 			t.Setenv("KIT_HOOK_CHECK_LAUNCHES", record)
+			event := filepath.Join(dir, "event")
+			t.Setenv("KIT_HOOK_CHECK_EVENT", event)
 			t.Setenv("KIT_HOOK_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_HOOK_CHECK_REPLY", reply)
 			if tc.mode == "missing-cli" {
@@ -268,7 +296,31 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				defer cancel()
 			}
 			started := time.Now()
-			result, err := Check(ctx, AgentCodex, opts)
+			var result CheckResult
+			if tc.mode == "cancel-eof" || tc.mode == "error-cleanup" || tc.mode == "success-cleanup" {
+				var cancel context.CancelCauseFunc
+				ctx, cancel = context.WithCancelCause(ctx)
+				defer cancel(nil)
+				finished := make(chan struct{})
+				go func() {
+					result, err = Check(ctx, AgentCodex, opts)
+					close(finished)
+				}()
+				require.Eventually(t, func() bool { _, err := os.Stat(event); return err == nil }, 30*time.Second, 10*time.Millisecond)
+				select {
+				case <-finished:
+					require.FailNow(t, "check returned before cancellation")
+				default:
+				}
+				cancel(errors.New("caller stopped"))
+				select {
+				case <-finished:
+				case <-time.After(30 * time.Second):
+					require.FailNow(t, "cancellation must finish the check")
+				}
+			} else {
+				result, err = Check(ctx, AgentCodex, opts)
+			}
 			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" {
 				assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound the native check")
 			}
@@ -611,5 +663,21 @@ func TestCheckCodexConformance(t *testing.T) {
 }
 
 func TestTransientCodexError(t *testing.T) {
-	assert.True(t, transientCodexError(fmt.Errorf("read: %w", context.DeadlineExceeded)))
+	for _, tc := range []struct {
+		name      string
+		err       error
+		transient bool
+	}{
+		{"deadline", context.DeadlineExceeded, true},
+		{"EOF", io.EOF, true},
+		{"truncated", io.ErrUnexpectedEOF, true},
+		{"pipe read", &os.PathError{Op: "read", Err: os.ErrClosed}, true},
+		{"pipe write", &os.PathError{Op: "write", Err: os.ErrClosed}, true},
+		{"permission", &os.PathError{Op: "read", Err: os.ErrPermission}, false},
+		{"canceled", context.Canceled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.transient, transientCodexError(fmt.Errorf("codex: %w", tc.err)))
+		})
+	}
 }
