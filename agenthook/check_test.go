@@ -33,6 +33,32 @@ func TestMain(m *testing.M) {
 // Native read replies use literal frames independent of the checker's types.
 func runHookCheckHelper(mode string) int {
 	input := bufio.NewScanner(os.Stdin)
+	if record := os.Getenv("KIT_HOOK_CHECK_LAUNCHES"); record != "" {
+		f, err := os.OpenFile(record, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return 14
+		}
+		info, err := f.Stat()
+		if err != nil {
+			return 15
+		}
+		_, _ = f.WriteString("x")
+		_ = f.Close()
+		if mode == "different-failures" {
+			if info.Size() == 0 {
+				mode = "initialize-eof"
+			} else {
+				mode = "config-eof"
+			}
+		}
+		if strings.HasPrefix(mode, "first-") {
+			if info.Size() > 0 {
+				mode = "normal"
+			} else {
+				mode = strings.TrimPrefix(mode, "first-")
+			}
+		}
+	}
 	if mode == "initialize-eof" {
 		_, _ = testserver.Read(input)
 		return 0
@@ -47,6 +73,21 @@ func runHookCheckHelper(mode string) int {
 		}
 		if err != nil {
 			return 9
+		}
+		if mode == "truncated" {
+			fmt.Print(`{"id":1,"result":`)
+			return 0
+		}
+		if mode == "rpc-error" {
+			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
+			continue
+		}
+		if mode == "malformed" {
+			fmt.Println(`{"id":1,"result":}`)
+			return 0
+		}
+		if (mode == "config-eof" && request.Method == "config/read") || (mode == "discovery-eof" && request.Method == "hooks/list") {
+			return 0
 		}
 		if mode == "rpc-timeout" || (mode == "discovery-timeout" && request.Method == "hooks/list") {
 			input.Scan()
@@ -93,6 +134,17 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		want                     CheckState
 		reason                   string
 	}{
+		{"retry initialization", "first-initialize-eof", "trusted", "", CheckOK, ""},
+		{"retry config", "first-config-eof", "trusted", "", CheckOK, ""},
+		{"retry truncated reply", "first-truncated", "trusted", "", CheckOK, ""},
+		{"last failure step", "different-failures", "", "", CheckUnknown, "EOF"},
+		{"retry discovery", "first-discovery-eof", "trusted", "", CheckOK, ""},
+		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, ""},
+		{"exhausted config", "config-eof", "", "", CheckUnknown, "EOF"},
+		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure"},
+		{"malformed response is terminal", "malformed", "", "", CheckUnknown, ""},
+		{"already canceled", "already-canceled", "", "", CheckUnknown, "context canceled"},
+		{"cancel during pause", "cancel-pause", "", "", CheckUnknown, "context deadline exceeded"},
 		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, ""},
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, ""},
 		{"reviewed", "normal", "trusted", "", CheckOK, ""},
@@ -199,23 +251,57 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.mode == "missing-data" {
 				reply = `{}`
 			}
-			t.Setenv("KIT_HOOK_CHECK_HELPER", tc.mode)
+			record := filepath.Join(dir, "launches")
+			t.Setenv("KIT_HOOK_CHECK_LAUNCHES", record)
+			mode := tc.mode
+			if mode == "cancel-pause" {
+				mode = "initialize-eof"
+			}
+			t.Setenv("KIT_HOOK_CHECK_HELPER", mode)
 			t.Setenv("KIT_HOOK_CHECK_REPLY", reply)
 			if tc.mode == "missing-cli" {
 				t.Setenv("PATH", t.TempDir())
 			}
 			ctx := t.Context()
-			if strings.HasSuffix(tc.mode, "timeout") {
+			if tc.mode == "already-canceled" {
 				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, time.Second)
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" || tc.mode == "cancel-pause" {
+				var cancel context.CancelFunc
+				timeout := time.Second
+				if tc.mode == "cancel-pause" {
+					timeout = 200 * time.Millisecond
+				}
+				ctx, cancel = context.WithTimeout(ctx, timeout)
 				defer cancel()
 			}
 			started := time.Now()
 			result, err := Check(ctx, AgentCodex, opts)
-			if strings.HasSuffix(tc.mode, "timeout") {
+			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" || tc.mode == "cancel-pause" {
 				assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound the native check")
 			}
 			require.NoError(t, err)
+			if tc.mode == "already-canceled" {
+				_, err := os.Stat(record)
+				assert.ErrorIs(t, err, os.ErrNotExist)
+			}
+			if tc.mode == "first-rpc-timeout" {
+				assert.Less(t, time.Since(started), 21*time.Second)
+			}
+			if strings.HasPrefix(tc.mode, "first-") || tc.mode == "config-eof" || tc.mode == "rpc-error" || tc.mode == "malformed" || tc.mode == "cancel-pause" || tc.mode == "different-failures" || tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" {
+				launches, err := os.ReadFile(record)
+				require.NoError(t, err)
+				want := 1
+				if strings.HasPrefix(tc.mode, "first-") || tc.mode == "config-eof" || tc.mode == "different-failures" {
+					want = 2
+				}
+				assert.Len(t, launches, want)
+			}
+			if tc.mode == "config-eof" || tc.mode == "different-failures" {
+				assert.Contains(t, result.NextStep, "Codex config")
+			}
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.reason != "" {
 				assert.Contains(t, result.Reason, tc.reason)
