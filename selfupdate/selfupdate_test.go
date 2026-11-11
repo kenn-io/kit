@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"testing/synctest"
 	"time"
 
@@ -2131,7 +2132,7 @@ func TestChecksumRetryTransport(t *testing.T) {
 						if tt.failure != nil {
 							return nil, tt.failure
 						}
-						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(&checksumBrokenReader{err: tt.bodyError}), Header: make(http.Header), Request: r}, nil
+						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(iotest.ErrReader(tt.bodyError)), Header: make(http.Header), Request: r}, nil
 					}
 					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(testHash64 + "  tool.tar.gz\n")), Header: make(http.Header), Request: r}, nil
 				})}}
@@ -2143,10 +2144,6 @@ func TestChecksumRetryTransport(t *testing.T) {
 		})
 	}
 }
-
-type checksumBrokenReader struct{ err error }
-
-func (r *checksumBrokenReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestChecksumRetryAfter(t *testing.T) {
 	for _, tt := range []struct {
@@ -2314,5 +2311,25 @@ func TestChecksumRetryAllowsThreeCappedWaits(t *testing.T) {
 		assert.Equal(t, testHash64, checksum)
 		assert.EqualValues(t, 4, requests.Load())
 		assert.Equal(t, 30*time.Second, time.Since(start))
+	})
+}
+
+func TestChecksumRetryPreservesTransportTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var requests int
+		cause := &net.DNSError{Err: "timeout", Name: "example.invalid", IsTimeout: true, IsTemporary: true}
+		client := &http.Client{Transport: checksumRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			requests++
+			return nil, cause
+		})}
+		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), "http://example.invalid/checksums", "tool.tar.gz")
+		require.ErrorIs(t, err, cause)
+		var netErr net.Error
+		require.ErrorAs(t, err, &netErr)
+		assert.True(t, netErr.Timeout())
+		var temporary interface{ Temporary() bool }
+		require.ErrorAs(t, err, &temporary)
+		assert.True(t, temporary.Temporary())
+		assert.Equal(t, 4, requests)
 	})
 }

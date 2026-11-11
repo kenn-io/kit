@@ -44,6 +44,22 @@ type checksumRequestError struct{ err error }
 func (e checksumRequestError) Error() string { return e.err.Error() }
 func (e checksumRequestError) Unwrap() error { return e.err }
 
+func (e checksumRequestError) Timeout() bool {
+	err, ok := errors.AsType[interface {
+		error
+		Timeout() bool
+	}](e.err)
+	return ok && err.Timeout()
+}
+
+func (e checksumRequestError) Temporary() bool {
+	err, ok := errors.AsType[interface {
+		error
+		Temporary() bool
+	}](e.err)
+	return ok && err.Temporary()
+}
+
 func checksumTransportError(err error) bool {
 	_, transport := errors.AsType[checksumRequestError](err)
 	return transport
