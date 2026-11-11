@@ -66,7 +66,7 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 	}
 	result.HookCount = len(records)
 	if len(records) == 0 {
-		return set(CheckMissing, "No hooks belonging to this marker are installed", "Install the application's hooks")
+		return set(CheckMissing, "This application's hooks are not installed", "Install the application's hooks")
 	}
 	if agent == AgentClaude {
 		disabled, err := claudeHooksDisabled(ctx, root)
@@ -74,7 +74,7 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 			return set(CheckUnknown, err.Error(), "Check Claude Code user, project, and local settings")
 		}
 		if disabled {
-			return set(CheckDisabled, "Claude Code settings disable all hooks", "Turn off disableAllHooks in the effective Claude Code settings")
+			return set(CheckDisabled, "Claude Code settings turn off all hooks", "Set disableAllHooks to false in the Claude Code settings that apply here")
 		}
 	}
 	state, reason, step := CheckOK, "", ""
@@ -89,7 +89,7 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
 	}
 	if changed {
-		return set(CheckOutdated, "Installed hooks differ from the requested registrations", "Reinstall the application's hooks")
+		return set(CheckOutdated, "The installed hooks don't match this application's setup", "Reinstall the application's hooks")
 	}
 	if state == CheckUntrusted {
 		return set(state, reason, step)
@@ -101,12 +101,12 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 		}
 	}
 	if _, err := exec.LookPath(executable); err != nil {
-		return set(CheckUnknown, fmt.Sprintf("Hook executable %q cannot be resolved in the checking process environment: %v", executable, err), "Install the executable or add its directory to PATH")
+		return set(CheckUnknown, fmt.Sprintf("Can't find a usable hook command %q: %v", executable, err), "Install the executable or add its directory to PATH")
 	}
 	if agent == AgentClaude {
-		return set(CheckOK, "Claude Code user registrations match and user, project, and local settings permit hooks; executables resolve in the checking process environment; managed policy and native loading are unverified", "")
+		return set(CheckOK, "Claude Code's user, project, and local settings allow these hooks, and this process can find their command. Organization policy and whether Claude Code loads them have not been checked", "")
 	}
-	return set(CheckOK, "Codex reports the hooks enabled and reviewed; executables resolve in the checking process environment", "")
+	return set(CheckOK, "Codex reports these hooks enabled and trusted, and this process can find their command", "")
 }
 
 func sameConfigPath(a, b string) bool {

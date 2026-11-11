@@ -39,12 +39,12 @@ func checkCodex(ctx context.Context, name string, original []byte, result CheckR
 		case server.ToolsError != nil:
 			result.State, result.Reason, result.NextStep = CheckFailed, *server.ToolsError, "Correct the server error and retry"
 		case server.Tools == nil || config.Servers[name].StartupReadiness == "catalog":
-			result.Reason = "Codex did not confirm a live tool catalog"
+			result.Reason = "Codex couldn't confirm the server's tools are current"
 		default:
 			result.State, result.Reason, result.NextStep, result.ToolCount = CheckOK, "Codex returned the server's tools", "", len(server.Tools)
 		}
 		return result
 	}
-	result.Reason = "Codex did not report the named MCP server"
+	result.Reason = "Codex didn't report this MCP server"
 	return result
 }
