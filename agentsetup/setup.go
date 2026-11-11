@@ -97,7 +97,7 @@ func (opts Options) repairCommand() string {
 func nextStep(e entry, opts Options, status Status) string {
 	if e.item.nativeMCP && status.State == StateUnknown && (e.agent == agenthook.AgentClaude || e.agent == agenthook.AgentCodex) {
 		if _, err := exec.LookPath(string(e.agent)); err != nil {
-			return fmt.Sprintf("Install %s, then run `%s --check`", e.name, opts.repairCommand())
+			return fmt.Sprintf("Install %s", e.name)
 		}
 	}
 	if status.State != StateOK && (status.NextStep == "" || e.item.retrySetup && (status.State == StateMissing || status.State == StateOutdated)) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -35,7 +36,9 @@ func TestMissingAgentMCPGuidance(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StateUnknown, report.Rows[0].State)
 	require.Contains(t, report.Rows[0].NextStep, "Install Claude Code")
-	require.Contains(t, report.Rows[0].NextStep, "app setup --agent claude --check")
+	var out bytes.Buffer
+	require.NoError(t, report.WriteText(&out, "app setup --agent claude --check"))
+	require.Equal(t, 1, strings.Count(out.String(), "app setup --agent claude --check"))
 }
 
 func TestPrint(t *testing.T) {
