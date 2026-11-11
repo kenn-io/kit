@@ -149,9 +149,7 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 			texts[i-start] = prepared[i].text
 		}
 		role := prepared[start].role
-		vectors, err := retryCall(ctx, c.retry, func() ([][]float32, error) {
-			return c.post(ctx, role, texts)
-		})
+		vectors, err := c.postBatch(ctx, role, texts)
 		if err != nil {
 			first := start
 			return nil, remapVectorIndex(err, func(i int) int { return prepared[first+i].index })
@@ -162,6 +160,43 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 		start = end
 	}
 	return out, nil
+}
+
+// recoveryError marks a failure of Ollama recovery, which retries the bad
+// inputs on its own. Splitting the original batch cannot make it succeed.
+type recoveryError struct{ err error }
+
+func (e *recoveryError) Error() string { return e.err.Error() }
+
+func (e *recoveryError) Unwrap() error { return e.err }
+
+// splittableTimeout reports whether err is a timeout of the primary embeddings
+// request, which a smaller batch can avoid.
+func splittableTimeout(err error) bool {
+	if _, ok := errors.AsType[*recoveryError](err); ok {
+		return false
+	}
+	transport, ok := errors.AsType[*TransportError](err)
+	return ok && transport.Timeout()
+}
+
+func (c *Client) postBatch(ctx context.Context, role embedconfig.Role, texts []string) ([][]float32, error) {
+	vectors, err := retryCall(ctx, c.retry, len(texts) > 1, func() ([][]float32, error) {
+		return c.post(ctx, role, texts)
+	})
+	if !splittableTimeout(err) || len(texts) < 2 || ctx.Err() != nil {
+		return vectors, err
+	}
+	middle := len(texts) / 2
+	left, err := c.postBatch(ctx, role, texts[:middle])
+	if err != nil {
+		return nil, err
+	}
+	right, err := c.postBatch(ctx, role, texts[middle:])
+	if err != nil {
+		return nil, remapVectorIndex(err, func(i int) int { return middle + i })
+	}
+	return append(left, right...), nil
 }
 
 // EmbedTexts encodes plain texts for one role, like Embed with a text Content
@@ -249,7 +284,11 @@ func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string
 	if !c.ollamaRecovery {
 		return nil, problems[0]
 	}
-	return c.recoverOllama(ctx, texts, vectors, problems)
+	vectors, err = c.recoverOllama(ctx, texts, vectors, problems)
+	if err != nil {
+		err = &recoveryError{err: err}
+	}
+	return vectors, err
 }
 
 func embeddingsURL(canonical string) string {
