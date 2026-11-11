@@ -52,3 +52,16 @@ func TestRefFileRefusesAFIFOWithoutBlocking(t *testing.T) {
 		require.FailNow(t, "resolving a FIFO key file must not block")
 	}
 }
+
+func TestUnreadableFileReportsAccessFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read the file")
+	}
+	path := filepath.Join(privateTempDir(t), "token")
+	writePrivateFile(t, path, "secret")
+	require.NoError(t, os.Chmod(path, 0))
+	_, err := (secretref.Ref{File: path}).Resolve()
+	var sourceErr *secretref.SourceError
+	require.ErrorAs(t, err, &sourceErr)
+	require.Equal(t, "file is unreadable", sourceErr.Reason)
+}

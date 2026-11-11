@@ -70,3 +70,14 @@ func TestExtendedSecretDiagnostics(t *testing.T) {
 	err := &secretref.SourceError{Source: secret.Source, Reason: "secret is unset or empty"}
 	assert.Equal(t, "secretref: env:APP_TOKEN: secret is unset or empty", err.Error())
 }
+
+func TestBlankLiteralDiagnosticSurvivesRedaction(t *testing.T) {
+	secret, err := secretref.Literal(" ").Resolve()
+	require.NoError(t, err)
+	data, err := json.Marshal(secret)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"source":"inline","value":"[redacted]","reason":"inline value is empty"}`, string(data))
+	var output bytes.Buffer
+	slog.New(slog.NewJSONHandler(&output, nil)).Info("resolved", "secret", secret)
+	assert.Contains(t, output.String(), `"reason":"inline value is empty"`)
+}

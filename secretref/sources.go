@@ -24,6 +24,7 @@ func FromFields(base string, fields Fields) (Ref, error) {
 // Both present is an error; neither present returns an unset Ref. Selection
 // does no file I/O. Resolve reports an empty selected NAME as a source error.
 // Names must be nonempty, have no surrounding whitespace, and contain no = or NUL.
+// File selectors must have no surrounding whitespace.
 func FromEnv(name string) (Ref, error) {
 	if name == "" || strings.TrimSpace(name) != name || strings.ContainsAny(name, "=\x00") {
 		return Ref{}, &SourceError{Source: "environment", Reason: "invalid environment variable name"}
@@ -41,6 +42,9 @@ func FromEnv(name string) (Ref, error) {
 	}
 	if path == "" {
 		return Ref{}, &SourceError{Source: "env:" + name + "_FILE", Reason: "file selector is empty"}
+	}
+	if strings.TrimSpace(path) != path {
+		return Ref{}, &SourceError{Source: "env:" + name + "_FILE", Reason: "file selector has surrounding whitespace"}
 	}
 	ref := Ref{File: path}
 	return ref, ref.Validate()

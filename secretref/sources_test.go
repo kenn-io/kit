@@ -158,3 +158,11 @@ func TestJSONArrayFieldRejected(t *testing.T) {
 	var ref secretref.Ref
 	require.Error(t, json.Unmarshal([]byte(`{"file":["secret"]}`), &ref))
 }
+
+func TestFromEnvRejectsPaddedFileSelector(t *testing.T) {
+	t.Setenv("KIT_PADDED_SECRET", "")
+	require.NoError(t, os.Unsetenv("KIT_PADDED_SECRET"))
+	t.Setenv("KIT_PADDED_SECRET_FILE", "/private/token ")
+	_, err := secretref.FromEnv("KIT_PADDED_SECRET")
+	require.Error(t, err)
+}

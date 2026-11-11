@@ -1,7 +1,6 @@
 package secretref
 
 import (
-	"context"
 	"errors"
 	"io"
 	"strings"
@@ -32,20 +31,4 @@ func TestReadSecretDropsPartialDataOnError(t *testing.T) {
 	data, err := readSecret(t.Context(), reader)
 	require.EqualError(t, err, "file is unreadable")
 	assert.Nil(t, data)
-}
-
-func TestContextReaderCancellationBetweenReads(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	r := contextReader{ctx: ctx, reader: strings.NewReader("ab")}
-	buf := make([]byte, 1)
-	n, err := r.Read(buf)
-	require.NoError(t, err)
-	assert.Equal(t, 1, n)
-	cancel()
-	n, err = r.Read(buf)
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Zero(t, n)
-	_, err = io.ReadAll(r.reader)
-	require.NoError(t, err)
 }

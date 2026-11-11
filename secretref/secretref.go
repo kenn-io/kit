@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/safefileio"
 )
 
@@ -167,7 +168,7 @@ func (r Ref) ResolveContext(ctx context.Context) (Secret, error) {
 		return Secret{}, nil
 	case r.Env != "":
 		name := strings.TrimSpace(r.Env)
-		return checkedSecret(os.Getenv(name), "env:"+name)
+		return checkedSecret(os.Getenv(name), "env:"+name, "secret is unset or empty")
 	case r.File != "":
 		return resolveFile(ctx, strings.TrimSpace(r.File))
 	default:
@@ -178,9 +179,9 @@ func (r Ref) ResolveContext(ctx context.Context) (Secret, error) {
 	}
 }
 
-func checkedSecret(value, source string) (Secret, error) {
+func checkedSecret(value, source, emptyReason string) (Secret, error) {
 	if strings.TrimSpace(value) == "" {
-		return Secret{}, &SourceError{Source: source, Reason: "secret is unset or empty"}
+		return Secret{}, &SourceError{Source: source, Reason: emptyReason}
 	}
 	if strings.ContainsRune(value, 0) {
 		return Secret{}, &SourceError{Source: source, Reason: "secret contains a NUL byte"}
@@ -214,6 +215,9 @@ func resolveFile(ctx context.Context, configured string) (Secret, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return unavailable("file is missing")
 		}
+		if errors.Is(err, fs.ErrPermission) {
+			return unavailable("file is unreadable")
+		}
 		if ctx.Err() != nil {
 			return Secret{}, ctx.Err()
 		}
@@ -235,16 +239,13 @@ func resolveFile(ctx context.Context, configured string) (Secret, error) {
 		return unavailable(err.Error())
 	}
 	value := strings.TrimRight(string(data), "\r\n")
-	if strings.TrimSpace(value) == "" {
-		return unavailable("file is empty")
-	}
-	return checkedSecret(value, "file:"+configured)
+	return checkedSecret(value, "file:"+configured, "file is empty")
 }
 
 // readSecret enforces the bound independently of stat, including growing files.
 // Its errors are public-safe; reader errors must not escape with file names.
 func readSecret(ctx context.Context, reader io.Reader) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, reader: reader}, (64<<10)+1))
+	data, err := io.ReadAll(io.LimitReader(&contextio.Reader{Context: ctx, Reader: reader}, (64<<10)+1))
 	if err != nil {
 		return nil, errors.New("file is unreadable")
 	}
@@ -271,17 +272,4 @@ func quote(value string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
-}
-
-// contextReader keeps cancellation checks at each bounded read operation.
-type contextReader struct {
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (r contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.reader.Read(p)
 }

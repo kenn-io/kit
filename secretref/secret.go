@@ -21,11 +21,16 @@ func (s Secret) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Source string `json:"source"`
 		Value  string `json:"value"`
-	}{s.Source, "[redacted]"})
+		Reason string `json:"reason,omitempty"`
+	}{s.Source, "[redacted]", s.Reason})
 }
 
 func (s Secret) LogValue() slog.Value {
-	return slog.GroupValue(slog.String("source", s.Source), slog.String("value", "[redacted]"))
+	attrs := []slog.Attr{slog.String("source", s.Source), slog.String("value", "[redacted]")}
+	if s.Reason != "" {
+		attrs = append(attrs, slog.String("reason", s.Reason))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 // SourceError separates a loggable source selector from a public-safe reason.

@@ -74,6 +74,7 @@ For process environment settings, `secretref.FromEnv("APP_TOKEN")` selects
 if one is empty; neither present yields an unset reference. Empty `APP_TOKEN`
 fails at resolution and empty `APP_TOKEN_FILE` fails at selection. No file is
 read during selection. Names must have no surrounding whitespace, `=`, or NUL.
+`APP_TOKEN_FILE` paths must have no surrounding whitespace.
 Direct `Ref{Env: name}` retains its existing trim-on-resolution behavior;
 `FromEnv` rejects edge-spaced names so selection and resolution agree.
 
