@@ -343,7 +343,7 @@ func acquireScanSession(ctx context.Context, path string, freezer FreezeCoordina
 	}, backoff.WithBackOff(backoff.NewConstantBackOff(100*time.Millisecond)),
 		backoff.WithMaxTries(2), backoff.WithMaxElapsedTime(0))
 	if retryErr := backoff.AsRetryError(err); retryErr != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(retryErr.Cause, context.Cause(ctx)) {
 			return scanSession{}, errors.Join(retryErr.LastErr, ctxErr)
 		}
 		return scanSession{}, retryErr.LastErr

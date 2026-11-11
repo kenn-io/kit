@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -348,9 +349,10 @@ func TestCreateReplacement(t *testing.T) {
 				return db, err
 			})
 			m, err := Create(ctx, r, newTestApp(), opts)
-			if renameErr != nil {
+			if renameErr != nil && runtime.GOOS == "windows" {
 				t.Skip("cannot replace an open file on this platform")
 			}
+			require.NoError(t, renameErr)
 			list, listErr := r.ListSnapshots()
 			require.NoError(t, listErr)
 			if tc.cancel {
@@ -382,7 +384,7 @@ func TestCreateReplacement(t *testing.T) {
 }
 
 func TestCreateReplacementTerminalErrors(t *testing.T) {
-	for _, tc := range []string{"freezer", "opener"} {
+	for _, tc := range []string{"freezer", "opener", "opener canceled"} {
 		t.Run(tc, func(t *testing.T) {
 			r := initTestRepo(t)
 			path, content, data, _ := seedBackupFixture(t)
@@ -394,14 +396,20 @@ func TestCreateReplacementTerminalErrors(t *testing.T) {
 			}
 			opts := createOpts(path, content, data, t.TempDir())
 			opts.Freezer = coordinator
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
 			opts.SQLiteOpener = SQLiteOpenFunc(func(string, SQLiteOpenOptions) (*sql.DB, error) {
 				opens++
+				if tc == "opener canceled" {
+					cancel()
+				}
 				return nil, failure
 			})
-			_, err := Create(t.Context(), r, newTestApp(), opts)
+			_, err := Create(ctx, r, newTestApp(), opts)
 			require.ErrorIs(t, err, failure)
+			require.NotErrorIs(t, err, context.Canceled)
 			require.Equal(t, 1, coordinator.begins)
-			if tc == "opener" {
+			if tc != "freezer" {
 				require.Equal(t, 1, opens)
 			} else {
 				require.Zero(t, opens)
