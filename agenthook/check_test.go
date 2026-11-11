@@ -52,11 +52,11 @@ func runHookCheckHelper(mode string) int {
 				mode = "config-eof"
 			}
 		}
-		if strings.HasPrefix(mode, "first-") {
+		if firstMode, ok := strings.CutPrefix(mode, "first-"); ok {
 			if info.Size() > 0 {
 				mode = "normal"
 			} else {
-				mode = strings.TrimPrefix(mode, "first-")
+				mode = firstMode
 			}
 		}
 	}

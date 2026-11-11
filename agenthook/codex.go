@@ -80,8 +80,8 @@ func transientCodexError(err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.DeadlineExceeded) || transientCodexResourceError(err) {
 		return true
 	}
-	var pathErr *os.PathError
-	return errors.As(err, &pathErr) && !errors.Is(err, os.ErrPermission) && (pathErr.Op == "read" || pathErr.Op == "write")
+	pathErr, ok := errors.AsType[*os.PathError](err)
+	return ok && !errors.Is(err, os.ErrPermission) && (pathErr.Op == "read" || pathErr.Op == "write")
 }
 
 func checkCodexAttempt(ctx context.Context, path string, owned []ownedRegistration) (CheckState, string, string, error) {
