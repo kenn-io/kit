@@ -27,12 +27,13 @@ func checksumRetry(ctx context.Context, operation func() ([]byte, error)) ([]byt
 }
 
 type checksumTransport struct {
-	base http.RoundTripper
+	base   http.RoundTripper
+	custom bool
 }
 
 func (t checksumTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
-	if err != nil && (req.URL.Scheme == "http" || req.URL.Scheme == "https") {
+	if err != nil && (t.custom || req.URL.Scheme == "http" || req.URL.Scheme == "https") {
 		return resp, checksumRequestError{err}
 	}
 	return resp, err

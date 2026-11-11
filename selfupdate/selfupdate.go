@@ -1184,7 +1184,8 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	client.Transport = checksumTransport{base: transport}
+	defaultTransport, isHTTPTransport := transport.(*http.Transport)
+	client.Transport = checksumTransport{base: transport, custom: client.Transport != nil && (!isHTTPTransport || defaultTransport != http.DefaultTransport)}
 	c.HTTPClient = &client
 
 	body, err := checksumRetry(ctx, func() ([]byte, error) {

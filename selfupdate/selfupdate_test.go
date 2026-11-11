@@ -2249,12 +2249,14 @@ func TestChecksumRetryAfterBodyTimeout(t *testing.T) {
 }
 
 func TestChecksumRetryStopsOnUnsupportedScheme(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		start := time.Now()
-		_, err := (Client{}).fetchChecksumFromFile(t.Context(), "ftp://example.invalid/SHA256SUMS", "tool.tar.gz")
-		require.ErrorContains(t, err, "unsupported protocol scheme")
-		assert.Zero(t, time.Since(start))
-	})
+	for _, client := range []*http.Client{nil, {Transport: http.DefaultTransport}} {
+		synctest.Test(t, func(t *testing.T) {
+			start := time.Now()
+			_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), "ftp://example.invalid/SHA256SUMS", "tool.tar.gz")
+			require.ErrorContains(t, err, "unsupported protocol scheme")
+			assert.Zero(t, time.Since(start))
+		})
+	}
 }
 
 func TestChecksumRetryAfterHeaderTimeout(t *testing.T) {
@@ -2273,5 +2275,26 @@ func TestChecksumRetryAfterHeaderTimeout(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, testHash64, checksum)
 		assert.EqualValues(t, 2, requests.Load())
+	})
+}
+
+type checksumCustomTransport struct{ requests int }
+
+func (t *checksumCustomTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.requests++
+	if t.requests == 1 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(testHash64 + "  tool.tar.gz\n"))}, nil
+}
+
+func TestChecksumRetryCustomTransport(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := &checksumCustomTransport{}
+		client := &http.Client{Transport: transport}
+		checksum, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), "custom://example.invalid/checksums", "tool.tar.gz")
+		require.NoError(t, err)
+		assert.Equal(t, testHash64, checksum)
+		assert.Equal(t, 2, transport.requests)
 	})
 }
