@@ -50,7 +50,7 @@ func normalizeAgents(names []string) ([]string, error) {
 	return result, nil
 }
 
-func resolve(ctx context.Context, opts Options) ([]entry, error) {
+func resolve(opts Options) ([]entry, error) {
 	if opts.Items == nil {
 		return nil, errors.New("items callback is required")
 	}
@@ -69,9 +69,6 @@ func resolve(ctx context.Context, opts Options) ([]entry, error) {
 	for _, name := range names {
 		agent := agenthook.Agent(name)
 		profile, _ := agenthook.LookupProfile(agent)
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
 		items, err := opts.Items(string(agent))
 		if err != nil {
 			return nil, fmt.Errorf("%s items: %w", profile.DisplayName, err)
@@ -101,20 +98,13 @@ func (opts Options) repairCommand() string {
 	return opts.SetupCommand + " --agent " + strings.Join(names, ",")
 }
 
-func nextStep(e entry, opts Options, status Status) string {
-	if status.State != StateOK && (status.NextStep == "" || e.item.retrySetup && (status.State == StateMissing || status.State == StateOutdated)) {
-		return opts.repairCommand()
-	}
-	return status.NextStep
-}
-
 // Run installs each item once in order, then checks final readiness. On cancellation,
 // it returns completed checks and marks unchecked items unknown.
 func Run(ctx context.Context, opts Options) (Report, error) {
 	if strings.TrimSpace(opts.SetupCommand) == "" {
 		return Report{}, errors.New("setup command is required")
 	}
-	entries, err := resolve(ctx, opts)
+	entries, err := resolve(opts)
 	if err != nil {
 		return Report{}, err
 	}
@@ -125,18 +115,13 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		}
 		report.Rows[i] = Row{Agent: string(e.agent), AgentName: e.name, Piece: e.item.Name, State: StateUnknown, Reason: "Setup interrupted; readiness was not checked", NextStep: opts.repairCommand()}
 	}
-	installErrors := make([]error, len(entries))
 	for i, e := range entries {
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
 		if e.item.Install != nil && !opts.CheckOnly {
-			installErrors[i] = e.item.Install(ctx)
-			if installErrors[i] != nil {
-				report.Rows[i].Status = Status{State: StateFailed, Reason: installErrors[i].Error(), NextStep: opts.repairCommand()}
-				if ctx.Err() != nil {
-					report.Rows[i].Reason = "Setup interrupted: " + report.Rows[i].Reason
-				}
+			if err := e.item.Install(ctx); err != nil {
+				report.Rows[i].State, report.Rows[i].Reason = StateFailed, err.Error()
 			}
 		}
 	}
@@ -148,18 +133,17 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		if ctx.Err() != nil {
 			return report, ctx.Err()
 		}
-		status.NextStep = nextStep(e, opts, status)
-		if installErrors[i] != nil {
-			installReason := installErrors[i].Error()
-			if err != nil || status.NextStep == "" || status.Reason == "" || !strings.Contains(installReason, status.Reason) {
-				status.NextStep = opts.repairCommand()
-			}
-			status.State, status.Reason = StateFailed, installReason
-		} else if err != nil {
+		if err != nil {
 			status.State, status.Reason = StateFailed, err.Error()
-			if status.NextStep == "" {
-				status.NextStep = opts.repairCommand()
+		}
+		if status.State != StateOK && (status.NextStep == "" || e.item.retrySetup && (status.State == StateMissing || status.State == StateOutdated)) {
+			status.NextStep = opts.repairCommand()
+		}
+		if row := report.Rows[i]; row.State == StateFailed {
+			if status.NextStep == "" || status.Reason == "" || !strings.Contains(row.Reason, status.Reason) {
+				status.NextStep = row.NextStep
 			}
+			status.State, status.Reason = StateFailed, row.Reason
 		}
 		report.Rows[i].Status = status
 	}

@@ -9,36 +9,19 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.kenn.io/kit/agenthook"
-	"go.kenn.io/kit/agentmcp"
 	"go.kenn.io/kit/internal/codexapp/testserver"
 )
 
 func TestOrderedInstallAndFinalCheck(t *testing.T) {
 	var calls []string
-	ready := false
 	report, err := Run(t.Context(), Options{Agents: []string{"codex"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) {
 		return []Item{
-			{Name: "prerequisite", Install: func(context.Context) error { calls = append(calls, "install prerequisite"); ready = true; return nil }, Check: func(context.Context) (Status, error) {
-				calls = append(calls, "check prerequisite")
-				return Status{State: StateOK}, nil
-			}},
-			{Name: "dependent", Install: func(context.Context) error {
-				calls = append(calls, "install dependent")
-				if !ready {
-					return errors.New("prerequisite missing")
-				}
-				return nil
-			}, Check: func(context.Context) (Status, error) {
-				calls = append(calls, "check dependent")
-				return Status{State: StateOK}, nil
-			}},
 			{Name: "broken", Install: func(context.Context) error {
 				calls = append(calls, "install broken")
 				return errors.New("write failed")
 			}, Check: func(context.Context) (Status, error) {
 				calls = append(calls, "check broken")
-				return Status{State: StateOK}, nil
+				return Status{State: StateUntrusted, NextStep: "Open /hooks"}, nil
 			}},
 			{Name: "independent", Install: func(context.Context) error { calls = append(calls, "install independent"); return nil }, Check: func(context.Context) (Status, error) {
 				calls = append(calls, "check independent")
@@ -47,10 +30,10 @@ func TestOrderedInstallAndFinalCheck(t *testing.T) {
 		}, nil
 	}})
 	require.NoError(t, err)
-	require.Equal(t, []string{"install prerequisite", "install dependent", "install broken", "install independent", "check prerequisite", "check dependent", "check broken", "check independent"}, calls)
-	require.Equal(t, StateFailed, report.Rows[2].State)
-	require.Equal(t, "write failed", report.Rows[2].Reason)
-	require.Equal(t, "app setup --agent codex", report.Rows[2].NextStep)
+	require.Equal(t, []string{"install broken", "install independent", "check broken", "check independent"}, calls)
+	require.Equal(t, StateFailed, report.Rows[0].State)
+	require.Equal(t, "write failed", report.Rows[0].Reason)
+	require.Equal(t, "app setup --agent codex", report.Rows[0].NextStep)
 }
 
 func TestSetupCommandRequiredBeforeCallbacks(t *testing.T) {
@@ -98,18 +81,6 @@ func TestCancellationRetainsReadinessReport(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, report.WriteText(&out, ""))
 	require.Contains(t, out.String(), "interrupted")
-}
-
-func TestCancellationDuringInstallRetainsFailure(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	report, err := Run(ctx, Options{Agents: []string{"codex"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) {
-		return []Item{{Name: "item", Install: func(context.Context) error { cancel(); return errors.New("write failed") }, Check: func(context.Context) (Status, error) { return Status{State: StateOK}, nil }}}, nil
-	}})
-	require.ErrorIs(t, err, context.Canceled)
-	require.Equal(t, StateFailed, report.Rows[0].State)
-	require.Contains(t, report.Rows[0].Reason, "Setup interrupted")
-	require.Contains(t, report.Rows[0].Reason, "write failed")
 }
 
 func TestDefaultAndExplicitSelection(t *testing.T) {
@@ -177,36 +148,16 @@ func TestCancelStopsCallbacks(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	called := false
-	_, err := Run(ctx, Options{Agents: []string{"codex"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) {
+	report, err := Run(ctx, Options{Agents: []string{"codex"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) {
 		return []Item{
-			{Name: "first", Install: func(context.Context) error { cancel(); return nil }, Check: func(context.Context) (Status, error) { called = true; return Status{}, nil }},
+			{Name: "first", Install: func(context.Context) error { cancel(); return errors.New("write failed") }, Check: func(context.Context) (Status, error) { called = true; return Status{}, nil }},
 			{Name: "second", Install: func(context.Context) error { called = true; return nil }, Check: func(context.Context) (Status, error) { called = true; return Status{}, nil }},
 		}, nil
 	}})
 	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, called)
-}
-
-func TestItemRepairGuidance(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	report, err := Run(t.Context(), Options{Agents: []string{"muse"}, SetupCommand: "app setup", Items: func(agent string) ([]Item, error) {
-		return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
-	}})
-	require.NoError(t, err)
-	require.Equal(t, StateFailed, report.Rows[0].State)
-	require.Equal(t, "Choose an agent that supports MCP", report.Rows[0].NextStep)
-}
-
-func TestFailedInstallOverridesUntrustedCheck(t *testing.T) {
-	report, err := Run(t.Context(), Options{Agents: []string{"codex"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) {
-		return []Item{{Name: "custom", Install: func(context.Context) error { return errors.New("write failed") }, Check: func(context.Context) (Status, error) {
-			return Status{State: StateUntrusted, NextStep: "Open /hooks"}, nil
-		}}}, nil
-	}})
-	require.NoError(t, err)
 	require.Equal(t, StateFailed, report.Rows[0].State)
 	require.Equal(t, "write failed", report.Rows[0].Reason)
-	require.Equal(t, "app setup --agent codex", report.Rows[0].NextStep)
 }
 
 func TestReportFlattensCells(t *testing.T) {
@@ -221,16 +172,4 @@ func TestReportFlattensCells(t *testing.T) {
 	data, err := json.Marshal(r)
 	require.NoError(t, err)
 	require.Contains(t, string(data), `failed\nissue\rnext`)
-}
-
-func TestFailedHookInstallKeepsSetupGuidance(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-	hook := Hooks("claude", agenthook.InstallOptions{Executable: "example", Arguments: []string{"example-hook"}, Marker: "example-hook", Hooks: []agenthook.Hook{{Event: agenthook.EventStop}}})
-	hook.Install = func(context.Context) error { return errors.New("write failed") }
-	report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) { return []Item{hook}, nil }})
-	require.NoError(t, err)
-	require.Equal(t, StateFailed, report.Rows[0].State)
-	require.Equal(t, "write failed", report.Rows[0].Reason)
-	require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
 }

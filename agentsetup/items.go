@@ -55,7 +55,7 @@ func Print(w io.Writer, opts Options) error {
 			opts.Agents = []string{"claude", "codex"}
 		}
 	}
-	entries, err := resolve(context.Background(), opts)
+	entries, err := resolve(opts)
 	if err != nil {
 		return err
 	}

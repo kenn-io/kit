@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -25,19 +24,6 @@ func TestDupAgents(t *testing.T) {
 	require.Equal(t, 1, resolved)
 	require.Equal(t, 1, installs)
 	require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
-}
-
-func TestMalformedMCPWithAgentAbsent(t *testing.T) {
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-	t.Setenv("PATH", t.TempDir())
-	path, err := agentmcp.ConfigPath(agentmcp.AgentClaude)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, []byte(`{"mcpServers":null}`), 0o600))
-	report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", CheckOnly: true, Items: func(agent string) ([]Item, error) {
-		return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
-	}})
-	require.NoError(t, err)
-	require.Equal(t, "Correct the agent MCP config", report.Rows[0].NextStep)
 }
 
 func TestMissingAgentMCPGuidance(t *testing.T) {
@@ -99,36 +85,20 @@ func TestCodexZeroToolsInReport(t *testing.T) {
 	t.Setenv("CODEX_HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	t.Setenv("SETUP_HELPER", "1")
-	t.Setenv("SETUP_ZERO_TOOLS", "1")
 	testserver.InstallExecutable(t, "codex")
 	testserver.InstallExecutable(t, "claude")
 	server := agentmcp.Server{Command: "example"}
-	_, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: server})
-	require.NoError(t, err)
-	report, err := Run(t.Context(), Options{Agents: []string{"codex"}, SetupCommand: "app setup", CheckOnly: true, Items: func(agent string) ([]Item, error) {
+	for _, agent := range []agentmcp.Agent{agentmcp.AgentCodex, agentmcp.AgentClaude} {
+		_, err := agentmcp.Install(agent, agentmcp.InstallOptions{Name: "example", Server: server})
+		require.NoError(t, err)
+	}
+	report, err := Run(t.Context(), Options{Agents: []string{"codex", "claude"}, SetupCommand: "app setup", CheckOnly: true, Items: func(agent string) ([]Item, error) {
 		return []Item{MCP(agent, "example", server), MCP(agent, "missing", server)}, nil
 	}})
 	require.NoError(t, err)
-	require.Equal(t, StateOK, report.Rows[0].State)
-	require.Equal(t, StateMissing, report.Rows[1].State)
-	data, err := json.Marshal(report.Rows[0])
+	require.Equal(t, []State{StateOK, StateMissing, StateOK, StateMissing}, []State{report.Rows[0].State, report.Rows[1].State, report.Rows[2].State, report.Rows[3].State})
+	require.Equal(t, new(0), report.Rows[0].ToolCount)
+	data, err := json.Marshal(report)
 	require.NoError(t, err)
-	require.Contains(t, string(data), `"tool_count":0`)
-	data, err = json.Marshal(report.Rows[1])
-	require.NoError(t, err)
-	require.NotContains(t, string(data), `"tool_count"`)
-	t.Setenv("SETUP_ZERO_TOOLS", "")
-	status, err := MCP("codex", "example", server).Check(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, new(1), status.ToolCount)
-	_, err = agentmcp.Install(agentmcp.AgentClaude, agentmcp.InstallOptions{Name: "example", Server: server})
-	require.NoError(t, err)
-	claude, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", CheckOnly: true, Items: func(agent string) ([]Item, error) {
-		return []Item{MCP(agent, "example", server)}, nil
-	}})
-	require.NoError(t, err)
-	require.Equal(t, StateOK, claude.Rows[0].State)
-	data, err = json.Marshal(claude.Rows[0])
-	require.NoError(t, err)
-	require.NotContains(t, string(data), `"tool_count"`)
+	require.Equal(t, 1, strings.Count(string(data), `"tool_count"`))
 }

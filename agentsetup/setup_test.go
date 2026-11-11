@@ -53,11 +53,7 @@ func runHelper() int {
 			data, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"hooks": hooks, "errors": []any{}}}})
 			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, string(data))
 		case "mcpServerStatus/list":
-			tools := `{"search":{}}`
-			if os.Getenv("SETUP_ZERO_TOOLS") != "" {
-				tools = `{}`
-			}
-			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, `{"data":[{"name":"example","tools":`+tools+`,"toolsError":null}]}`)
+			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, `{"data":[{"name":"example","tools":{},"toolsError":null}]}`)
 		default:
 			return 4
 		}
