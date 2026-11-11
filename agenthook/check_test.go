@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -83,17 +82,8 @@ func runHookCheckHelper(mode string) int {
 			fmt.Printf("{\"id\":%d}\n", request.ID)
 			continue
 		}
-		if mode == "rpc-error" || mode == "rpc-error-close" {
+		if mode == "rpc-error" {
 			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
-			if mode == "rpc-error-close" {
-				input.Scan()
-				_ = os.WriteFile(os.Getenv("KIT_HOOK_CHECK_EVENT"), []byte("ready"), 0o600)
-				signals := make(chan os.Signal, 1)
-				signal.Notify(signals, os.Interrupt)
-				<-signals
-				signal.Stop(signals)
-				return 0
-			}
 			continue
 		}
 		if mode == "malformed" {
@@ -133,15 +123,6 @@ func runHookCheckHelper(mode string) int {
 				response = strings.ReplaceAll(os.Getenv("KIT_HOOK_CHECK_REPLY"), "CWD", strings.ReplaceAll(cwd, `\`, `\\`))
 			}
 			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, response)
-			if mode == "close-delay" {
-				input.Scan()
-				_ = os.WriteFile(os.Getenv("KIT_HOOK_CHECK_EVENT"), []byte("ready"), 0o600)
-				signals := make(chan os.Signal, 1)
-				signal.Notify(signals, os.Interrupt)
-				<-signals
-				signal.Stop(signals)
-				return 0
-			}
 		default:
 			return 13
 		}
@@ -167,8 +148,6 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, "", 2},
 		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure", 1},
 		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", 1},
-		{"native error before cancellation", "rpc-error-close", "", "", CheckUnknown, "native failure", 1},
-		{"completed before cancellation", "close-delay", "trusted", "", CheckOK, "", 1},
 		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", 1},
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", 1},
 		{"reviewed", "normal", "trusted", "", CheckOK, "", 1},
@@ -277,8 +256,6 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			}
 			record := filepath.Join(dir, "launches")
 			t.Setenv("KIT_HOOK_CHECK_LAUNCHES", record)
-			event := filepath.Join(dir, "event")
-			t.Setenv("KIT_HOOK_CHECK_EVENT", event)
 			t.Setenv("KIT_HOOK_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_HOOK_CHECK_REPLY", reply)
 			if tc.mode == "missing-cli" {
@@ -291,26 +268,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				defer cancel()
 			}
 			started := time.Now()
-			var result CheckResult
-			if tc.mode == "close-delay" || tc.mode == "rpc-error-close" {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithCancel(ctx)
-				defer cancel()
-				finished := make(chan struct{})
-				go func() {
-					result, err = Check(ctx, AgentCodex, opts)
-					close(finished)
-				}()
-				require.Eventually(t, func() bool { _, err := os.Stat(event); return err == nil }, 30*time.Second, 10*time.Millisecond)
-				cancel()
-				select {
-				case <-finished:
-				case <-time.After(30 * time.Second):
-					require.FailNow(t, "cancellation must finish the check")
-				}
-			} else {
-				result, err = Check(ctx, AgentCodex, opts)
-			}
+			result, err := Check(ctx, AgentCodex, opts)
 			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" {
 				assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound the native check")
 			}

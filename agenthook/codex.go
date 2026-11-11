@@ -49,10 +49,6 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 	var reason, step string
 	attempt := 0
 	_, retryErr := backoff.Retry(ctx, func() (struct{}, error) {
-		if err := ctx.Err(); err != nil {
-			state, reason, step = codexFailure(err, "Check Codex app-server startup and retry")
-			return struct{}{}, backoff.Permanent(err)
-		}
 		attempt++
 		attemptCtx := ctx
 		cancel := func() {}
