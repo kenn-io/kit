@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/cenkalti/backoff/v7"
@@ -27,19 +28,30 @@ type Retry struct {
 	// MaxRetryAfter caps how long a provider's Retry-After can make a retry
 	// wait. Zero uses 60s.
 	MaxRetryAfter time.Duration
+	// RetryRateLimits keeps retrying HTTP 429 responses until the call
+	// succeeds or its context ends. A 429 does not count toward MaxAttempts,
+	// which then bounds only the other failures. A long-running build sets it
+	// so a provider's rate limit never fails the build.
+	RetryRateLimits bool
 }
 
 // retryCall runs call until it succeeds, fails with an error that a retry cannot
 // fix, runs out of attempts, or ctx ends.
 func retryCall[T any](ctx context.Context, r Retry, splitTimeout bool, call func() (T, error)) (T, error) {
 	var zero T
-	if r.MaxAttempts <= 1 {
+	if r.MaxAttempts <= 1 && !r.RetryRateLimits {
 		return call()
 	}
 	policy := backoff.NewExponentialBackOff()
 	policy.InitialInterval = cmp.Or(r.InitialBackoff, 500*time.Millisecond)
 	policy.MaxInterval = cmp.Or(r.MaxBackoff, 30*time.Second)
 	maxRetryAfter := cmp.Or(r.MaxRetryAfter, 60*time.Second)
+	// failures counts the failures that spend MaxAttempts.
+	failures := 0
+	spent := func() bool {
+		failures++
+		return failures >= max(r.MaxAttempts, 1)
+	}
 
 	value, err := backoff.Retry(ctx, func() (T, error) {
 		value, err := call()
@@ -48,6 +60,9 @@ func retryCall[T any](ctx context.Context, r Retry, splitTimeout bool, call func
 		}
 		if apiErr, ok := errors.AsType[*APIError](err); ok {
 			if !apiErr.Retryable() {
+				return zero, backoff.Permanent(err)
+			}
+			if (!r.RetryRateLimits || apiErr.StatusCode != http.StatusTooManyRequests) && spent() {
 				return zero, backoff.Permanent(err)
 			}
 			if apiErr.RetryAfter > 0 {
@@ -59,12 +74,14 @@ func retryCall[T any](ctx context.Context, r Retry, splitTimeout bool, call func
 			if splitTimeout && splittableTimeout(err) {
 				return zero, backoff.Permanent(err)
 			}
+			if spent() {
+				return zero, backoff.Permanent(err)
+			}
 			return zero, err
 		}
 		return zero, backoff.Permanent(err)
 	},
 		backoff.WithBackOff(policy),
-		backoff.WithMaxTries(uint(r.MaxAttempts)),
 		backoff.WithMaxElapsedTime(0),
 	)
 	// Report the provider's error as the call would without retries, joined
