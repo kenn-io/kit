@@ -1,7 +1,7 @@
 <h1 align="center">kit</h1>
 
 <p align="center">
-  <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.27.3+-00ADD8?logo=go" alt="Go 1.27.3+"></a>
+  <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.27.4+-00ADD8?logo=go" alt="Go 1.27.4+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="https://pkg.go.dev/go.kenn.io/kit"><img src="https://pkg.go.dev/badge/go.kenn.io/kit.svg" alt="Go Reference"></a>
 </p>
@@ -52,7 +52,7 @@ behavior, or provider workflows live here.
 go get go.kenn.io/kit@latest
 ```
 
-kit requires Go 1.27.3 or later. Import the packages you need; each carries
+kit requires Go 1.27.4 or later. Import the packages you need; each carries
 its own Go documentation and package-level agent guidance.
 
 ## Documentation
