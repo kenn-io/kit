@@ -1,6 +1,8 @@
 package selfupdate
 
 import (
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -61,10 +63,15 @@ type checksumBody struct{ io.ReadCloser }
 
 func (b checksumBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
-	if err != nil && err != io.EOF {
+	if err != nil && err != io.EOF && !checksumInvalidContent(err) {
 		return n, checksumRequestError{err}
 	}
 	return n, err
+}
+
+func checksumInvalidContent(err error) bool {
+	_, corrupt := errors.AsType[flate.CorruptInputError](err)
+	return corrupt || errors.Is(err, gzip.ErrHeader) || errors.Is(err, gzip.ErrChecksum)
 }
 
 func checksumRetryAfter(header string) time.Duration {

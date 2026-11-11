@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
 	"context"
 	"crypto/ed25519"
@@ -2297,4 +2298,43 @@ func TestChecksumRetryCustomTransport(t *testing.T) {
 		assert.Equal(t, testHash64, checksum)
 		assert.Equal(t, 2, transport.requests)
 	})
+}
+
+func TestChecksumRetryStopsOnCorruptGzip(t *testing.T) {
+	var payload bytes.Buffer
+	writer := gzip.NewWriter(&payload)
+	_, err := writer.Write([]byte(testHash64 + "  tool.tar.gz\n"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	badChecksum := payload.Bytes()
+	badChecksum[len(badChecksum)-1] ^= 0xff
+	for _, tt := range []struct {
+		name string
+		data []byte
+		want error
+	}{
+		{"checksum", badChecksum, gzip.ErrChecksum},
+		{"header", []byte("invalidgzip"), gzip.ErrHeader},
+		{"deflate", []byte{0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0x06}, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var requests atomic.Int32
+				server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					requests.Add(1)
+					w.Header().Set("Content-Encoding", "gzip")
+					_, _ = w.Write(tt.data)
+				}))
+				client := server.Client()
+				_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
+				if tt.want != nil {
+					require.ErrorIs(t, err, tt.want)
+				} else {
+					var corrupt flate.CorruptInputError
+					require.ErrorAs(t, err, &corrupt)
+				}
+				assert.EqualValues(t, 1, requests.Load())
+			})
+		})
+	}
 }
