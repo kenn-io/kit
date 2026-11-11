@@ -1,7 +1,7 @@
 ---
 title: "Backup Repository Format"
 description: "On-disk layout and interoperability rules for backup repositories."
-last_edited: 2026-11-08
+last_edited: 2026-11-11
 ---
 
 # Backup Repository Format
@@ -391,7 +391,7 @@ To capture a transactionally consistent database image while the application's d
 2. It opens its own SQLite connection, runs `PRAGMA wal_checkpoint(TRUNCATE)` (with bounded retries) until the WAL is empty, then pins a read transaction — from this point the main database file bytes cannot change under it.
 3. It immediately calls `FreezeCoordinator.End`. The gate is released and normal writes resume; the pinned transaction alone keeps the file image stable for the page scan. Database geometry, statistics, and content locators are all read inside the pinned transaction (`App.FrozenView`).
 
-The freeze window is therefore milliseconds-to-seconds regardless of archive size. `Create` refuses to run unfrozen against a live database owner: an application whose `FreezeCoordinator.Begin` cannot resolve the owner should fail rather than risk a torn read.
+The freeze window is therefore milliseconds-to-seconds regardless of archive size. If the scan file no longer matches the database path after the freeze, `Create` releases the session and repeats the freeze once, with writes able to resume between attempts. `Create` refuses to run unfrozen against a live database owner: an application whose `FreezeCoordinator.Begin` cannot resolve the owner should fail rather than risk a torn read.
 
 For portable metadata capture, Kit holds the same coordinator gate while
 `MetadataSource.OpenSnapshot` establishes an application-defined stable view,

@@ -102,15 +102,6 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		return nil, err
 	}
 
-	// The scan handle opens BEFORE the freeze, and its identity is re-proven
-	// against the path after the frozen session is established: SQLite
-	// resolves DBPath on its own inside OpenFrozenSession, so a path swapped
-	// between the two opens would freeze one file while the scanner captures
-	// another — storing a different file's bytes as page blobs while the
-	// manifest records the frozen database's stats. Anchoring the handle
-	// first and re-checking after fails closed on any replacement that
-	// persists; only a swap-in/swap-out timed exactly around SQLite's own
-	// open remains outside what path-based opens can detect.
 	pr.emit(ProgressEvent{Stage: ProgressStageFreeze, Total: 1})
 	pair, err := acquireScanSession(ctx, opts.DBPath, opts.Freezer, opts.SQLiteOpener)
 	if err != nil {
@@ -326,6 +317,10 @@ type scanSession struct {
 	session *FrozenSession
 }
 
+// acquireScanSession opens the scan file before SQLite freezes the path, then
+// checks that the path still names that file. A replacement would otherwise
+// mix one database's pages with another's statistics. Retry one replacement;
+// a swap in and out around SQLite's open remains undetectable by this check.
 func acquireScanSession(ctx context.Context, path string, freezer FreezeCoordinator, opener SQLiteOpener) (scanSession, error) {
 	pair, err := backoff.Retry(ctx, func() (scanSession, error) {
 		var empty scanSession

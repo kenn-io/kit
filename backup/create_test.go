@@ -298,24 +298,6 @@ func TestVerifyScanFileIdentityDetectsReplacement(t *testing.T) {
 	require.ErrorContains(verifyScanFileIdentity(f, path), "was replaced")
 }
 
-type createRetryCoordinator struct {
-	begins   int
-	beginErr error
-	end      func()
-}
-
-func (c *createRetryCoordinator) Begin(context.Context) error {
-	c.begins++
-	return c.beginErr
-}
-
-func (c *createRetryCoordinator) End(context.Context) error {
-	if c.end != nil {
-		c.end()
-	}
-	return nil
-}
-
 func TestCreateReplacement(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -340,9 +322,9 @@ func TestCreateReplacement(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			coordinator := &createRetryCoordinator{}
+			coordinator := &recordingCoordinator{}
 			if tc.cancel {
-				coordinator.end = cancel
+				coordinator.onEnd = cancel
 			}
 			opens := 0
 			var first *sql.DB
@@ -405,7 +387,7 @@ func TestCreateReplacementTerminalErrors(t *testing.T) {
 			r := initTestRepo(t)
 			path, content, data, _ := seedBackupFixture(t)
 			failure := errors.New("test failure")
-			coordinator := &createRetryCoordinator{}
+			coordinator := &recordingCoordinator{}
 			opens := 0
 			if tc == "freezer" {
 				coordinator.beginErr = failure
