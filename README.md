@@ -23,8 +23,11 @@ behavior, or provider workflows live here.
 
 - **Build agent-aware CLIs.** `agentcli` builds command lines for supported
   coding-agent CLIs, `agenthook` installs hooks into agent harnesses,
-  `agentmcp` registers MCP servers in agent configuration files, and
-  `clisearch` finds runnable commands from task descriptions.
+  `agentmcp` registers MCP servers in agent configuration files,
+  `agentsetup` runs ordered, idempotent setup items and reports their readiness,
+  and `clisearch` finds runnable commands from task descriptions. Custom
+  setup items provide checks and receive the app's setup command as guidance
+  when they need attention. Put prerequisites before the items that need them.
 - **Store content safely.** `packstore` keeps a mixed loose-and-packed
   content-addressed store, `pack` implements the sealed-immutable pack
   container format, and `backup` snapshots metadata plus content-addressed
