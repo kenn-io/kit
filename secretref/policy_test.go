@@ -21,6 +21,10 @@ func TestSecretFormatting(t *testing.T) {
 		assert.Equal(t, fmt.Sprintf(format, []secretref.Secret{secret}), fmt.Sprintf(format, []secretref.Secret{other}))
 	}
 	assert.Equal(t, `"env:APP_TOKEN: [redacted]"`, fmt.Sprintf("%q", secret))
+	for _, format := range []string{"%d", "%f", "%x"} {
+		assert.NotContains(t, fmt.Sprintf(format, secret), secret.Value)
+		assert.NotContains(t, fmt.Sprintf(format, &secret), secret.Value)
+	}
 }
 
 func TestSecretJSON(t *testing.T) {

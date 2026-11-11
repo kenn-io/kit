@@ -18,6 +18,13 @@ type Secret struct {
 
 func (s Secret) String() string   { return s.Source + ": [redacted]" }
 func (s Secret) GoString() string { return s.String() }
+func (s Secret) Format(state fmt.State, verb rune) {
+	if verb == 'q' {
+		_, _ = fmt.Fprintf(state, "%q", s.String())
+		return
+	}
+	_, _ = state.Write([]byte(s.String()))
+}
 func (s Secret) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Source string `json:"source"`
