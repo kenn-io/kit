@@ -6,6 +6,8 @@
   retries. When set, retry only a `Retryable` `APIError` and a
   `TransportError`, never an input or credential rejection, and stop when the
   context ends. `Retry-After` stays on `APIError` either way.
+  `Retry.RetryRateLimits` retries 429 without limit and keeps it off
+  `MaxAttempts`.
   `OllamaMetalRecovery` is separate: keep usable vectors and recover the
   others through Ollama's native embed route.
 - A transport timeout on a multi-input text request splits it into halves

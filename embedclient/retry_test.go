@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	jsonv2 "encoding/json/v2"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -97,4 +99,83 @@ func TestZeroRetryDoesNotRetry(t *testing.T) {
 	_, err := client.Embed(t.Context(), oneText())
 	require.Error(t, err)
 	assert.Equal(t, int32(1), calls.Load())
+}
+
+func TestRetryRateLimitsOutlastMaxAttempts(t *testing.T) {
+	var calls atomic.Int32
+	client := retryClient(t, embedclient.Retry{MaxAttempts: 2, InitialBackoff: time.Millisecond, RetryRateLimits: true},
+		func(w http.ResponseWriter, _ *http.Request) {
+			if calls.Add(1) < 6 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			_, _ = io.WriteString(w, `{"data":[{"index":0,"embedding":[1,0]}]}`)
+		})
+	_, err := client.Embed(t.Context(), oneText())
+	require.NoError(t, err)
+	assert.Equal(t, int32(6), calls.Load(), "429s do not spend MaxAttempts")
+}
+
+func TestRetryRateLimitsKeepsTheBudgetForOtherFailures(t *testing.T) {
+	var calls atomic.Int32
+	client := retryClient(t, embedclient.Retry{MaxAttempts: 3, InitialBackoff: time.Millisecond, RetryRateLimits: true},
+		func(w http.ResponseWriter, _ *http.Request) {
+			// 429, 503, 429, 503, 429, 503: three 503s spend the budget.
+			if calls.Add(1)%2 == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+		})
+	_, err := client.Embed(t.Context(), oneText())
+	var apiErr *embedclient.APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
+	assert.Equal(t, int32(6), calls.Load())
+}
+
+func TestRetryRateLimitsAloneRetriesOnlyRateLimits(t *testing.T) {
+	var calls atomic.Int32
+	client := retryClient(t, embedclient.Retry{InitialBackoff: time.Millisecond, RetryRateLimits: true},
+		func(w http.ResponseWriter, _ *http.Request) {
+			switch calls.Add(1) {
+			case 1, 2:
+				w.WriteHeader(http.StatusTooManyRequests)
+			default:
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+		})
+	_, err := client.Embed(t.Context(), oneText())
+	require.Error(t, err)
+	assert.Equal(t, int32(3), calls.Load(), "a 503 gets no retry without MaxAttempts")
+}
+
+func TestRetryRateLimitsRetriesEachSplitRequestAlone(t *testing.T) {
+	var inputs atomic.Int32
+	var rateLimited atomic.Bool
+	client := timeoutClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Input []string `json:"input"`
+		}
+		if !assert.NoError(t, jsonv2.UnmarshalRead(r.Body, &body)) {
+			return
+		}
+		inputs.Add(int32(len(body.Input)))
+		if len(body.Input) > 2 {
+			time.Sleep(120 * time.Millisecond) //nolint:kennlint // sleeptest: the handler exceeds the client timeout
+			return
+		}
+		if len(body.Input) == 2 && body.Input[0] == "item2" && rateLimited.CompareAndSwap(false, true) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		data := make([]map[string]any, len(body.Input))
+		for i := range body.Input {
+			data[i] = map[string]any{"index": i, "embedding": []float32{1, 1}}
+		}
+		writeJSON(t, w, map[string]any{"data": data})
+	}, embedclient.Retry{MaxAttempts: 2, InitialBackoff: time.Millisecond, RetryRateLimits: true})
+	_, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"item0", "item1", "item2", "item3"})
+	require.NoError(t, err)
+	assert.Equal(t, int32(4+2+2+2), inputs.Load(), "a 429 inside a split resends that half, not the whole batch")
 }
