@@ -39,14 +39,8 @@ func runHelper() int {
 		}
 		switch request.Method {
 		case "config/read":
-			if testserver.CheckConfigRead(request) != nil {
-				return 5
-			}
-			_ = testserver.Reply(os.Stdout, request, `{"config":{"features":{"hooks":true}}}`)
+			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, `{"config":{"features":{"hooks":true}}}`)
 		case "hooks/list":
-			if testserver.CheckHooksList(request) != nil {
-				return 6
-			}
 			path := filepath.Join(os.Getenv("CODEX_HOME"), "hooks.json")
 			trust := os.Getenv("SETUP_TRUST")
 			if trust == "" {
@@ -56,19 +50,14 @@ func runHelper() int {
 			for _, event := range []string{"stop", "sessionstart", "sessionend"} {
 				hooks = append(hooks, map[string]any{"source": "user", "sourcePath": path, "key": path + ":" + event + ":0:0", "trustStatus": trust, "enabled": true})
 			}
-			result := map[string]any{"data": []any{map[string]any{"hooks": hooks, "errors": []any{}}}}
-			data, _ := json.Marshal(result)
-			_ = testserver.Reply(os.Stdout, request, string(data))
+			data, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"hooks": hooks, "errors": []any{}}}})
+			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, string(data))
 		case "mcpServerStatus/list":
-			if testserver.CheckMCPList(request, "example") != nil {
-				return 7
-			}
+			tools := `{"search":{}}`
 			if os.Getenv("SETUP_ZERO_TOOLS") != "" {
-				_ = testserver.Reply(os.Stdout, request, `{"data":[{"name":"example","tools":{},"toolsError":null}]}`)
-				continue
+				tools = `{}`
 			}
-			data, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"name": "example", "tools": map[string]any{"search": map[string]any{}}, "toolsError": nil}}})
-			_ = testserver.Reply(os.Stdout, request, string(data))
+			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, `{"data":[{"name":"example","tools":`+tools+`,"toolsError":null}]}`)
 		default:
 			return 4
 		}

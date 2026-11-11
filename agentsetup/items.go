@@ -3,7 +3,6 @@ package agentsetup
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -54,29 +53,24 @@ func Print(w io.Writer, opts Options) error {
 	if len(opts.Agents) == 0 {
 		opts.Agents = []string{"claude", "codex"}
 	}
-	selected, err := resolve(context.Background(), opts)
+	entries, err := resolve(context.Background(), opts)
 	if err != nil {
 		return err
 	}
 	var output bytes.Buffer
-	for _, s := range selected {
-		for _, item := range s.items {
-			if item.Commands == nil {
-				continue
-			}
-			commands, err := item.Commands()
-			if err != nil {
-				return err
-			}
-			command := commands.POSIX
-			if runtime.GOOS == "windows" {
-				command = commands.PowerShell
-			}
-			output.WriteString(command + "\n")
+	for _, e := range entries {
+		if e.item.Commands == nil {
+			continue
 		}
-	}
-	if output.Len() == 0 {
-		return errors.New("no manual MCP commands available")
+		commands, err := e.item.Commands()
+		if err != nil {
+			return err
+		}
+		command := commands.POSIX
+		if runtime.GOOS == "windows" {
+			command = commands.PowerShell
+		}
+		output.WriteString(command + "\n")
 	}
 	_, err = output.WriteTo(w)
 	return err

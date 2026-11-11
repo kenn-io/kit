@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
 	"text/tabwriter"
 )
 
@@ -48,10 +48,8 @@ type Report struct {
 
 // ExitCode returns zero only when every row is ready.
 func (r Report) ExitCode() int {
-	for _, row := range r.Rows {
-		if row.State != StateOK {
-			return 1
-		}
+	if slices.ContainsFunc(r.Rows, func(row Row) bool { return row.State != StateOK }) {
+		return 1
 	}
 	return 0
 }
@@ -61,25 +59,21 @@ func (r Report) WriteText(w io.Writer, checkCommand string) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	failures := 0
 	for _, row := range r.Rows {
-		state := string(row.State)
+		state, detail := string(row.State), row.Reason
 		if row.State == StateUntrusted || row.State == StateModified {
 			state = "needs you"
 		}
-		detail := row.Reason
-		if row.State == StateOK && row.HookCount > 0 {
-			detail = fmt.Sprintf("%s in %s", hookCount(row.HookCount), homePath(row.ConfigPath))
-		}
-		if row.State == StateOK && row.ToolCount != nil {
+		switch {
+		case row.State == StateOK && row.ToolCount != nil:
 			detail = fmt.Sprintf("%d tools", *row.ToolCount)
-		}
-		if row.State != StateOK {
+		case row.State == StateOK && row.HookCount > 0:
+			detail = fmt.Sprintf("%s in %s", count(row.HookCount, "hook"), homePath(row.ConfigPath))
+		case row.State != StateOK:
 			failures++
-		}
-		if row.State != StateOK && row.HookCount > 0 {
-			detail = fmt.Sprintf("%s: %s", hookCount(row.HookCount), detail)
-		}
-		if row.State != StateOK && row.NextStep != "" {
-			if detail != "" {
+			if row.HookCount > 0 {
+				detail = fmt.Sprintf("%s: %s", count(row.HookCount, "hook"), detail)
+			}
+			if row.NextStep != "" && detail != "" {
 				detail += ": "
 			}
 			detail += row.NextStep
@@ -91,26 +85,22 @@ func (r Report) WriteText(w io.Writer, checkCommand string) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	if failures == 0 {
-		_, err := fmt.Fprintln(w, "Done.")
-		return err
+	summary := "Done."
+	if failures > 0 {
+		summary = fmt.Sprintf("Done except %s for you.", count(failures, "step"))
 	}
-	summary := fmt.Sprintf("Done except %d steps for you.", failures)
-	if failures == 1 {
-		summary = "Done except 1 step for you."
-	}
-	if checkCommand != "" {
+	if failures > 0 && checkCommand != "" {
 		summary += fmt.Sprintf(" Run `%s` afterwards.", checkCommand)
 	}
 	_, err := fmt.Fprintln(w, summary)
 	return err
 }
 
-func hookCount(count int) string {
-	if count == 1 {
-		return "1 hook"
+func count(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
 	}
-	return fmt.Sprintf("%d hooks", count)
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func homePath(path string) string {
@@ -118,8 +108,7 @@ func homePath(path string) string {
 	if err != nil {
 		return path
 	}
-	rel, err := filepath.Rel(home, path)
-	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if rel, err := filepath.Rel(home, path); err == nil && filepath.IsLocal(rel) {
 		return "~/" + filepath.ToSlash(rel)
 	}
 	return path

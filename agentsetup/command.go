@@ -1,6 +1,7 @@
 package agentsetup
 
 import (
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 
@@ -25,11 +26,7 @@ func NewCommand(setup Options) *cobra.Command {
 			return err
 		}
 		if jsonOutput {
-			var data []byte
-			data, err = json.Marshal(report)
-			if err == nil {
-				_, err = cmd.OutOrStdout().Write(append(data, '\n'))
-			}
+			err = json.MarshalEncode(jsontext.NewEncoder(cmd.OutOrStdout()), report)
 		} else {
 			err = report.WriteText(cmd.OutOrStdout(), setup.repairCommand()+" --check")
 		}

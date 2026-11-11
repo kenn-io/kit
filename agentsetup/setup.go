@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"go.kenn.io/kit/agenthook"
@@ -31,54 +32,43 @@ type Item struct {
 	nativeMCP  bool
 }
 
-type selection struct {
+type entry struct {
 	agent agenthook.Agent
 	name  string
-	items []Item
+	item  Item
 }
 
 func normalizeAgents(names []string) ([]string, error) {
 	var result []string
-	seen := make(map[agenthook.Agent]bool)
 	for _, name := range names {
 		agent, err := agenthook.ParseAgent(name)
 		if err != nil {
 			return nil, err
 		}
-		if !seen[agent] {
+		if !slices.Contains(result, string(agent)) {
 			result = append(result, string(agent))
-			seen[agent] = true
 		}
 	}
 	return result, nil
 }
 
-func defaultAgents() ([]string, error) {
-	var names []string
-	for _, name := range []string{"claude", "codex"} {
-		if _, err := exec.LookPath(name); err == nil {
-			names = append(names, name)
-		}
-	}
-	if len(names) == 0 {
-		return nil, errors.New("no supported agent found; install Claude Code or Codex, or pass --agent")
-	}
-	return names, nil
-}
-
-func resolve(ctx context.Context, opts Options) ([]selection, error) {
+func resolve(ctx context.Context, opts Options) ([]entry, error) {
 	names := opts.Agents
 	if len(names) == 0 {
-		var err error
-		if names, err = defaultAgents(); err != nil {
-			return nil, err
+		for _, name := range []string{"claude", "codex"} {
+			if _, err := exec.LookPath(name); err == nil {
+				names = append(names, name)
+			}
+		}
+		if len(names) == 0 {
+			return nil, errors.New("no supported agent found; install Claude Code or Codex, or pass --agent")
 		}
 	}
 	names, err := normalizeAgents(names)
 	if err != nil {
 		return nil, err
 	}
-	var selected []selection
+	var entries []entry
 	for _, name := range names {
 		agent := agenthook.Agent(name)
 		profile, _ := agenthook.LookupProfile(agent)
@@ -89,26 +79,28 @@ func resolve(ctx context.Context, opts Options) ([]selection, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s items: %w", profile.DisplayName, err)
 		}
-		selected = append(selected, selection{agent, profile.DisplayName, items})
+		for _, item := range items {
+			entries = append(entries, entry{agent, profile.DisplayName, item})
+		}
 	}
-	return selected, nil
+	return entries, nil
 }
 
 func (opts Options) repairCommand() string {
-	if opts.SetupCommand == "" || len(opts.Agents) == 0 {
+	if len(opts.Agents) == 0 {
 		return opts.SetupCommand
 	}
 	names, _ := normalizeAgents(opts.Agents)
 	return opts.SetupCommand + " --agent " + strings.Join(names, ",")
 }
 
-func nextStep(item Item, s selection, opts Options, status Status) string {
-	if item.nativeMCP && status.State == StateUnknown && (s.agent == agenthook.AgentClaude || s.agent == agenthook.AgentCodex) {
-		if _, err := exec.LookPath(string(s.agent)); err != nil {
-			return fmt.Sprintf("Install %s, then run `%s --check`", s.name, opts.repairCommand())
+func nextStep(e entry, opts Options, status Status) string {
+	if e.item.nativeMCP && status.State == StateUnknown && (e.agent == agenthook.AgentClaude || e.agent == agenthook.AgentCodex) {
+		if _, err := exec.LookPath(string(e.agent)); err != nil {
+			return fmt.Sprintf("Install %s, then run `%s --check`", e.name, opts.repairCommand())
 		}
 	}
-	if status.State != StateOK && (status.NextStep == "" || item.retrySetup && (status.State == StateMissing || status.State == StateOutdated)) {
+	if status.State != StateOK && (status.NextStep == "" || e.item.retrySetup && (status.State == StateMissing || status.State == StateOutdated)) {
 		return opts.repairCommand()
 	}
 	return status.NextStep
@@ -119,38 +111,30 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	if strings.TrimSpace(opts.SetupCommand) == "" {
 		return Report{}, errors.New("setup command is required")
 	}
-	selected, err := resolve(ctx, opts)
+	entries, err := resolve(ctx, opts)
 	if err != nil {
 		return Report{}, err
 	}
-	installErrors := make([][]error, len(selected))
-	for i, s := range selected {
-		installErrors[i] = make([]error, len(s.items))
-		for j, item := range s.items {
-			if err := ctx.Err(); err != nil {
-				return Report{}, err
-			}
-			if item.Install != nil && !opts.CheckOnly {
-				installErrors[i][j] = item.Install(ctx)
-			}
+	installErrors := make([]error, len(entries))
+	for i, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return Report{}, err
+		}
+		if e.item.Install != nil && !opts.CheckOnly {
+			installErrors[i] = e.item.Install(ctx)
 		}
 	}
 	report := Report{Rows: []Row{}}
-	for i, s := range selected {
-		for j, item := range s.items {
-			if err := ctx.Err(); err != nil {
-				return Report{}, err
-			}
-			status, err := item.Check(ctx)
-			status.NextStep = nextStep(item, s, opts, status)
-			if installErrors[i][j] != nil {
-				err = installErrors[i][j]
-			}
-			if err != nil {
-				status.State, status.Reason, status.NextStep = StateFailed, err.Error(), cmp.Or(status.NextStep, opts.repairCommand())
-			}
-			report.Rows = append(report.Rows, Row{Agent: string(s.agent), AgentName: s.name, Piece: item.Name, Status: status})
+	for i, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return Report{}, err
 		}
+		status, err := e.item.Check(ctx)
+		status.NextStep = nextStep(e, opts, status)
+		if err = cmp.Or(installErrors[i], err); err != nil {
+			status.State, status.Reason, status.NextStep = StateFailed, err.Error(), cmp.Or(status.NextStep, opts.repairCommand())
+		}
+		report.Rows = append(report.Rows, Row{Agent: string(e.agent), AgentName: e.name, Piece: e.item.Name, Status: status})
 	}
 	return report, ctx.Err()
 }

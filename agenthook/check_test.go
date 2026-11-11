@@ -54,7 +54,8 @@ func runHookCheckHelper(mode string) int {
 		}
 		switch request.Method {
 		case "config/read":
-			if testserver.CheckConfigRead(request) != nil {
+			cwd, _ := os.Getwd()
+			if request.Params["includeLayers"] != false || request.Params["cwd"] != cwd {
 				return 11
 			}
 			feature := `"hooks":true`
@@ -64,10 +65,11 @@ func runHookCheckHelper(mode string) int {
 			if mode == "feature-default" {
 				feature = ""
 			}
-			_ = testserver.Reply(os.Stdout, request, fmt.Sprintf("{\"config\":{\"features\":{%s}}}", feature))
+			fmt.Printf("{\"id\":%d,\"result\":{\"config\":{\"features\":{%s}}}}\n", request.ID, feature)
 		case "hooks/list":
 			cwd, _ := os.Getwd()
-			if testserver.CheckHooksList(request) != nil {
+			args, _ := request.Params["cwds"].([]any)
+			if len(args) != 1 || args[0] != cwd {
 				return 12
 			}
 			response := strings.ReplaceAll(os.Getenv("KIT_HOOK_CHECK_REPLY"), "CWD", cwd)
@@ -75,7 +77,7 @@ func runHookCheckHelper(mode string) int {
 			if runtime.GOOS == "windows" {
 				response = strings.ReplaceAll(os.Getenv("KIT_HOOK_CHECK_REPLY"), "CWD", strings.ReplaceAll(cwd, `\`, `\\`))
 			}
-			_ = testserver.Reply(os.Stdout, request, response)
+			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, response)
 		default:
 			return 13
 		}

@@ -86,13 +86,14 @@ func TestReportCountsRows(t *testing.T) {
 	out.Reset()
 	require.NoError(t, r.WriteText(&out, ""))
 	require.Contains(t, out.String(), "Done except 3 steps for you")
+	require.NotContains(t, out.String(), "Run")
 }
 
 func TestCheckOnlyGuidance(t *testing.T) {
+	installed := false
 	states := []State{StateMissing, StateOutdated, StateUnknown, StateFailed}
 	for _, state := range states {
 		t.Run(string(state), func(t *testing.T) {
-			installed := false
 			report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", CheckOnly: true, Items: func(string) ([]Item, error) {
 				return []Item{
 					{Name: "without step", Install: func(context.Context) error { installed = true; return nil }, Check: func(context.Context) (Status, error) { return Status{State: state}, nil }},
@@ -100,11 +101,11 @@ func TestCheckOnlyGuidance(t *testing.T) {
 				}, nil
 			}})
 			require.NoError(t, err)
-			require.False(t, installed)
 			require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
 			require.Equal(t, "do this", report.Rows[1].NextStep)
 		})
 	}
+	require.False(t, installed)
 }
 
 func TestCancelStopsCallbacks(t *testing.T) {
