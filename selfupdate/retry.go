@@ -33,9 +33,6 @@ func (t checksumTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if err != nil {
 		return resp, checksumRequestError{err}
 	}
-	if resp != nil && resp.Body != nil {
-		resp.Body = checksumBody{resp.Body}
-	}
 	return resp, nil
 }
 

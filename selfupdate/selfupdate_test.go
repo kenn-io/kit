@@ -2334,3 +2334,24 @@ func TestChecksumRetryPreservesTransportTimeout(t *testing.T) {
 		assert.Equal(t, 4, requests)
 	})
 }
+
+func TestChecksumRetryAfterBodyTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var requests atomic.Int32
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if requests.Add(1) == 1 {
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				return
+			}
+			_, _ = fmt.Fprintf(w, "%s  tool.tar.gz\n", testHash64)
+		}))
+		client := server.Client()
+		client.Timeout = time.Second
+		checksum, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz")
+		require.NoError(t, err)
+		assert.Equal(t, testHash64, checksum)
+		assert.EqualValues(t, 2, requests.Load())
+	})
+}

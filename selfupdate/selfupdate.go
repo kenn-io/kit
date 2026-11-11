@@ -1218,7 +1218,7 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 			return nil, backoff.Permanent(err)
 		}
 
-		body, err := readLimited(resp.Body, maxChecksumBytes)
+		body, err := readLimited(checksumBody{resp.Body}, maxChecksumBytes)
 		if err != nil {
 			if checksumTransportError(err) && ctx.Err() == nil {
 				return nil, err
