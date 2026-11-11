@@ -119,6 +119,10 @@ func runHookCheckHelper(mode string) int {
 				response = strings.ReplaceAll(os.Getenv("KIT_HOOK_CHECK_REPLY"), "CWD", strings.ReplaceAll(cwd, `\`, `\\`))
 			}
 			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, response)
+			if mode == "close-delay" {
+				time.Sleep(2 * time.Second)
+				return 0
+			}
 		default:
 			return 13
 		}
@@ -133,40 +137,42 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		name, mode, trust, extra string
 		want                     CheckState
 		reason                   string
+		launches                 int
 	}{
-		{"retry initialization", "first-initialize-eof", "trusted", "", CheckOK, ""},
-		{"retry config", "first-config-eof", "trusted", "", CheckOK, ""},
-		{"retry truncated reply", "first-truncated", "trusted", "", CheckOK, ""},
-		{"last failure step", "different-failures", "", "", CheckUnknown, "EOF"},
-		{"retry discovery", "first-discovery-eof", "trusted", "", CheckOK, ""},
-		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, ""},
-		{"exhausted config", "config-eof", "", "", CheckUnknown, "EOF"},
-		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure"},
-		{"malformed response is terminal", "malformed", "", "", CheckUnknown, ""},
-		{"already canceled", "already-canceled", "", "", CheckUnknown, "context canceled"},
-		{"cancel during pause", "cancel-pause", "", "", CheckUnknown, "context deadline exceeded"},
-		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, ""},
-		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, ""},
-		{"reviewed", "normal", "trusted", "", CheckOK, ""},
-		{"native source capitalization", "source-case", "trusted", "", CheckOK, ""},
-		{"managed", "normal", "managed", "", CheckOK, ""},
-		{"other applications and source files", "mixed", "trusted", "", CheckOK, ""},
-		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, ""},
-		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "didn't list all"},
-		{"partial discovery", "partial", "trusted", "", CheckUnknown, "didn't list all"},
-		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, ""},
-		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, ""},
-		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated, ""},
-		{"disabled handler", "disabled", "untrusted", "", CheckDisabled, ""},
-		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled, ""},
-		{"unknown trust", "normal", "future", "", CheckUnknown, "unknown hook trust state"},
-		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, "invalid hooks"},
-		{"missing discovery data", "missing-data", "", "", CheckUnknown, "didn't report hooks for this folder"},
-		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, "EOF"},
-		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded"},
-		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded"},
-		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex"},
-		{"Windows command override", "windows-command", "trusted", "", CheckOK, ""},
+		{"retry initialization", "first-initialize-eof", "trusted", "", CheckOK, "", 2},
+		{"retry config", "first-config-eof", "trusted", "", CheckOK, "", 2},
+		{"retry truncated reply", "first-truncated", "trusted", "", CheckOK, "", 2},
+		{"last failure step", "different-failures", "", "", CheckUnknown, "EOF", 2},
+		{"retry discovery", "first-discovery-eof", "trusted", "", CheckOK, "", 2},
+		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, "", 2},
+		{"exhausted config", "config-eof", "", "", CheckUnknown, "EOF", 2},
+		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure", 1},
+		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", 1},
+		{"completed before cancellation", "close-delay", "trusted", "", CheckOK, "", 1},
+		{"already canceled", "already-canceled", "", "", CheckUnknown, "context canceled", 0},
+		{"cancel during pause", "cancel-pause", "", "", CheckUnknown, "context deadline exceeded", 1},
+		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", 1},
+		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", 1},
+		{"reviewed", "normal", "trusted", "", CheckOK, "", 1},
+		{"native source capitalization", "source-case", "trusted", "", CheckOK, "", 1},
+		{"managed", "normal", "managed", "", CheckOK, "", 1},
+		{"other applications and source files", "mixed", "trusted", "", CheckOK, "", 1},
+		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, "", 1},
+		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "didn't list all", 1},
+		{"partial discovery", "partial", "trusted", "", CheckUnknown, "didn't list all", 1},
+		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, "", 1},
+		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, "", 1},
+		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated, "", 1},
+		{"disabled handler", "disabled", "untrusted", "", CheckDisabled, "", 1},
+		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled, "", 1},
+		{"unknown trust", "normal", "future", "", CheckUnknown, "unknown hook trust state", 1},
+		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, "invalid hooks", 1},
+		{"missing discovery data", "missing-data", "", "", CheckUnknown, "didn't report hooks for this folder", 1},
+		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, "EOF", 2},
+		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded", 1},
+		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded", 1},
+		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex", 0},
+		{"Windows command override", "windows-command", "trusted", "", CheckOK, "", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.mode == "windows-command" && runtime.GOOS != "windows" {
@@ -268,10 +274,10 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				ctx, cancel = context.WithCancel(ctx)
 				cancel()
 			}
-			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" || tc.mode == "cancel-pause" {
+			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" || tc.mode == "cancel-pause" || tc.mode == "close-delay" {
 				var cancel context.CancelFunc
 				timeout := time.Second
-				if tc.mode == "cancel-pause" {
+				if tc.mode == "cancel-pause" || tc.mode == "close-delay" {
 					timeout = 200 * time.Millisecond
 				}
 				ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -283,21 +289,19 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound the native check")
 			}
 			require.NoError(t, err)
-			if tc.mode == "already-canceled" {
+			if tc.mode == "close-delay" {
+				assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+			}
+			if tc.launches == 0 {
 				_, err := os.Stat(record)
 				assert.ErrorIs(t, err, os.ErrNotExist)
+			} else {
+				launches, err := os.ReadFile(record)
+				require.NoError(t, err)
+				assert.Len(t, launches, tc.launches)
 			}
 			if tc.mode == "first-rpc-timeout" {
 				assert.Less(t, time.Since(started), 21*time.Second)
-			}
-			if strings.HasPrefix(tc.mode, "first-") || tc.mode == "config-eof" || tc.mode == "rpc-error" || tc.mode == "malformed" || tc.mode == "cancel-pause" || tc.mode == "different-failures" || tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" {
-				launches, err := os.ReadFile(record)
-				require.NoError(t, err)
-				want := 1
-				if strings.HasPrefix(tc.mode, "first-") || tc.mode == "config-eof" || tc.mode == "different-failures" {
-					want = 2
-				}
-				assert.Len(t, launches, want)
 			}
 			if tc.mode == "config-eof" || tc.mode == "different-failures" {
 				assert.Contains(t, result.NextStep, "Codex config")

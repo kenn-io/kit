@@ -47,7 +47,7 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 	var state CheckState
 	var reason, step string
 	attempt := 0
-	_, _ = backoff.Retry(ctx, func() (struct{}, error) {
+	_, retryErr := backoff.Retry(ctx, func() (struct{}, error) {
 		if err := ctx.Err(); err != nil {
 			state, reason, step = codexFailure(err, "Check Codex app-server startup and retry")
 			return struct{}{}, backoff.Permanent(err)
@@ -56,6 +56,7 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		attemptCtx := ctx
 		cancel := func() {}
 		if attempt == 2 {
+			// The pause and second attempt together add at most ten seconds.
 			attemptCtx, cancel = context.WithTimeout(ctx, 9500*time.Millisecond)
 		}
 		defer cancel()
@@ -64,12 +65,12 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		if err == nil {
 			return struct{}{}, nil
 		}
-		if ctx.Err() != nil || !transientCodexError(err) {
+		if !transientCodexError(err) {
 			return struct{}{}, backoff.Permanent(err)
 		}
 		return struct{}{}, err
 	}, backoff.WithBackOff(backoff.NewConstantBackOff(500*time.Millisecond)), backoff.WithMaxTries(2), backoff.WithMaxElapsedTime(0))
-	if err := ctx.Err(); err != nil {
+	if err := ctx.Err(); retryErr != nil && err != nil {
 		state, reason, step = codexFailure(err, step)
 	}
 	return state, reason, step
