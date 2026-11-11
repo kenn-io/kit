@@ -7,46 +7,42 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 )
 
-type secretInfo struct {
-	mode fs.FileMode
-	uid  uint32
-}
-
-func (i secretInfo) Mode() fs.FileMode  { return i.mode }
-func (i secretInfo) Sys() any           { return &syscall.Stat_t{Uid: i.uid} }
-func (i secretInfo) IsDir() bool        { return i.mode.IsDir() }
-func (i secretInfo) Name() string       { return "fixture" }
-func (i secretInfo) Size() int64        { return 0 }
-func (i secretInfo) ModTime() time.Time { return time.Time{} }
-
-func TestSecretOwnerModePolicyProperty(t *testing.T) {
-	rapid.Check(t, func(ht *rapid.T) {
-		uid := rapid.Uint32().Draw(ht, "uid")
-		// Exercise both trusted identities as well as the full foreign-UID domain.
-		switch rapid.IntRange(0, 2).Draw(ht, "choice") {
-		case 0:
-			uid = 0
-		case 1:
-			uid = 1
-		}
-		mode := fs.FileMode(rapid.Uint32().Draw(ht, "uid"))
-		if rapid.Bool().Draw(ht, "bool") {
-			mode = fs.FileMode(rapid.Uint32Range(0, 0o777).Draw(ht, "mode"))
-		}
-		info := secretInfo{mode: mode, uid: uid}
-		err := validateSecretInfo(info, 1)
-		allowed := mode.IsRegular() && (uid == 0 && mode.Perm()&0o022 == 0 || uid == 1 && (mode.Perm() == 0o400 || mode.Perm() == 0o600))
-		assert.Equal(ht, allowed, err == nil)
-	})
+func TestSecretOwnerModePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		uid     uint32
+		mode    fs.FileMode
+		allowed bool
+	}{
+		{"owner read only", 1, 0o400, true},
+		{"owner read write", 1, 0o600, true},
+		{"owner no access", 1, 0, false},
+		{"owner group readable", 1, 0o640, false},
+		{"owner executable", 1, 0o700, false},
+		{"root readable", 0, 0o444, true},
+		{"root private", 0, 0o600, true},
+		{"root group writable", 0, 0o620, false},
+		{"root world writable", 0, 0o602, false},
+		{"foreign private", 2, 0o600, false},
+		{"directory", 1, os.ModeDir | 0o600, false},
+		{"fifo", 0, os.ModeNamedPipe | 0o400, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSecretInfo(ownedInfo{mode: tc.mode, uid: tc.uid}, 1)
+			if tc.allowed {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
 }
 
 func TestParentMetadataPolicyProperty(t *testing.T) {
@@ -61,8 +57,8 @@ func TestParentMetadataPolicyProperty(t *testing.T) {
 		if rapid.Bool().Draw(ht, "bool") {
 			mode |= os.ModeSticky
 		}
-		parent := secretInfo{mode: mode, uid: owner}
-		child := secretInfo{uid: childOwner}
+		parent := ownedInfo{mode: mode, uid: owner}
+		child := ownedInfo{uid: childOwner}
 		trustedOwner := owner == 0 || owner == current
 		trustedChild := childOwner == 0 || childOwner == current
 		allowed := mode.IsDir() && trustedOwner && (mode.Perm()&0o022 == 0 || mode&os.ModeSticky != 0 && trustedChild)

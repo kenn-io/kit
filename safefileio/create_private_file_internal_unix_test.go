@@ -93,13 +93,15 @@ func TestRequireUnsharedParent(t *testing.T) {
 	}
 }
 
-// ownedInfo is a regular-file FileInfo whose owner is uid, for owners a test
-// process cannot create files as.
-type ownedInfo struct{ uid uint32 }
+// ownedInfo supplies file metadata for owners a test process cannot create files as.
+type ownedInfo struct {
+	uid  uint32
+	mode fs.FileMode
+}
 
 func (i ownedInfo) Name() string       { return "created" }
 func (i ownedInfo) Size() int64        { return 0 }
-func (i ownedInfo) Mode() fs.FileMode  { return 0o600 }
+func (i ownedInfo) Mode() fs.FileMode  { return i.mode }
 func (i ownedInfo) ModTime() time.Time { return time.Time{} }
-func (i ownedInfo) IsDir() bool        { return false }
+func (i ownedInfo) IsDir() bool        { return i.mode.IsDir() }
 func (i ownedInfo) Sys() any           { return &syscall.Stat_t{Uid: i.uid} }
