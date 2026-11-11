@@ -137,15 +137,16 @@ func TestItemRepairGuidance(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StateFailed, report.Rows[0].State)
 	require.Equal(t, "Choose an agent that supports MCP", report.Rows[0].NextStep)
-	t.Run("failed hook install", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-		hook := Hooks("claude", agenthook.InstallOptions{Executable: "example", Arguments: []string{"example-hook"}, Marker: "example-hook", Hooks: []agenthook.Hook{{Event: agenthook.EventStop}}})
-		hook.Install = func(context.Context) error { return errors.New("write failed") }
-		report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) { return []Item{hook}, nil }})
-		require.NoError(t, err)
-		require.Equal(t, StateFailed, report.Rows[0].State)
-		require.Equal(t, "write failed", report.Rows[0].Reason)
-		require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
-	})
+}
+
+func TestFailedHookInstallKeepsSetupGuidance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	hook := Hooks("claude", agenthook.InstallOptions{Executable: "example", Arguments: []string{"example-hook"}, Marker: "example-hook", Hooks: []agenthook.Hook{{Event: agenthook.EventStop}}})
+	hook.Install = func(context.Context) error { return errors.New("write failed") }
+	report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", Items: func(string) ([]Item, error) { return []Item{hook}, nil }})
+	require.NoError(t, err)
+	require.Equal(t, StateFailed, report.Rows[0].State)
+	require.Equal(t, "write failed", report.Rows[0].Reason)
+	require.Equal(t, "app setup --agent claude", report.Rows[0].NextStep)
 }
