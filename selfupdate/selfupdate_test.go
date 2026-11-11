@@ -2355,3 +2355,16 @@ func TestChecksumRetryAfterBodyTimeout(t *testing.T) {
 		assert.EqualValues(t, 2, requests.Load())
 	})
 }
+
+func TestChecksumRetryStopsOnUnsupportedScheme(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var requests int
+		client := &http.Client{Transport: checksumRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requests++
+			return http.DefaultTransport.RoundTrip(r)
+		})}
+		_, err := (Client{HTTPClient: client}).fetchChecksumFromFile(t.Context(), "ftp://example.invalid/SHA256SUMS", "tool.tar.gz")
+		require.ErrorContains(t, err, "unsupported protocol scheme")
+		assert.Equal(t, 1, requests)
+	})
+}

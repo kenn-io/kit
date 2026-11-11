@@ -30,10 +30,10 @@ type checksumTransport struct {
 
 func (t checksumTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
-	if err != nil {
+	if err != nil && (req.URL.Scheme == "http" || req.URL.Scheme == "https") {
 		return resp, checksumRequestError{err}
 	}
-	return resp, nil
+	return resp, err
 }
 
 type checksumRequestError struct{ err error }
