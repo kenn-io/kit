@@ -28,7 +28,7 @@
 //
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling keeps a marked hook whose executable moved when its
-// arguments and other settings are unchanged and the installed executable
+// active command arguments and other settings match and the installed executable
 // resolves, and otherwise writes the requested executable. Uninstalling removes
 // only marked commands.
 // Nested JSON reinstalls retain the group and handler positions of existing
