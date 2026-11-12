@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	charm.land/lipgloss/v2 v2.0.6
+	cloud.google.com/go v0.123.0
 	cloud.google.com/go/auth v0.24.2
 	cloud.google.com/go/storage v1.70.0
 	github.com/BurntSushi/toml v1.6.0
@@ -64,7 +65,6 @@ require (
 
 require (
 	cel.dev/expr v0.25.2 // indirect
-	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
 	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	cloud.google.com/go/iam v1.14.0 // indirect
