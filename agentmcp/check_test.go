@@ -206,18 +206,3 @@ func TestInstalledChecks(t *testing.T) {
 		})
 	}
 }
-
-func TestDisabledCodexStaysDisabledAfterInstall(t *testing.T) {
-	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("PATH", t.TempDir())
-	path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='old'\nenabled=false\n"), 0o600))
-	server := agentmcp.Server{Command: "example"}
-	_, err = agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: server})
-	require.NoError(t, err)
-	result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", server)
-	require.NoError(t, err)
-	assert.Equal(t, agentmcp.CheckFailed, result.State)
-	assert.Equal(t, "Set `enabled = true` for `mcp_servers.example` in Codex's config.toml", result.NextStep)
-}

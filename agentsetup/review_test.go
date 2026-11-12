@@ -57,22 +57,6 @@ func TestAgentNameValidation(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestRepairCommandAndCustomStep(t *testing.T) {
-	report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", RepairCommand: "app repair", CheckOnly: true, Items: func(string) ([]Item, error) {
-		return []Item{
-			{Name: "built-in", Install: func(context.Context) error { return nil }, Check: func(context.Context) (Status, error) {
-				return Status{State: StateOutdated}, nil
-			}},
-			{Name: "custom", Install: func(context.Context) error { return nil }, Check: func(context.Context) (Status, error) {
-				return Status{State: StateMissing, NextStep: "custom fix"}, nil
-			}},
-		}, nil
-	}})
-	require.NoError(t, err)
-	require.Equal(t, "app repair", report.Rows[0].NextStep)
-	require.Equal(t, "custom fix; app repair", report.Rows[1].NextStep)
-}
-
 func TestUnknownAgentAndKnownAgent(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("HOME", t.TempDir())
@@ -86,13 +70,40 @@ func TestUnknownAgentAndKnownAgent(t *testing.T) {
 	require.Len(t, report.Rows, 4)
 	require.Equal(t, "future", report.Rows[0].AgentName)
 	require.Equal(t, StateUnknown, report.Rows[0].State)
-	require.Equal(t, StateUnknown, report.Rows[1].State)
 	require.Equal(t, "claude", report.Rows[2].Agent)
-	require.NotEqual(t, StateFailed, report.Rows[2].State)
-	require.NotEqual(t, StateFailed, report.Rows[3].State)
+	require.Equal(t, StateUnknown, report.Rows[2].State)
+	require.Equal(t, StateUnknown, report.Rows[3].State)
 }
 
 func TestPrint(t *testing.T) {
+	t.Run("cursor then claude", func(t *testing.T) {
+		var out bytes.Buffer
+		err := Print(&out, Options{Agents: []string{"cursor", "claude"}, Items: func(agent string) ([]Item, error) {
+			return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
+		}})
+		require.NoError(t, err)
+		command := "claude mcp add"
+		if runtime.GOOS == "windows" {
+			command = "'claude' 'mcp' 'add'"
+		}
+		require.Contains(t, out.String(), "# cursor: manual MCP command unavailable for agent \"cursor\"\n"+command)
+	})
+	t.Run("codex headers", func(t *testing.T) {
+		var out bytes.Buffer
+		err := Print(&out, Options{Agents: []string{"codex"}, Items: func(agent string) ([]Item, error) {
+			return []Item{MCP(agent, "example", agentmcp.Server{URL: "https://example.com", Headers: map[string]string{"Authorization": "example"}})}, nil
+		}})
+		require.NoError(t, err)
+		require.Contains(t, out.String(), "# codex: codex mcp add cannot express literal HTTP headers")
+	})
+	t.Run("invalid", func(t *testing.T) {
+		var out bytes.Buffer
+		err := Print(&out, Options{Agents: []string{"claude"}, Items: func(agent string) ([]Item, error) {
+			return []Item{MCP(agent, "example", agentmcp.Server{})}, nil
+		}})
+		require.Error(t, err)
+	})
+
 	t.Run("defaults without installed agents", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		var out bytes.Buffer

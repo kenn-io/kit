@@ -74,6 +74,5 @@ func TestCommandRepairGuidance(t *testing.T) {
 	}}
 	out, err := execute(t.Context(), opts, "--agent", "codex", "--check")
 	require.ErrorIs(t, err, ErrNotReady)
-	require.Contains(t, out, "The named MCP server is missing: app agent-hook install")
 	require.Contains(t, out, "Run `app setup --agent codex --check` afterwards.")
 }

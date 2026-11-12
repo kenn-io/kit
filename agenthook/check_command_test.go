@@ -16,7 +16,7 @@ func TestPosixHookWords(t *testing.T) {
 		{"quoted executable with arguments", `'/example (stable)/hook' example-marker \* [literal] "$EXAMPLE_HOOK"`, []string{"/example (stable)/hook", "example-marker", "*", "\x00[literal]", "\x00\"$EXAMPLE_HOOK\""}},
 		{"escaped executable", `/example/hook\[stable\] example-marker`, []string{"/example/hook[stable]", "example-marker"}},
 		{"equivalent quoting", `/example/hook "example-marker"`, []string{"/example/hook", "example-marker"}},
-		{"raw home argument", `/example/hook example-marker $HOME`, []string{"/example/hook", "example-marker", "\x00$HOME"}},
+		{"single quoted home argument", `/example/hook example-marker '$HOME'`, []string{"/example/hook", "example-marker", "$HOME"}},
 		{"shell assignment", "EXAMPLE_HOOK=1 example-hook example-marker", nil},
 		{"shell expansion", "${EXAMPLE_HOOK:-existing-program} example-marker", nil},
 		{"quoted expansion", `"$EXAMPLE_HOOK" example-marker`, nil},

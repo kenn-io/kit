@@ -82,9 +82,6 @@ mcp_servers:
 			require.NoError(t, os.WriteFile(path, []byte(tt.original), 0o600))
 			before := decodeConfig(t, tt.agent, []byte(tt.original))
 			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"Authorization": "Bearer example"}}}
-			if tt.agent == agentmcp.AgentCodex {
-				opts.Server = agentmcp.Server{Command: "new"}
-			}
 			result, err := agentmcp.Install(tt.agent, opts)
 			require.NoError(t, err)
 			for _, comment := range tt.comments {
@@ -100,14 +97,7 @@ mcp_servers:
 			if tt.agent == agentmcp.AgentCodex {
 				headerKey = "http_headers"
 			}
-			expected := map[string]any{"url": "https://example.com/mcp", headerKey: map[string]any{"Authorization": "Bearer example"}}
-			if tt.agent == agentmcp.AgentCodex {
-				expected = map[string]any{"command": "new"}
-			}
-			if tt.name == "toml sections" || tt.name == "toml dotted" {
-				expected["env"] = map[string]any{"MODE": "test"}
-			}
-			assert.Equal(t, expected, servers["example"])
+			assert.Equal(t, map[string]any{"url": "https://example.com/mcp", headerKey: map[string]any{"Authorization": "Bearer example"}}, servers["example"])
 			if tt.agent == agentmcp.AgentHermes {
 				assert.Equal(t, before["defaults"], after["defaults"])
 				assert.Equal(t, before["copy"], after["copy"])
