@@ -111,7 +111,7 @@ func TestInstalledCodexTransportChanges(t *testing.T) {
 			resultCheck, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", tc.server)
 			require.NoError(t, err)
 			assert.Equal(t, agentmcp.CheckOK, resultCheck.State, resultCheck.Reason)
-			assert.Equal(t, "Codex returned the server's tools", resultCheck.Reason)
+			assert.Equal(t, "The server is disabled; its setup config is current", resultCheck.Reason)
 			assert.Zero(t, resultCheck.ToolCount)
 		})
 	}

@@ -13,6 +13,7 @@ func checkCodex(ctx context.Context, name string, original []byte, result CheckR
 	var config struct {
 		Servers map[string]struct {
 			StartupReadiness string `toml:"startup_readiness"`
+			Enabled          *bool  `toml:"enabled"`
 		} `toml:"mcp_servers"`
 	}
 	_, _ = toml.Decode(string(original), &config)
@@ -40,6 +41,8 @@ func checkCodex(ctx context.Context, name string, original []byte, result CheckR
 			result.State, result.Reason, result.NextStep = CheckFailed, *server.ToolsError, "Correct the server error and retry"
 		case server.Tools == nil || config.Servers[name].StartupReadiness == "catalog":
 			result.Reason = "Codex couldn't confirm the server's tools are current"
+		case config.Servers[name].Enabled != nil && !*config.Servers[name].Enabled:
+			result.State, result.Reason, result.NextStep = CheckOK, "The server is disabled; its setup config is current", ""
 		default:
 			result.State, result.Reason, result.NextStep, result.ToolCount = CheckOK, "Codex returned the server's tools", "", len(server.Tools)
 		}

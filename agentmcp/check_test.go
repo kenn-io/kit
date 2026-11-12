@@ -89,6 +89,7 @@ func TestCheckCodex(t *testing.T) {
 		next        string
 	}{
 		// Matching config must reach the probe despite extra settings and explicit defaults.
+		{"disabled server", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "The server is disabled; its setup config is current", false, "[mcp_servers.example]\ncommand='example'\nenabled=false\n", ""},
 		{"matching config with user settings and effective defaults", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "Codex returned the server's tools", false, "[mcp_servers.example]\ncommand='example'\nenabled=true\nargs=[]\nenv={}\nrequired=true\nstartup_timeout_sec=30\nenv_vars=[{name='HOME',source='local'}]\ntools={search={approval_mode='auto'}}\n", ""},
 		{"catalog readiness", `{"data":[{"name":"example","tools":{"ping":{}}}]}`, agentmcp.CheckUnknown, 0, "Codex couldn't confirm the server's tools are current", false, "[mcp_servers.example]\ncommand='example'\nstartup_readiness='catalog'\n", "Inspect the server in the agent"},
 		{"deadline", "", agentmcp.CheckUnknown, 0, "context deadline exceeded; server startup may need longer", true, "", "Retry once the server is ready"},
