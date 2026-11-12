@@ -57,10 +57,10 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		return codexFailure(err, "Check Codex config and retry")
 	}
 	if config.Config == nil {
-		return CheckUnknown, "Codex did not report its effective hooks feature", "Check Codex config and retry"
+		return CheckUnknown, "Codex didn't report whether hooks are enabled for this workspace", "Check Codex config and retry"
 	}
 	if enabled := config.Config.Features["hooks"]; enabled != nil && !*enabled {
-		return CheckDisabled, "Codex hooks feature is disabled for this workspace", "Enable features.hooks in the effective Codex config for this workspace"
+		return CheckDisabled, "Codex hooks are turned off for this workspace", "Set features.hooks to true in the Codex config that applies to this workspace"
 	}
 	var listed struct {
 		Data []struct {
@@ -75,14 +75,14 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		} `json:"data"`
 	}
 	if err := client.Call("hooks/list", map[string]any{"cwds": []string{cwd}}, &listed); err != nil {
-		return codexFailure(err, "Check Codex hook discovery and retry")
+		return codexFailure(err, "Check hooks in Codex and retry")
 	}
 	if len(listed.Data) != 1 {
-		return CheckUnknown, "Codex did not report hooks for the requested directory", "Check Codex hook discovery and retry"
+		return CheckUnknown, "Codex didn't report hooks for this folder", "Check hooks in Codex and retry"
 	}
 	entry := listed.Data[0]
 	if len(entry.Errors) > 0 {
-		return CheckUnknown, fmt.Sprintf("Codex hook discovery errors: %s", entry.Errors), "Correct the reported hook discovery errors"
+		return CheckUnknown, fmt.Sprintf("Codex reported errors while loading hooks: %s", entry.Errors), "Fix the reported hook errors"
 	}
 	states := make(map[string]bool)
 	count := 0
@@ -112,11 +112,11 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		}
 	}
 	if count != len(owned) {
-		return CheckUnknown, "Codex did not discover all of this application's installed hooks", "Review Codex hook discovery with /hooks"
+		return CheckUnknown, "Codex didn't list all of this application's installed hooks", "Open Codex and run /hooks to review the hooks"
 	}
 	for _, state := range []CheckState{CheckDisabled, CheckModified, CheckUntrusted} {
 		if states[string(state)] {
-			return state, "Codex reports this application's hooks as " + string(state), "Open Codex and run /hooks to review the hooks"
+			return state, "Codex says these hooks need review: " + string(state), "Open Codex and run /hooks to review the hooks"
 		}
 	}
 	return CheckOK, "", ""

@@ -100,8 +100,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"managed", "normal", "managed", "", CheckOK, ""},
 		{"other applications and source files", "mixed", "trusted", "", CheckOK, ""},
 		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, ""},
-		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "did not discover all"},
-		{"partial discovery", "partial", "trusted", "", CheckUnknown, "did not discover all"},
+		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "didn't list all"},
+		{"partial discovery", "partial", "trusted", "", CheckUnknown, "didn't list all"},
 		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, ""},
 		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, ""},
 		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated, ""},
@@ -109,7 +109,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled, ""},
 		{"unknown trust", "normal", "future", "", CheckUnknown, "unknown hook trust state"},
 		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, "invalid hooks"},
-		{"missing discovery data", "missing-data", "", "", CheckUnknown, "did not report hooks for the requested directory"},
+		{"missing discovery data", "missing-data", "", "", CheckUnknown, "didn't report hooks for this folder"},
 		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, "EOF"},
 		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded"},
 		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded"},
@@ -227,7 +227,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				assert.Contains(t, result.NextStep, "Install Codex")
 			}
 			if tc.want == CheckOK {
-				assert.Contains(t, result.Reason, "checking process environment")
+				assert.Contains(t, result.Reason, "this process can find their command")
 			}
 			count := 1
 			if tc.mode == "partial" {
@@ -277,7 +277,7 @@ func TestCheckClaudeRegistrations(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.want == CheckOK {
-				assert.Contains(t, result.Reason, "checking process environment")
+				assert.Contains(t, result.Reason, "this process can find their command")
 			}
 			assert.Equal(t, tc.count, result.HookCount)
 		})
@@ -388,7 +388,7 @@ func TestCheckCommandResolution(t *testing.T) {
 	}{
 		{"bare executable", InstallOptions{Command: filepath.Base(executable) + " example-marker"}, CheckOK, "", ""},
 		{"structured bare executable", InstallOptions{Executable: filepath.Base(executable), Arguments: []string{"example-marker"}}, CheckOK, "", ""},
-		{"unresolved PATH name", InstallOptions{Command: "example-missing-hook-executable example-marker"}, CheckUnknown, "checking process environment", "PATH"},
+		{"unresolved PATH name", InstallOptions{Command: "example-missing-hook-executable example-marker"}, CheckUnknown, "Can't find a usable hook command", "PATH"},
 		{"shell compound", InstallOptions{Command: filepath.Base(executable) + " example-marker; echo other"}, CheckUnknown, "shell interpretation", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -443,7 +443,7 @@ func TestCheckValidationAndConfigHome(t *testing.T) {
 			alternateInfo, err := os.Stat(alternate)
 			require.NoError(t, err)
 			require.True(t, os.SameFile(originalInfo, alternateInfo))
-			want, reason = CheckMissing, "No hooks belonging to this marker"
+			want, reason = CheckMissing, "This application's hooks are not installed"
 		} else {
 			require.NoError(t, err)
 			require.NoError(t, file.Close())

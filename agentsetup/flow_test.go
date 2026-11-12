@@ -130,11 +130,11 @@ func TestReportCountsRows(t *testing.T) {
 	}
 	var out bytes.Buffer
 	require.NoError(t, r.WriteText(&out, "app setup --check"))
-	require.Contains(t, out.String(), "Done except 2 steps for you. Run `app setup --check` afterwards.")
+	require.Contains(t, out.String(), "Attention needed for 2 steps. Run `app setup --check` afterwards.")
 	r.Rows = append(r.Rows, r.Rows[0])
 	out.Reset()
 	require.NoError(t, r.WriteText(&out, ""))
-	require.Contains(t, out.String(), "Done except 3 steps for you")
+	require.Contains(t, out.String(), "Attention needed for 3 steps")
 	require.NotContains(t, out.String(), "Run")
 	r.Rows = make([]Row, 1)
 	r.Rows[0].State, r.Rows[0].ToolCount = StateOK, new(0)

@@ -44,7 +44,7 @@ func Check(ctx context.Context, agent Agent, name string, server Server) (CheckR
 	}
 	result := CheckResult{Agent: agent, ConfigPath: path, State: CheckUnknown, NextStep: "Inspect the server in the agent"}
 	if agent != AgentClaude && agent != AgentCodex {
-		result.Reason = "Native MCP inspection is unavailable for this agent"
+		result.Reason = "This check can't verify MCP servers in this agent"
 		return result, nil
 	}
 	original, err := os.ReadFile(path)
@@ -63,7 +63,7 @@ func Check(ctx context.Context, agent Agent, name string, server Server) (CheckR
 	case !present:
 		result.State, result.Reason, result.NextStep = CheckMissing, "The named MCP server is missing", "Install the application's MCP server"
 	case changed:
-		result.State, result.Reason, result.NextStep = CheckOutdated, "The installed MCP server differs from the requested server", "Reinstall the application's MCP server"
+		result.State, result.Reason, result.NextStep = CheckOutdated, "The MCP server settings don't match this application's setup", "Reinstall the application's MCP server"
 	case agent == AgentCodex:
 		result = checkCodex(ctx, name, original, result)
 	default:
