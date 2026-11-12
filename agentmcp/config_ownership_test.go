@@ -87,7 +87,7 @@ func TestInstallEntryOwnership(t *testing.T) {
 		server   agentmcp.Server
 		want     string
 	}{
-		{"claude launch", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"},"timeout":20}}}`, agentmcp.Server{Command: "new"}, `{"type":"stdio","command":"new","env":{"USER":"keep"},"timeout":20}`},
+		{"claude launch", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"},"timeout":9007199254740993}}}`, agentmcp.Server{Command: "new"}, `{"type":"stdio","command":"new","env":{"USER":"keep"},"timeout":9007199254740993}`},
 		{"claude env", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": "new"}}, `{"type":"stdio","command":"new","env":{"APP":"new"}}`},
 		{"claude transport", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{URL: "https://example.com"}, `{"type":"http","url":"https://example.com"}`},
 		{"other agent", agentmcp.AgentGemini, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{Command: "new"}, `{"command":"new"}`},
@@ -97,20 +97,13 @@ func TestInstallEntryOwnership(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, []byte(tc.original), 0o600))
 			result, err := agentmcp.Install(tc.agent, agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: tc.server})
 			require.NoError(t, err)
+			if tc.name == "claude launch" {
+				assert.Contains(t, string(result.Data), "9007199254740993")
+			}
 			entry := decodeConfig(t, tc.agent, result.Data)["mcpServers"].(map[string]any)["example"]
 			encoded, err := json.Marshal(entry)
 			require.NoError(t, err)
 			assert.JSONEq(t, tc.want, string(encoded))
 		})
 	}
-}
-
-func TestClaudeLaunchUpdatePreservesLargeInteger(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{"mcpServers":{"example":{"command":"old","timeout":9007199254740993}}}`), 0o600))
-	result, err := agentmcp.Install(agentmcp.AgentClaude, agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "new"}})
-	require.NoError(t, err)
-	assert.True(t, result.Changed)
-	assert.Contains(t, string(result.Data), `"command": "new"`)
-	assert.Contains(t, string(result.Data), `9007199254740993`)
 }
