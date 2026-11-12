@@ -13,5 +13,5 @@
   query/fragment delimiters remain accepted and removed during canonicalization.
 - Origin intentionally checks only scheme/hostname presence. Keep its behavior
   separate from full endpoint validation.
-- Generated property tests live in the nested propertytests module to keep
-  Hegel's dependencies out of the production module's dependency graph.
+- Property tests use rapid in `property_test.go`; keep them in this package
+  so the regular test run covers them.

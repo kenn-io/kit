@@ -23,8 +23,3 @@ it does not validate the whole endpoint or apply the plaintext policy.
 
 Callers own the opt-in's configuration key, redirects, credential pinning and
 transport security. Plain HTTP carries traffic unencrypted on that network.
-
-The Hegel property suite lives in a separate test module to avoid changing
-production dependency versions. CI runs it on Linux, macOS and Windows. Run
-it locally with `cd endpointpolicy/propertytests && go test ./...`; ordinary
-package tests also run with `go test ./endpointpolicy ./embedconfig`.
