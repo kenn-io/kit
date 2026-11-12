@@ -57,8 +57,14 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		if agent == AgentClaude && decoder.Decode(&fields) == nil && fields != nil {
 			dropEmptyFields(fields)
 			entry = mergeEntry(agent, fields, entry)
-			previous, _ = encodeJSON(fields)
-			encoded, _ = encodeJSON(entry)
+			previous, err = encodeJSON(fields)
+			if err != nil {
+				return nil, false, false, err
+			}
+			encoded, err = encodeJSON(entry)
+			if err != nil {
+				return nil, false, false, err
+			}
 		}
 		if err := previous.Canonicalize(); err != nil {
 			return nil, false, false, err

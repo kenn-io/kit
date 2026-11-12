@@ -17,7 +17,7 @@ func rawHookWords(command, commandWindows string) ([]string, error) {
 		if char == '"' && backslashes%2 == 0 {
 			quoted = !quoted
 		}
-		if (!quoted && strings.ContainsRune(";|&<>~*?{}[]()\n", char)) || strings.ContainsRune("$`%", char) {
+		if (!quoted && strings.ContainsRune(";|&<>*?{}[]()\n", char)) || strings.ContainsRune("$`%", char) {
 			return nil, errors.New("hook command requires shell interpretation")
 		}
 		if char == '\\' {

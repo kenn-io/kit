@@ -305,7 +305,8 @@ func ownsJSONHandler(raw any, marker string) bool {
 }
 
 // lookupHookExecutable resolves a relative executable path from dir, or from
-// the process directory when dir is empty, and other names through PATH.
+// the process directory when dir is empty, and other names through PATH,
+// whose relative entries also resolve from dir.
 func lookupHookExecutable(dir, executable string) error {
 	if !filepath.IsAbs(executable) && strings.ContainsAny(executable, `/\`) {
 		path, err := filepath.Abs(filepath.Join(dir, executable))
@@ -314,8 +315,30 @@ func lookupHookExecutable(dir, executable string) error {
 		}
 		executable = path
 	}
-	_, err := exec.LookPath(executable)
-	return err
+	return searchHookPath(dir, executable)
+}
+
+// searchHookPath looks up executable as given when it has a path separator,
+// and otherwise in each PATH entry, resolving relative entries from dir.
+func searchHookPath(dir, executable string) error {
+	if strings.ContainsAny(executable, `/\`) {
+		_, err := exec.LookPath(executable)
+		return err
+	}
+	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
+		path := filepath.Join(entry, executable)
+		if !filepath.IsAbs(entry) {
+			abs, err := filepath.Abs(filepath.Join(dir, path))
+			if err != nil {
+				continue
+			}
+			path = abs
+		}
+		if _, err := exec.LookPath(path); err == nil {
+			return nil
+		}
+	}
+	return &exec.Error{Name: executable, Err: exec.ErrNotFound}
 }
 
 // sameMovedHook keeps an owned handler whose only difference from desired is

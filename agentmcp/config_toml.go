@@ -118,7 +118,7 @@ func tomlValue(v reflect.Value) (parser.Value, error) {
 		return parser.Value{X: result}, nil
 	case reflect.Slice, reflect.Array:
 		var result parser.Array
-		for i := 0; i < v.Len(); i++ {
+		for i := range v.Len() {
 			value, err := tomlValue(v.Index(i))
 			if err != nil {
 				return parser.Value{}, err

@@ -790,6 +790,27 @@ func TestCheckNamedWorkspace(t *testing.T) {
 	result, err = Check(t.Context(), AgentCodex, opts)
 	require.NoError(t, err)
 	assert.Equal(t, CheckOK, result.State, result.Reason)
+
+	t.Run("relative PATH in workspace", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("POSIX executable fixture")
+		}
+		t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+		t.Setenv("PATH", "bin")
+		workspace := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(workspace, "bin"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(workspace, "bin", "example-hook"), []byte("#!/bin/sh\n"), 0o700))
+		opts := InstallOptions{WorkspaceDir: workspace, Executable: "example-hook", Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+		_, err := Install(AgentClaude, opts)
+		require.NoError(t, err)
+		opts.Executable = filepath.Join(t.TempDir(), "moved-hook")
+		result, err := Check(t.Context(), AgentClaude, opts)
+		require.NoError(t, err)
+		assert.Equal(t, CheckOK, result.State, result.Reason)
+		plan, err := PlanInstall(AgentClaude, opts)
+		require.NoError(t, err)
+		assert.False(t, plan.Changed)
+	})
 }
 
 func TestCheckMovedHookWindowsCommand(t *testing.T) {

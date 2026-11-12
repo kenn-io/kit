@@ -41,4 +41,7 @@ func TestRawHookWordsWindowsCompound(t *testing.T) {
 	}
 	_, err := rawHookWords("example-missing-hook-executable example-marker", `"C:\example (stable).exe" example-marker & example-missing-hook-executable`)
 	require.ErrorContains(t, err, "shell interpretation")
+	words, err := rawHookWords("", `C:\Users\RUNNER~1\hook.exe example-marker`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{`C:\Users\RUNNER~1\hook.exe`, "example-marker"}, words)
 }
