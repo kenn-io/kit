@@ -84,7 +84,7 @@ func TestPrint(t *testing.T) {
 		require.NoError(t, err)
 		command := "claude mcp add"
 		if runtime.GOOS == "windows" {
-			command = "'claude' 'mcp' 'add'"
+			command = "& 'claude' 'mcp' 'add'"
 		}
 		require.Contains(t, out.String(), "# cursor: manual MCP command unavailable for agent \"cursor\"\n"+command)
 	})
