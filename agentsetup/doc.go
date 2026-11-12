@@ -7,6 +7,9 @@
 // and report unknown readiness. Known profiles can install even when readiness
 // inspection is unavailable.
 //
+// Claude Code and Codex MCP setup keeps user settings when the supplied entry
+// contains only launch fields and uses the same transport. Other entries are replaced.
+//
 // RepairCommand supplies the next step for missing or outdated built-in items.
 // Repairable custom items retain their own next step alongside that command.
 // When a next step is absent, RepairCommand supplies it, or SetupCommand if

@@ -830,3 +830,29 @@ func TestCheckMovedHookWindowsCommand(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, plan.Changed)
 }
+
+func TestMovedCodexHooksKeepMatchingPositions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command fixture")
+	}
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	old, err := BuildCommand(executable, "example-marker", "arg with space")
+	require.NoError(t, err)
+	moved, err := BuildCommand(filepath.Join(t.TempDir(), "new-hook"), "example-marker", "arg with space")
+	require.NoError(t, err)
+	first := map[string]any{"type": "command", "command": old.POSIX, "commandWindows": "inactive example-marker", "timeout": 2}
+	second := map[string]any{"type": "command", "command": old.POSIX, "commandWindows": "inactive example-marker", "timeout": 1}
+	hooks := map[string]any{"event": []any{
+		map[string]any{"matcher": "same", "hooks": []any{first}},
+		map[string]any{"matcher": "same", "hooks": []any{second}},
+	}}
+	desired := map[string][]map[string]any{"event": {
+		{"matcher": "same", "hooks": []any{map[string]any{"type": "command", "command": moved.POSIX, "commandWindows": "changed inactive", "timeout": 1}}},
+		{"matcher": "same", "hooks": []any{map[string]any{"type": "command", "command": moved.POSIX, "commandWindows": "changed inactive", "timeout": 2}}},
+	}}
+	require.NoError(t, reconcileOwnedJSONHooks(hooks, desired, "example-marker", "hooks.json", "", true))
+	entries := hooks["event"].([]any)
+	assert.Equal(t, first, entries[0].(map[string]any)["hooks"].([]any)[0])
+	assert.Equal(t, second, entries[1].(map[string]any)["hooks"].([]any)[0])
+}

@@ -11,8 +11,8 @@ import (
 )
 
 // InstallOptions registers one caller-owned server name. An existing entry
-// with that exact name keeps user settings outside the supplied launch fields.
-// Values in Env and Headers override matching keys and keep other keys.
+// for Claude Code and Codex keeps user settings when the supplied entry contains
+// only launch fields and uses the same transport. Other entries are replaced.
 // ConfigPath overrides the user config path with a file using the same top-level
 // schema. Nested Claude local-scope entries and Copilot bare server maps are not
 // handled by this option. Use a stable, application-namespaced Name.

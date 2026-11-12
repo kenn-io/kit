@@ -3,8 +3,11 @@ package agentmcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+
+	"github.com/BurntSushi/toml"
 )
 
 // CheckState describes the native agent's view of one MCP registration.
@@ -57,15 +60,21 @@ func Check(ctx context.Context, agent Agent, name string, server Server) (CheckR
 	} else if err == nil {
 		_, changed, present, err = planConfig(agent, original, name, entry)
 	}
+	var config codexConfig
+	if err == nil && agent == AgentCodex && present {
+		_, err = toml.Decode(string(original), &config)
+	}
 	switch {
 	case err != nil:
 		result.Reason, result.NextStep = err.Error(), "Correct the agent MCP config"
 	case !present:
 		result.State, result.Reason, result.NextStep = CheckMissing, "The named MCP server is missing", "Install the application's MCP server"
+	case agent == AgentCodex && config.Servers[name].Enabled != nil && !*config.Servers[name].Enabled:
+		result.State, result.Reason, result.NextStep = CheckFailed, "The MCP server is disabled", fmt.Sprintf("Set `enabled = true` for `mcp_servers.%s` in Codex's config.toml", name)
 	case changed:
 		result.State, result.Reason, result.NextStep = CheckOutdated, "The MCP server settings don't match this application's setup", "Reinstall the application's MCP server"
 	case agent == AgentCodex:
-		result = checkCodex(ctx, name, original, result)
+		result = checkCodex(ctx, name, config, result)
 	default:
 		result = checkClaude(ctx, name, result)
 	}

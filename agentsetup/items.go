@@ -2,6 +2,7 @@ package agentsetup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -78,6 +79,12 @@ func Print(w io.Writer, opts Options) error {
 			continue
 		}
 		commands, err := e.item.Commands()
+		if errors.Is(err, agentmcp.ErrCommandUnavailable) {
+			if _, err := fmt.Fprintf(w, "# %s: %s\n", e.agent, err); err != nil {
+				return err
+			}
+			continue
+		}
 		if err != nil {
 			return err
 		}

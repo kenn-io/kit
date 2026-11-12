@@ -4,18 +4,17 @@ import (
 	"context"
 	"encoding/json/jsontext"
 
-	"github.com/BurntSushi/toml"
 	"go.kenn.io/kit/internal/codexapp"
 )
 
-func checkCodex(ctx context.Context, name string, original []byte, result CheckResult) CheckResult {
-	// Check has already decoded this config; catalog readiness can report cached tools.
-	var config struct {
-		Servers map[string]struct {
-			StartupReadiness string `toml:"startup_readiness"`
-		} `toml:"mcp_servers"`
-	}
-	_, _ = toml.Decode(string(original), &config)
+type codexConfig struct {
+	Servers map[string]struct {
+		StartupReadiness string `toml:"startup_readiness"`
+		Enabled          *bool  `toml:"enabled"`
+	} `toml:"mcp_servers"`
+}
+
+func checkCodex(ctx context.Context, name string, config codexConfig, result CheckResult) CheckResult {
 	client, err := codexapp.Start(ctx, "codex", "")
 	if err != nil {
 		return checkProbeError(err, result)

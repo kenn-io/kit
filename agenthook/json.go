@@ -33,7 +33,7 @@ func planNestedJSONConfig(
 		maps.Copy(root, spec.newConfigFields)
 	}
 	if err := applyNestedJSONHooks(
-		root, path, marker, command, commandWindows, argv, hooks, uninstall, dir,
+		root, path, marker, command, commandWindows, argv, hooks, uninstall, dir, spec.profile.Agent == AgentClaude || spec.profile.Agent == AgentCodex,
 	); err != nil {
 		return nil, false, err
 	}
@@ -55,7 +55,7 @@ func applyNestedJSONHooks(
 	path, marker, command, commandWindows string,
 	argv []string,
 	hooks []nativeHook,
-	uninstall bool, dir string,
+	uninstall bool, dir string, preserve bool,
 ) error {
 	hooksObject, err := jsonHooksObject(root, path, !uninstall)
 	if err != nil {
@@ -66,7 +66,7 @@ func applyNestedJSONHooks(
 	}
 	desired := map[string][]map[string]any{}
 	if uninstall {
-		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, dir)
+		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, dir, preserve)
 	}
 	for _, hook := range hooks {
 		entry := map[string]any{}
@@ -89,7 +89,7 @@ func applyNestedJSONHooks(
 		entry["hooks"] = []any{handler}
 		desired[hook.name] = append(desired[hook.name], entry)
 	}
-	return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, dir)
+	return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, dir, preserve)
 }
 
 func readJSONConfig(path string) (map[string]any, bool, error) {
@@ -170,7 +170,7 @@ func jsonEventEntries(hooks map[string]any, event, path string) ([]any, error) {
 // reconcileOwnedJSONHooks matches event/matcher registrations first, then uses
 // owned single-handler groups for changed matchers before appending registrations.
 // A slot keeps its handler when only a resolving executable path differs.
-func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[string]any, marker, path, dir string) error {
+func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[string]any, marker, path, dir string, preserve bool) error {
 	for event, raw := range hooks {
 		entries, ok := raw.([]any)
 		if !ok {
@@ -198,17 +198,37 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 				if !ownsJSONHandler(handler, marker) {
 					continue
 				}
-				owned := slot{entry: entry, handlers: handlers, index: i}
+				slots = append(slots, slot{entry: entry, handlers: handlers, index: i})
+			}
+		}
+		// Reserve all matching moved handlers before assigning any free slot.
+		if preserve {
+			for i := range slots {
+				owned := &slots[i]
+				existing, _ := owned.handlers[owned.index].(map[string]any)
 				for j, hook := range desired[event] {
 					matcher, _ := hook["matcher"].(string)
-					existingMatcher, _ := entry["matcher"].(string)
-					if !used[j] && matcher == existingMatcher {
-						owned.desired = hook
-						used[j] = true
+					existingMatcher, _ := owned.entry["matcher"].(string)
+					desiredHandler := hook["hooks"].([]any)[0].(map[string]any)
+					if !used[j] && matcher == existingMatcher && sameMovedHook(existing, desiredHandler, dir) {
+						owned.desired, used[j] = hook, true
 						break
 					}
 				}
-				slots = append(slots, owned)
+			}
+		}
+		for i := range slots {
+			owned := &slots[i]
+			if owned.desired != nil {
+				continue
+			}
+			for j, hook := range desired[event] {
+				matcher, _ := hook["matcher"].(string)
+				existingMatcher, _ := owned.entry["matcher"].(string)
+				if !used[j] && matcher == existingMatcher {
+					owned.desired, used[j] = hook, true
+					break
+				}
 			}
 		}
 		for _, owned := range slots {
@@ -230,7 +250,7 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 			owned.handlers[owned.index] = removed
 			if owned.desired != nil {
 				desiredHandler := owned.desired["hooks"].([]any)[0].(map[string]any)
-				if sameMovedHook(existing, desiredHandler, dir) {
+				if preserve && sameMovedHook(existing, desiredHandler, dir) {
 					owned.handlers[owned.index] = existing
 				} else {
 					owned.handlers[owned.index] = desiredHandler
@@ -321,10 +341,9 @@ func sameMovedHook(existing, desired map[string]any, dir string) bool {
 		return false
 	}
 	oldCopy, newCopy := maps.Clone(existing), maps.Clone(desired)
-	for _, key := range []string{"command", "commandWindows"} {
-		if _, ok := oldCopy[key]; ok {
-			oldCopy[key] = newCopy[key]
-		}
+	for _, key := range []string{"command", "commandWindows", "args"} {
+		delete(oldCopy, key)
+		delete(newCopy, key)
 	}
 	oldJSON, oldErr := json.Marshal(oldCopy)
 	newJSON, newErr := json.Marshal(newCopy)

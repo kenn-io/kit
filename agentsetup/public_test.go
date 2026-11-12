@@ -123,3 +123,30 @@ func TestSetupKeepsMovedHook(t *testing.T) {
 		require.Equal(t, before[i], after)
 	}
 }
+
+func TestPrintUnavailableCommands(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		agents  []string
+		server  agentmcp.Server
+		want    string
+		invalid bool
+	}{
+		{"cursor then claude", []string{"cursor", "claude"}, agentmcp.Server{Command: "example"}, "# cursor: manual MCP command unavailable for agent \"cursor\"\nclaude mcp add", false},
+		{"codex headers", []string{"codex"}, agentmcp.Server{URL: "https://example.com", Headers: map[string]string{"Authorization": "example"}}, "# codex: codex mcp add cannot express literal HTTP headers", false},
+		{"invalid", []string{"claude"}, agentmcp.Server{}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := agentsetup.Print(&out, agentsetup.Options{Agents: tc.agents, Items: func(agent string) ([]agentsetup.Item, error) {
+				return []agentsetup.Item{agentsetup.MCP(agent, "example", tc.server)}, nil
+			}})
+			if tc.invalid {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Contains(t, out.String(), tc.want)
+		})
+	}
+}

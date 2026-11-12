@@ -53,7 +53,9 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		decoder := stdjson.NewDecoder(bytes.NewReader(previous))
 		decoder.UseNumber()
 		if decoder.Decode(&fields) == nil && fields != nil {
-			entry = mergeEntry(fields, entry)
+			if agent == AgentClaude {
+				entry = mergeEntry(fields, entry)
+			}
 			dropEmptyFields(fields)
 			comparison = maps.Clone(entry)
 			dropEmptyFields(comparison)

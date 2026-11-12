@@ -27,13 +27,13 @@ func TestInstallPreservesCodexSettings(t *testing.T) {
 		{
 			name:     "stdio environment",
 			original: "[mcp_servers.example]\ncommand='old'\nargs=['old']\nenabled=true\nstartup_timeout_sec=20\n[mcp_servers.example.env]\nUSER='keep'\nAPP='old'\n",
-			expected: `{"command":"new","args":["serve"],"enabled":true,"startup_timeout_sec":20,"env":{"USER":"keep","APP":"new"}}`,
+			expected: `{"command":"new","args":["serve"],"env":{"APP":"new"}}`,
 			server:   agentmcp.Server{Command: "new", Args: []string{"serve"}, Env: map[string]string{"APP": "new"}},
 		},
 		{
 			name:     "http headers",
 			original: "[mcp_servers.example]\nurl='https://example.com/old'\nenv_http_headers={X='TOKEN'}\ntool_timeout_sec=20\n[mcp_servers.example.http_headers]\nUser='keep'\napp='old'\n",
-			expected: `{"url":"https://example.com/new","env_http_headers":{"X":"TOKEN"},"tool_timeout_sec":20,"http_headers":{"User":"keep","App":"new"}}`,
+			expected: `{"url":"https://example.com/new","http_headers":{"App":"new"}}`,
 			server:   agentmcp.Server{URL: "https://example.com/new", Headers: map[string]string{"App": "new"}},
 		},
 	} {
@@ -56,7 +56,7 @@ func TestInstallPreservesCodexSettings(t *testing.T) {
 	}
 }
 
-func TestInstallHeaderNamesMatchWithoutCase(t *testing.T) {
+func TestInstallHeadersReplaceEntry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\nurl='https://example.com/old'\n[mcp_servers.example.http_headers]\nauthorization='old'\nOther='keep'\n"), 0o600))
 	result, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{
@@ -71,5 +71,54 @@ func TestInstallHeaderNamesMatchWithoutCase(t *testing.T) {
 	entry := decodeConfig(t, agentmcp.AgentCodex, result.Data)["mcp_servers"].(map[string]any)["example"]
 	encoded, err := json.Marshal(entry)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"url":"https://example.com/new","http_headers":{"Authorization":"new","Other":"keep"}}`, string(encoded))
+	assert.JSONEq(t, `{"url":"https://example.com/new","http_headers":{"Authorization":"new"}}`, string(encoded))
+}
+
+func TestInlineCodexSettingsSurvive(t *testing.T) {
+	for _, original := range []string{
+		`mcp_servers = { example = { command = "old", enabled = false, env = {K = "v"}, nested = { x = { y = 2 } }, list = [{ name = "one" }] }, other = { command = "other" } }`,
+		"[mcp_servers]\nexample = { command = 'old', enabled = false, env = {K = 'v'}, nested = { x = { y = 2 } }, list = [{ name = 'one' }] }\nother = { command = 'other' }\n",
+	} {
+		t.Run(original[:11], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
+			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "new"}}
+			result, err := agentmcp.Install(agentmcp.AgentCodex, opts)
+			require.NoError(t, err)
+			servers := decodeConfig(t, agentmcp.AgentCodex, result.Data)["mcp_servers"].(map[string]any)
+			entry, err := json.Marshal(servers["example"])
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"command":"new","enabled":false,"env":{"K":"v"},"nested":{"x":{"y":2}},"list":[{"name":"one"}]}`, string(entry))
+			assert.Equal(t, map[string]any{"command": "other"}, servers["other"])
+			second, err := agentmcp.Install(agentmcp.AgentCodex, opts)
+			require.NoError(t, err)
+			assert.Equal(t, result.Data, second.Data)
+		})
+	}
+}
+
+func TestInstallEntryOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		agent    agentmcp.Agent
+		original string
+		server   agentmcp.Server
+		want     string
+	}{
+		{"claude launch", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"},"timeout":20}}}`, agentmcp.Server{Command: "new"}, `{"type":"stdio","command":"new","env":{"USER":"keep"},"timeout":20}`},
+		{"claude env", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": "new"}}, `{"type":"stdio","command":"new","env":{"APP":"new"}}`},
+		{"claude transport", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{URL: "https://example.com"}, `{"type":"http","url":"https://example.com"}`},
+		{"other agent", agentmcp.AgentGemini, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{Command: "new"}, `{"command":"new"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			require.NoError(t, os.WriteFile(path, []byte(tc.original), 0o600))
+			result, err := agentmcp.Install(tc.agent, agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: tc.server})
+			require.NoError(t, err)
+			entry := decodeConfig(t, tc.agent, result.Data)["mcpServers"].(map[string]any)["example"]
+			encoded, err := json.Marshal(entry)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.want, string(encoded))
+		})
+	}
 }

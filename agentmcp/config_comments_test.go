@@ -104,7 +104,7 @@ mcp_servers:
 			if tt.agent == agentmcp.AgentCodex {
 				expected = map[string]any{"command": "new"}
 			}
-			if tt.name == "yaml" || tt.name == "toml sections" || tt.name == "toml dotted" {
+			if tt.name == "toml sections" || tt.name == "toml dotted" {
 				expected["env"] = map[string]any{"MODE": "test"}
 			}
 			assert.Equal(t, expected, servers["example"])

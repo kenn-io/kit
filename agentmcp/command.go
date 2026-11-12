@@ -10,6 +10,9 @@ import (
 	"go.kenn.io/kit/agenthook"
 )
 
+// ErrCommandUnavailable indicates that no manual command can express the registration.
+var ErrCommandUnavailable = errors.New("manual MCP command unavailable")
+
 // Command renders a manual user registration for POSIX shells and PowerShell.
 // Commands can contain credentials and must be handled like config files.
 // Codex's CLI cannot express literal HTTP headers, so those return an error.
@@ -19,7 +22,7 @@ func Command(agent Agent, name string, server Server) (agenthook.Commands, error
 		return agenthook.Commands{}, err
 	}
 	if agent != AgentClaude && agent != AgentCodex {
-		return agenthook.Commands{}, fmt.Errorf("manual MCP command unavailable for agent %q", agent)
+		return agenthook.Commands{}, fmt.Errorf("%w for agent %q", ErrCommandUnavailable, agent)
 	}
 	allowed := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 	if agent == AgentCodex {
@@ -35,7 +38,7 @@ func Command(agent Agent, name string, server Server) (agenthook.Commands, error
 	switch {
 	case server.URL != "" && agent == AgentCodex:
 		if len(server.Headers) != 0 {
-			return agenthook.Commands{}, errors.New("codex mcp add cannot express literal HTTP headers")
+			return agenthook.Commands{}, fmt.Errorf("codex mcp add cannot express literal HTTP headers: %w", ErrCommandUnavailable)
 		}
 		args = append(args, "--url", server.URL)
 		if server.BearerTokenEnvVar != "" {

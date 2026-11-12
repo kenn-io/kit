@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 	"maps"
-	"strings"
+	"slices"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -46,7 +46,9 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	if present {
 		comparison := entry
 		if fields, ok := previous.(map[string]any); ok {
-			entry = mergeEntry(fields, entry)
+			if agent == AgentCodex {
+				entry = mergeEntry(fields, entry)
+			}
 			previous = maps.Clone(fields)
 			dropEmptyFields(previous.(map[string]any))
 			comparison = maps.Clone(entry)
@@ -77,35 +79,24 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	return data, true, present, err
 }
 
-// mergeEntry replaces launch fields and overlays the values the app supplied.
-// Other settings and map entries belong to the user.
+// mergeEntry keeps user settings only for a launch-only update on the same transport.
 func mergeEntry(previous, desired map[string]any) map[string]any {
-	merged := maps.Clone(previous)
-	for _, key := range []string{"command", "args", "url", "httpUrl", "type", "transport"} {
-		delete(merged, key)
-	}
-	for key, value := range desired {
-		if additions, ok := value.(map[string]string); ok {
-			fields, _ := merged[key].(map[string]any)
-			fields = maps.Clone(fields)
-			if fields == nil {
-				fields = make(map[string]any)
-			}
-			for name, setting := range additions {
-				if key == "headers" || key == "http_headers" {
-					for existing := range fields {
-						if strings.EqualFold(existing, name) && existing != name {
-							delete(fields, existing)
-						}
-					}
-				}
-				fields[name] = setting
-			}
-			merged[key] = fields
-		} else {
-			merged[key] = value
+	launch := []string{"command", "args", "url", "type"}
+	for key := range desired {
+		if !slices.Contains(launch, key) {
+			return desired
 		}
 	}
+	_, oldURL := previous["url"]
+	_, newURL := desired["url"]
+	if oldURL != newURL {
+		return desired
+	}
+	merged := maps.Clone(previous)
+	for _, key := range launch {
+		delete(merged, key)
+	}
+	maps.Copy(merged, desired)
 	return merged
 }
 
