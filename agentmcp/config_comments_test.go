@@ -98,7 +98,7 @@ mcp_servers:
 				headerKey = "http_headers"
 			}
 			expected := map[string]any{"url": "https://example.com/mcp", headerKey: map[string]any{"Authorization": "Bearer example"}}
-			if tt.name == "toml sections" || tt.name == "toml dotted" || tt.name == "yaml" {
+			if tt.name == "yaml" {
 				expected["env"] = map[string]any{"MODE": "test"}
 			}
 			assert.Equal(t, expected, servers["example"])

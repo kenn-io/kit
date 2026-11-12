@@ -45,7 +45,7 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	if present {
 		comparison := entry
 		if fields, ok := previous.(map[string]any); ok {
-			entry = mergeEntry(fields, entry)
+			entry = mergeEntry(agent, fields, entry)
 			previous = maps.Clone(fields)
 			dropEmptyFields(previous.(map[string]any))
 			comparison = maps.Clone(entry)
@@ -78,10 +78,19 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 
 // mergeEntry replaces launch fields and overlays the values the app supplied.
 // Other settings and map entries belong to the user.
-func mergeEntry(previous, desired map[string]any) map[string]any {
+func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 	merged := maps.Clone(previous)
 	for _, key := range []string{"command", "args", "url", "httpUrl", "type", "transport"} {
 		delete(merged, key)
+	}
+	if agent == AgentCodex {
+		incompatible := []string{"http_headers", "env_http_headers", "bearer_token_env_var"}
+		if _, remote := desired["url"]; remote {
+			incompatible = []string{"env", "env_vars", "cwd"}
+		}
+		for _, key := range incompatible {
+			delete(merged, key)
+		}
 	}
 	for key, value := range desired {
 		if additions, ok := value.(map[string]string); ok {

@@ -94,9 +94,9 @@ func editTOML(original []byte, name string, entry map[string]any) ([]byte, error
 	return out.Bytes(), nil
 }
 
-// The generated server contains scalars/arrays and one-level string maps.
 func tomlInline(doc *tomledit.Document) parser.Inline {
 	var inline parser.Inline
+	arrays := map[string]*parser.KeyValue{}
 	for _, item := range doc.Global.Items {
 		inline = append(inline, item.(*parser.KeyValue))
 	}
@@ -105,7 +105,18 @@ func tomlInline(doc *tomledit.Document) parser.Inline {
 		for _, item := range section.Items {
 			fields = append(fields, item.(*parser.KeyValue))
 		}
-		inline = append(inline, &parser.KeyValue{Name: section.Name, Value: parser.Value{X: fields}})
+		if section.IsArray {
+			key := section.Name.String()
+			field := arrays[key]
+			if field == nil {
+				field = &parser.KeyValue{Name: section.Name, Value: parser.Value{X: parser.Array{}}}
+				arrays[key] = field
+				inline = append(inline, field)
+			}
+			field.Value.X = append(field.Value.X.(parser.Array), parser.Value{X: fields})
+		} else {
+			inline = append(inline, &parser.KeyValue{Name: section.Name, Value: parser.Value{X: fields}})
+		}
 	}
 	return inline
 }

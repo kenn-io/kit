@@ -1,7 +1,7 @@
 ---
 title: "MCP registration research"
 description: "Research on MCP server registration formats and discovery across agent tools."
-last_edited: 2026-11-09
+last_edited: 2026-11-12
 ---
 
 # MCP registration research
@@ -165,10 +165,9 @@ a tool catalog, including an empty one, reports success with its count. With
 Codex may return a cached catalog, so the result is `unknown`. Without a thread,
 status loads system, user, and runtime settings
 [without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
-Check compares only the connection fields represented by `Server`, plus
-`enabled = false`; explicit `enabled = true`, empty `args`, and empty `env` match
-their defaults. Extra user settings don't make an entry outdated, although
-`Install` replaces the whole entry when it differs.
+Check compares the launch fields and values supplied by `Server`; empty `args`
+and empty `env` match their defaults. Install keeps extra user settings, except
+fields that Codex rejects after a transport change.
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 `Status`, and, when present, `Issue`, as Claude Code 2.1.301 confirms. Only a
