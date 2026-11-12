@@ -42,6 +42,9 @@ behavior, or provider workflows live here.
 - **Handle filesystems portably.** `fslink` classifies and creates symlinks
   and Windows junctions, `fsname` cleans names for every modern OS and file
   system, and `pathresolve` canonicalizes paths for containment checks.
+- **Place times on calendar days.** `civiltime` gives the instants that make
+  up a `civil.Date` in an IANA zone, including days that skip or repeat
+  midnight and dates a zone skipped.
 - **Share development tooling.** `lint` owns the shared Go lint policy,
   `logging` builds reusable slog loggers, `openssh` orchestrates an OpenSSH
   client, `telemetry` wraps OpenTelemetry and anonymous usage events, and
