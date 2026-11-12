@@ -6,7 +6,6 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"maps"
 	"strings"
 
 	"github.com/tailscale/hujson"
@@ -47,37 +46,24 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		}
 	}
 	previous, present := servers[name]
-	comparison := entry
-	if present {
-		var fields map[string]any
-		decoder := stdjson.NewDecoder(bytes.NewReader(previous))
-		decoder.UseNumber()
-		if decoder.Decode(&fields) == nil && fields != nil {
-			if agent == AgentClaude {
-				entry = mergeEntry(fields, entry)
-			}
-			dropEmptyFields(fields)
-			comparison = maps.Clone(entry)
-			dropEmptyFields(comparison)
-			previous, err = stdjson.Marshal(fields)
-			if err != nil {
-				return nil, false, false, err
-			}
-		}
-	}
 	encoded, err := stdjson.Marshal(entry)
 	if err != nil {
 		return nil, false, false, err
 	}
 	if present {
-		comparisonBytes, err := stdjson.Marshal(comparison)
-		if err != nil {
-			return nil, false, false, err
+		var fields map[string]any
+		decoder := stdjson.NewDecoder(bytes.NewReader(previous))
+		decoder.UseNumber()
+		if agent == AgentClaude && decoder.Decode(&fields) == nil && fields != nil {
+			dropEmptyFields(fields)
+			entry = mergeEntry(fields, entry)
+			previous, _ = stdjson.Marshal(fields)
+			encoded, _ = stdjson.Marshal(entry)
 		}
 		if err := previous.Canonicalize(); err != nil {
 			return nil, false, false, err
 		}
-		canonical := jsontext.Value(comparisonBytes)
+		canonical := jsontext.Value(bytes.Clone(encoded))
 		if err := canonical.Canonicalize(); err != nil {
 			return nil, false, false, err
 		}

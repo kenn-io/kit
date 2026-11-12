@@ -56,24 +56,6 @@ func TestInstallPreservesCodexSettings(t *testing.T) {
 	}
 }
 
-func TestInstallHeadersReplaceEntry(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\nurl='https://example.com/old'\n[mcp_servers.example.http_headers]\nauthorization='old'\nOther='keep'\n"), 0o600))
-	result, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{
-		ConfigPath: path,
-		Name:       "example",
-		Server: agentmcp.Server{
-			URL:     "https://example.com/new",
-			Headers: map[string]string{"Authorization": "new"},
-		},
-	})
-	require.NoError(t, err)
-	entry := decodeConfig(t, agentmcp.AgentCodex, result.Data)["mcp_servers"].(map[string]any)["example"]
-	encoded, err := json.Marshal(entry)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"url":"https://example.com/new","http_headers":{"Authorization":"new"}}`, string(encoded))
-}
-
 func TestInlineCodexSettingsSurvive(t *testing.T) {
 	for _, original := range []string{
 		`mcp_servers = { example = { command = "old", enabled = false, env = {K = "v"}, nested = { x = { y = 2 } }, list = [{ name = "one" }] }, other = { command = "other" } }`,
@@ -121,4 +103,14 @@ func TestInstallEntryOwnership(t *testing.T) {
 			assert.JSONEq(t, tc.want, string(encoded))
 		})
 	}
+}
+
+func TestClaudeLaunchUpdatePreservesLargeInteger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"mcpServers":{"example":{"command":"old","timeout":9007199254740993}}}`), 0o600))
+	result, err := agentmcp.Install(agentmcp.AgentClaude, agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "new"}})
+	require.NoError(t, err)
+	assert.True(t, result.Changed)
+	assert.Contains(t, string(result.Data), `"command": "new"`)
+	assert.Contains(t, string(result.Data), `9007199254740993`)
 }

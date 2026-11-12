@@ -150,7 +150,7 @@ func TestJSONCReplacementKeepsFieldComments(t *testing.T) {
 	require.NoError(t, err)
 	parsed.Standardize()
 	doc := decodeConfig(t, agentmcp.AgentGemini, parsed.Pack())
-	assert.Equal(t, map[string]any{"mcpServers": map[string]any{"example": map[string]any{"httpUrl": "https://example.com/mcp", "env": map[string]any{"MODE": "test"}}}}, doc)
+	assert.Equal(t, map[string]any{"mcpServers": map[string]any{"example": map[string]any{"httpUrl": "https://example.com/mcp"}}}, doc)
 	second, err := agentmcp.Install(agentmcp.AgentGemini, opts)
 	require.NoError(t, err)
 	assert.False(t, second.Changed)

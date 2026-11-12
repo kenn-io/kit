@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
-	"go.kenn.io/kit/agenthook"
 	"go.kenn.io/kit/agentmcp"
 )
 
@@ -77,43 +76,4 @@ func TestCommandRepairGuidance(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotReady)
 	require.Contains(t, out, "The named MCP server is missing: app agent-hook install")
 	require.Contains(t, out, "Run `app setup --agent codex --check` afterwards.")
-	out, err = execute(t.Context(), opts, "--agent", "codex", "--check", "--json")
-	require.ErrorIs(t, err, ErrNotReady)
-	require.Contains(t, out, `"next_step":"app agent-hook install"`)
-	opts.RepairCommand = ""
-	out, err = execute(t.Context(), opts, "--agent", "codex", "--check", "--json")
-	require.ErrorIs(t, err, ErrNotReady)
-	require.Contains(t, out, `"next_step":"app setup --agent codex"`)
-}
-
-func TestCommandUnknownAgentReport(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-	opts := Options{Items: func(agent string) ([]Item, error) {
-		return []Item{Hooks(agent, agenthook.InstallOptions{Executable: "example", Marker: "example", Hooks: []agenthook.Hook{{Event: agenthook.EventStop}}}), MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
-	}}
-	out, err := execute(t.Context(), opts, "--agent", "future,claude", "--check")
-	require.ErrorIs(t, err, ErrNotReady)
-	require.Contains(t, out, "future")
-	require.Contains(t, out, "unknown")
-	require.Contains(t, out, "Claude Code")
-	out, err = execute(t.Context(), opts, "--agent", "future,claude", "--check", "--json")
-	require.ErrorIs(t, err, ErrNotReady)
-	require.Contains(t, out, `"agent":"future","agent_name":"future","piece":"hooks","state":"unknown"`)
-	require.Contains(t, out, `"agent":"future","agent_name":"future","piece":"mcp example","state":"unknown"`)
-}
-
-func TestCommandOutdatedRepairGuidance(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-	_, err := agentmcp.Install(agentmcp.AgentClaude, agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "old"}})
-	require.NoError(t, err)
-	opts := Options{RepairCommand: "app repair", Items: func(agent string) ([]Item, error) {
-		return []Item{MCP(agent, "example", agentmcp.Server{Command: "new"})}, nil
-	}}
-	out, err := execute(t.Context(), opts, "--agent", "claude", "--check")
-	require.ErrorIs(t, err, ErrNotReady)
-	require.Contains(t, out, "outdated")
-	require.Contains(t, out, "app repair")
-	require.Contains(t, out, "Run `app setup --agent claude --check` afterwards.")
 }

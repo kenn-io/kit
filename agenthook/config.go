@@ -287,7 +287,7 @@ func planConfig(
 	case formatHermesYAML:
 		return planHermesConfig(path, marker, command, hooks, uninstall)
 	case formatScript:
-		return planScriptConfig(spec, path, marker, argv, hooks, uninstall, dir)
+		return planScriptConfig(spec, path, marker, argv, hooks, uninstall)
 	default:
 		return nil, false, errors.New("unsupported agent hook config format")
 	}

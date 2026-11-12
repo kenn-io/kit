@@ -23,7 +23,7 @@ func editTOML(original []byte, name string, entry map[string]any) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	inlineEntry, err := tomlInline(entry)
+	inlineEntry, err := tomlValue(reflect.ValueOf(entry))
 	if err != nil {
 		return nil, err
 	}
@@ -43,13 +43,13 @@ func editTOML(original []byte, name string, entry map[string]any) ([]byte, error
 			}
 		}
 		parent.Block = append(parent.Block, comments...)
-		kept = append(kept, &parser.KeyValue{Name: parser.Key{name}, Value: parser.Value{X: inlineEntry}})
+		kept = append(kept, &parser.KeyValue{Name: parser.Key{name}, Value: inlineEntry})
 		parent.Value.X = kept
 	case doc.First(key...) != nil && doc.First(key...).IsMapping():
 		// An existing inline table can be replaced without changing its parent.
 		target := doc.First(key...).KeyValue
 		target.Block = append(target.Block, tomlValueComments(target.Value.X)...)
-		target.Value.X = inlineEntry
+		target.Value.X = inlineEntry.X
 	default:
 		var comments parser.Comments
 		var kept []*tomledit.Section
@@ -100,20 +100,10 @@ func editTOML(original []byte, name string, entry map[string]any) ([]byte, error
 	return out.Bytes(), nil
 }
 
-// tomlInline preserves nested values when the server lives in an inline table.
-func tomlInline(entry any) (parser.Inline, error) {
-	value, err := tomlValue(reflect.ValueOf(entry))
-	if err != nil {
-		return nil, err
-	}
-	return value.X.(parser.Inline), nil
-}
-
 func tomlValue(v reflect.Value) (parser.Value, error) {
-	if v.Kind() == reflect.Interface {
-		return tomlValue(v.Elem())
-	}
 	switch v.Kind() {
+	case reflect.Interface:
+		return tomlValue(v.Elem())
 	case reflect.Map:
 		var result parser.Inline
 		keys := v.MapKeys()

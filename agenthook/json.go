@@ -201,33 +201,22 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 				slots = append(slots, slot{entry: entry, handlers: handlers, index: i})
 			}
 		}
-		// Reserve all matching moved handlers before assigning any free slot.
-		if preserve {
+		// Reserve matching moved handlers before assigning free slots.
+		for _, strict := range []bool{preserve, false} {
 			for i := range slots {
 				owned := &slots[i]
+				if owned.desired != nil {
+					continue
+				}
 				existing, _ := owned.handlers[owned.index].(map[string]any)
 				for j, hook := range desired[event] {
 					matcher, _ := hook["matcher"].(string)
 					existingMatcher, _ := owned.entry["matcher"].(string)
 					desiredHandler := hook["hooks"].([]any)[0].(map[string]any)
-					if !used[j] && matcher == existingMatcher && sameMovedHook(existing, desiredHandler, dir) {
+					if !used[j] && matcher == existingMatcher && (!strict || sameMovedHook(existing, desiredHandler, dir)) {
 						owned.desired, used[j] = hook, true
 						break
 					}
-				}
-			}
-		}
-		for i := range slots {
-			owned := &slots[i]
-			if owned.desired != nil {
-				continue
-			}
-			for j, hook := range desired[event] {
-				matcher, _ := hook["matcher"].(string)
-				existingMatcher, _ := owned.entry["matcher"].(string)
-				if !used[j] && matcher == existingMatcher {
-					owned.desired, used[j] = hook, true
-					break
 				}
 			}
 		}

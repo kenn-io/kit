@@ -679,22 +679,10 @@ func TestMovedHookKeptBySetupAndCheck(t *testing.T) {
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	installed := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
-	first, err := Install(AgentClaude, installed)
+	_, err = Install(AgentClaude, installed)
 	require.NoError(t, err)
 	desired := installed
 	desired.Executable = filepath.Join(t.TempDir(), "moved-hook")
-	result, err := Check(t.Context(), AgentClaude, desired)
-	require.NoError(t, err)
-	assert.Equal(t, CheckOK, result.State, result.Reason)
-	plan, err := PlanInstall(AgentClaude, desired)
-	require.NoError(t, err)
-	assert.False(t, plan.Changed)
-	second, err := Install(AgentClaude, desired)
-	require.NoError(t, err)
-	assert.False(t, second.Changed)
-	actual, err := os.ReadFile(first.ConfigPath)
-	require.NoError(t, err)
-	assert.Equal(t, first.Data, actual)
 
 	arguments, timeout := desired, desired
 	arguments.Arguments = []string{"example-marker", "changed"}

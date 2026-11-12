@@ -66,15 +66,9 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 	}
 	result.HookCount = len(records)
 	cwd, err := filepath.Abs(opts.WorkspaceDir)
-	if err != nil {
-		return set(CheckUnknown, fmt.Sprintf("Can't resolve workspace %q: %v", opts.WorkspaceDir, err), "Choose a working directory for the hook check")
-	}
-	info, err := os.Stat(cwd)
-	if err != nil {
-		return set(CheckUnknown, fmt.Sprintf("Can't access workspace %q: %v", cwd, err), "Choose a working directory for the hook check")
-	}
-	if !info.IsDir() {
-		return set(CheckUnknown, fmt.Sprintf("Workspace %q is not a directory", cwd), "Choose a working directory for the hook check")
+	info, statErr := os.Stat(cwd)
+	if err != nil || statErr != nil || !info.IsDir() {
+		return set(CheckUnknown, fmt.Sprintf("Can't access workspace %q", opts.WorkspaceDir), "Choose a working directory for the hook check")
 	}
 	if len(records) == 0 {
 		return set(CheckMissing, "This application's hooks are not installed", "Install the application's hooks")

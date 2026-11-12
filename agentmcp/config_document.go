@@ -44,21 +44,19 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	}
 	previous, present := servers[name]
 	if present {
-		comparison := entry
 		if fields, ok := previous.(map[string]any); ok {
+			fields = maps.Clone(fields)
+			dropEmptyFields(fields)
 			if agent == AgentCodex {
 				entry = mergeEntry(fields, entry)
 			}
-			previous = maps.Clone(fields)
-			dropEmptyFields(previous.(map[string]any))
-			comparison = maps.Clone(entry)
-			dropEmptyFields(comparison)
+			previous = fields
 		}
 		before, err := encodeDocument(agent, previous)
 		if err != nil {
 			return nil, false, false, err
 		}
-		after, err := encodeDocument(agent, comparison)
+		after, err := encodeDocument(agent, entry)
 		if err != nil {
 			return nil, false, false, err
 		}

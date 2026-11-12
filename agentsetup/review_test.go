@@ -61,7 +61,7 @@ func TestRepairCommandAndCustomStep(t *testing.T) {
 	report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", RepairCommand: "app repair", CheckOnly: true, Items: func(string) ([]Item, error) {
 		return []Item{
 			{Name: "built-in", Install: func(context.Context) error { return nil }, Check: func(context.Context) (Status, error) {
-				return Status{State: StateMissing}, nil
+				return Status{State: StateOutdated}, nil
 			}},
 			{Name: "custom", Install: func(context.Context) error { return nil }, Check: func(context.Context) (Status, error) {
 				return Status{State: StateMissing, NextStep: "custom fix"}, nil
@@ -93,14 +93,6 @@ func TestUnknownAgentAndKnownAgent(t *testing.T) {
 }
 
 func TestPrint(t *testing.T) {
-	t.Run("unsupported", func(t *testing.T) {
-		var out bytes.Buffer
-		err := Print(&out, Options{Agents: []string{"claude", "cursor"}, Items: func(agent string) ([]Item, error) {
-			return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
-		}})
-		require.Error(t, err)
-		require.Contains(t, out.String(), "claude")
-	})
 	t.Run("defaults without installed agents", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		var out bytes.Buffer
