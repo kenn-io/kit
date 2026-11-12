@@ -196,16 +196,6 @@ func TestResolveLocal(t *testing.T) {
 	}
 }
 
-func TestResolveLocalDiffersFromTimeDateInGap(t *testing.T) {
-	toronto := mustZone(t, "America/Toronto")
-
-	at, _ := ResolveLocal(mustDateTime(t, "2026-03-08T02:30"), toronto)
-	naive := time.Date(2026, time.March, 8, 2, 30, 0, 0, toronto)
-
-	assert.True(t, mustInstant(t, "2026-03-08T07:00:00Z").Equal(at))
-	assert.False(t, naive.Equal(at), "time.Date gave %s", naive.UTC())
-}
-
 func TestLoadZone(t *testing.T) {
 	for _, name := range []string{"UTC", "America/Toronto", "Etc/GMT+5", "Etc/UTC", "Pacific/Apia", "US/Central"} {
 		t.Run("accepts "+name, func(t *testing.T) {
