@@ -2,6 +2,8 @@ package agentmcp_test
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -185,5 +187,91 @@ func TestCodexTransportConflictPreservesFile(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.original, string(data))
 		})
+	}
+}
+
+func TestCodexAuthConflictPreservesFile(t *testing.T) {
+	for _, tc := range []struct {
+		name, original, conflict string
+		server                   agentmcp.Server
+	}{
+		{"existing bearer", "[mcp_servers.example]\nurl='https://example.com/mcp'\nbearer_token_env_var='USER_TOKEN'\n", "bearer_token_env_var", agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"authorization": "custom"}}},
+		{"existing header", "[mcp_servers.example]\nurl='https://example.com/mcp'\nhttp_headers={authorization='custom'}\n", "http_headers", agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "APP_TOKEN"}},
+		{"existing header helper", "[mcp_servers.example]\nurl='https://example.com/mcp'\nenv_http_headers={Authorization='USER_TOKEN'}\n", "env_http_headers", agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "APP_TOKEN"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CODEX_HOME", dir)
+			path := filepath.Join(dir, "config.toml")
+			require.NoError(t, os.WriteFile(path, []byte(tc.original), 0o600))
+			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: tc.server}
+			_, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
+			require.ErrorContains(t, err, tc.conflict)
+			checked, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", tc.server)
+			require.NoError(t, err)
+			assert.Equal(t, agentmcp.CheckUnknown, checked.State)
+			assert.Contains(t, checked.Reason, tc.conflict)
+			_, err = agentmcp.Install(agentmcp.AgentCodex, opts)
+			require.ErrorContains(t, err, tc.conflict)
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.original, string(data))
+		})
+	}
+}
+
+func TestInstalledCodexNestedInlineTables(t *testing.T) {
+	setupInstalledAgent(t, agentmcp.AgentCodex)
+	path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
+	require.NoError(t, err)
+	for _, original := range []string{
+		`mcp_servers = { example = { command = "old", custom = [{name="one", nested={value="a"}}, {name="two", nested={value="b"}}] } }`,
+		"[mcp_servers]\nexample = { command = 'old', custom = [{name='one', nested={value='a'}}, {name='two', nested={value='b'}}] }\n",
+	} {
+		t.Run(original[:11], func(t *testing.T) {
+			require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
+			result, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "new"}})
+			require.NoError(t, err)
+			entry := decodeConfig(t, agentmcp.AgentCodex, result.Data)["mcp_servers"].(map[string]any)["example"].(map[string]any)
+			assert.Equal(t, []any{map[string]any{"name": "one", "nested": map[string]any{"value": "a"}}, map[string]any{"name": "two", "nested": map[string]any{"value": "b"}}}, entry["custom"])
+			output, err := exec.CommandContext(t.Context(), "codex", "mcp", "list", "--json").CombinedOutput()
+			require.NoError(t, err, string(output))
+			assert.Contains(t, string(output), `"name": "example"`)
+		})
+	}
+}
+
+func TestInstalledCodexEffectiveAuthorization(t *testing.T) {
+	setupInstalledAgent(t, agentmcp.AgentCodex)
+	authorization := make(chan string, 1)
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case authorization <- r.Header.Get("Authorization"):
+		default:
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer endpoint.Close()
+	t.Setenv("USER_TOKEN", "old-token")
+	path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
+	require.NoError(t, err)
+	original := "[mcp_servers.example]\nurl='" + endpoint.URL + "'\nbearer_token_env_var='USER_TOKEN'\n"
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
+	server := agentmcp.Server{URL: endpoint.URL, Headers: map[string]string{"Authorization": "custom"}}
+	_, err = agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: server})
+	require.ErrorContains(t, err, "bearer_token_env_var")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, original, string(data))
+	require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\nurl='"+endpoint.URL+"'\n"), 0o600))
+	_, err = agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: server})
+	require.NoError(t, err)
+	_, err = agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", server)
+	require.NoError(t, err)
+	select {
+	case got := <-authorization:
+		assert.Equal(t, "custom", got)
+	default:
+		require.Fail(t, "Codex sent no request")
 	}
 }

@@ -53,6 +53,11 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 				}
 			}
 			entry = mergeEntry(agent, fields, entry)
+			if agent == AgentCodex {
+				if err := codexAuthConflict(entry); err != nil {
+					return nil, false, true, err
+				}
+			}
 			previous = maps.Clone(fields)
 			dropEmptyFields(previous.(map[string]any))
 			comparison = maps.Clone(entry)
@@ -81,6 +86,23 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 		data, err = editTOML(original, name, entry)
 	}
 	return data, true, present, err
+}
+
+func codexAuthConflict(entry map[string]any) error {
+	token, _ := entry["bearer_token_env_var"].(string)
+	if token == "" {
+		return nil
+	}
+	for _, key := range []string{"http_headers", "env_http_headers"} {
+		if fields, ok := entry[key].(map[string]any); ok {
+			for name := range fields {
+				if strings.EqualFold(name, "Authorization") {
+					return fmt.Errorf("Codex bearer_token_env_var conflicts with Authorization in %s", key)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // mergeEntry replaces launch fields and overlays the values the app supplied.
