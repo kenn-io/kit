@@ -2,7 +2,6 @@ package mcpskills_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -45,44 +44,14 @@ func exampleConsumer(ctx context.Context, toolName string) error {
 	if err != nil {
 		return err
 	}
-	server := mcp.NewServer(&mcp.Implementation{Name: toolName, Version: "1"}, &mcp.ServerOptions{Instructions: "Keep existing server guidance.\n\n" + catalog.Instructions()})
-	if toolName == "alpha.skills" {
-		catalog.Register(server)
-	} else {
-		server.AddTool(catalog.Tool(), catalog.Handler) // Central catalog integration.
-	}
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	listed, err := catalog.Handler(ctx, &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}})
 	if err != nil {
 		return err
 	}
-	defer serverSession.Close()
-	client := mcp.NewClient(&mcp.Implementation{Name: "example", Version: "1"}, nil)
-	session, err := client.Connect(ctx, clientTransport, nil)
+	read, err := catalog.Handler(ctx, &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: []byte(`{"name":"workflow"}`)}})
 	if err != nil {
 		return err
 	}
-	defer session.Close()
-	tools, err := session.ListTools(ctx, nil)
-	if err != nil {
-		return err
-	}
-	listed, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tools.Tools[0].Name, Arguments: map[string]any{}})
-	if err != nil {
-		return err
-	}
-	encoded, err := json.Marshal(listed.StructuredContent)
-	if err != nil {
-		return err
-	}
-	var metadata mcpskills.Output
-	if err := json.Unmarshal(encoded, &metadata); err != nil {
-		return err
-	}
-	read, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tools.Tools[0].Name, Arguments: map[string]string{"name": "workflow"}})
-	if err != nil {
-		return err
-	}
-	fmt.Printf("%s: %s\n%s", tools.Tools[0].Name, metadata.Skills[0].Title, read.Content[0].(*mcp.TextContent).Text)
+	fmt.Printf("%s: %s\n%s", toolName, listed.StructuredContent.(mcpskills.Output).Skills[0].Title, read.Content[0].(*mcp.TextContent).Text)
 	return nil
 }

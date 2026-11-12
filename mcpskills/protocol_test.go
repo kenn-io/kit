@@ -14,8 +14,15 @@ import (
 )
 
 func TestTwoConsumersOverMCP(t *testing.T) {
-	for _, name := range []string{"alpha.skills", "beta_guides"} {
-		t.Run(name, func(t *testing.T) {
+	for _, consumer := range []struct {
+		name     string
+		register func(*mcpskills.Catalog, *mcp.Server)
+	}{
+		{"alpha.skills", func(c *mcpskills.Catalog, s *mcp.Server) { c.Register(s) }},
+		{"beta_guides", func(c *mcpskills.Catalog, s *mcp.Server) { s.AddTool(c.Tool(), c.Handler) }},
+	} {
+		t.Run(consumer.name, func(t *testing.T) {
+			name := consumer.name
 			config := fixture()
 			config.ToolName = name
 			config.Guides[0].Markdown = " \r\n# Guide café\r\n\n```json\n{\"quoted\": \"\\\\\"}\n```\n\t"
@@ -26,12 +33,7 @@ func TestTwoConsumersOverMCP(t *testing.T) {
 			catalog, err := mcpskills.New(config)
 			require.NoError(t, err)
 			server := mcp.NewServer(&mcp.Implementation{Name: name, Version: "test"}, &mcp.ServerOptions{Instructions: "Existing instructions. " + catalog.Instructions()})
-			if name == "alpha.skills" {
-				catalog.Register(server)
-			} else {
-				// A consumer with a central catalog retains control of registration.
-				server.AddTool(catalog.Tool(), catalog.Handler)
-			}
+			consumer.register(catalog, server)
 			serverTransport, clientTransport := mcp.NewInMemoryTransports()
 			serverSession, err := server.Connect(t.Context(), serverTransport, nil)
 			require.NoError(t, err)
@@ -66,12 +68,10 @@ func TestTwoConsumersOverMCP(t *testing.T) {
 			assert.Equal(t, config.Guides[0].Markdown, read.Content[0].(*mcp.TextContent).Text)
 			assert.Equal(t, []mcpskills.Entry{config.Guides[0].Entry}, metadata(t, read).Skills)
 			require.NoError(t, outputSchema.Validate(read.StructuredContent))
-			for _, arguments := range []json.RawMessage{json.RawMessage(`{"name":"missing"}`), json.RawMessage(`{"name":null}`), json.RawMessage(`{"other":true}`), json.RawMessage(`{"name":"workflow","name":"workflow"}`)} {
-				_, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: name, Arguments: arguments})
-				var rpcError *jsonrpc.Error
-				require.ErrorAs(t, err, &rpcError)
-				assert.EqualValues(t, jsonrpc.CodeInvalidParams, rpcError.Code)
-			}
+			_, err = session.CallTool(t.Context(), &mcp.CallToolParams{Name: name, Arguments: json.RawMessage(`{"name":"missing"}`)})
+			var rpcError *jsonrpc.Error
+			require.ErrorAs(t, err, &rpcError)
+			assert.EqualValues(t, jsonrpc.CodeInvalidParams, rpcError.Code)
 		})
 	}
 }

@@ -1,7 +1,3 @@
----
-last_edited: 2026-11-05
----
-
 # Bundled MCP guides
 
 `mcpskills` lets an MCP server teach clients how to use its tools from the

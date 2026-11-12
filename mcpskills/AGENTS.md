@@ -1,7 +1,3 @@
----
-last_edited: 2026-11-05
----
-
 # MCP skills invariants
 
 - Only serve the ordered authored guides supplied to `New`. Never read runtime
