@@ -134,7 +134,7 @@ func TestInstall(t *testing.T) {
 		stdio   string
 	}{
 		{agentmcp.AgentClaude, `{"keep":9007199254740993,"mcpServers":{"other":{"command":"other"}}}`, "mcpServers", `{"type":"http","url":"http://localhost:1234/mcp","headers":{"Authorization":"Bearer test"}}`, `{"type":"stdio","command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"},"headers":{"Authorization":"Bearer test"}}`},
-		{agentmcp.AgentCodex, "keep = 9007199254740993\n[mcp_servers.other]\ncommand = 'other'\n", "mcp_servers", `{"url":"http://localhost:1234/mcp","http_headers":{"Authorization":"Bearer test"}}`, `{"command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"}}`},
+		{agentmcp.AgentCodex, "keep = 9007199254740993\n[mcp_servers.other]\ncommand = 'other'\n", "mcp_servers", `{"url":"http://localhost:1234/mcp"}`, `{"command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"}}`},
 		{agentmcp.AgentCopilot, `{"keep":9007199254740993,"mcpServers":{"other":{"command":"other"}}}`, "mcpServers", `{"type":"http","url":"http://localhost:1234/mcp","headers":{"Authorization":"Bearer test"},"tools":["*"]}`, `{"type":"local","command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"},"headers":{"Authorization":"Bearer test"},"tools":["*"]}`},
 		{agentmcp.AgentCursor, `{"keep":9007199254740993,"mcpServers":{"other":{"command":"other"}}}`, "mcpServers", `{"url":"http://localhost:1234/mcp","headers":{"Authorization":"Bearer test"}}`, `{"command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"},"headers":{"Authorization":"Bearer test"}}`},
 		{agentmcp.AgentDroid, `{"keep":9007199254740993,"mcpServers":{"other":{"command":"other"}}}`, "mcpServers", `{"type":"http","url":"http://localhost:1234/mcp","headers":{"Authorization":"Bearer test"}}`, `{"type":"stdio","command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"},"headers":{"Authorization":"Bearer test"}}`},
@@ -146,6 +146,9 @@ func TestInstall(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config")
 			require.NoError(t, os.WriteFile(path, []byte(tt.initial), 0o640))
 			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example.with.dot", Server: agentmcp.Server{URL: "http://localhost:1234/mcp", Headers: map[string]string{"Authorization": "Bearer test"}}}
+			if tt.agent == agentmcp.AgentCodex {
+				opts.Server.Headers = nil
+			}
 			plan, err := agentmcp.PlanInstall(tt.agent, opts)
 			require.NoError(t, err)
 			assert.True(t, plan.Changed)

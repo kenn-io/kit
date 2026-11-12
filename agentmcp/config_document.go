@@ -3,8 +3,10 @@ package agentmcp
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -45,6 +47,11 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	if present {
 		comparison := entry
 		if fields, ok := previous.(map[string]any); ok {
+			if agent == AgentCodex {
+				if err := codexTransportConflict(fields, entry); err != nil {
+					return nil, false, true, err
+				}
+			}
 			entry = mergeEntry(agent, fields, entry)
 			previous = maps.Clone(fields)
 			dropEmptyFields(previous.(map[string]any))
@@ -83,16 +90,12 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 	for _, key := range []string{"command", "args", "url", "httpUrl", "type", "transport"} {
 		delete(merged, key)
 	}
-	if agent == AgentCodex {
-		incompatible := []string{"http_headers", "env_http_headers", "bearer_token_env_var"}
-		if _, remote := desired["url"]; remote {
-			incompatible = []string{"env", "env_vars", "cwd"}
-		}
-		for _, key := range incompatible {
-			delete(merged, key)
-		}
-	}
 	for key, value := range desired {
+		if key == "tools" && agent == AgentCopilot {
+			if _, exists := previous[key]; exists {
+				continue
+			}
+		}
 		if additions, ok := value.(map[string]string); ok {
 			fields, _ := merged[key].(map[string]any)
 			fields = maps.Clone(fields)
@@ -100,6 +103,13 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 				fields = make(map[string]any)
 			}
 			for name, setting := range additions {
+				if key == "headers" || key == "http_headers" {
+					for existing := range fields {
+						if strings.EqualFold(existing, name) && existing != name {
+							delete(fields, existing)
+						}
+					}
+				}
 				fields[name] = setting
 			}
 			merged[key] = fields
@@ -108,6 +118,29 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 		}
 	}
 	return merged
+}
+
+func codexTransportConflict(previous, desired map[string]any) error {
+	_, wasStdio := previous["command"]
+	_, wasHTTP := previous["url"]
+	_, toHTTP := desired["url"]
+	if !(wasStdio && toHTTP || wasHTTP && !toHTTP) {
+		return nil
+	}
+	incompatible := []string{"http_headers", "env_http_headers", "bearer_token_env_var"}
+	if toHTTP {
+		incompatible = []string{"env", "env_vars", "cwd"}
+	}
+	var conflicts []string
+	for _, key := range incompatible {
+		if _, present := previous[key]; present {
+			conflicts = append(conflicts, key)
+		}
+	}
+	if len(conflicts) > 0 {
+		return fmt.Errorf("Codex transport change cannot use settings: %s", strings.Join(conflicts, ", "))
+	}
+	return nil
 }
 
 // dropEmptyFields removes the empty args and env written by agent add commands.

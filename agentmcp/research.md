@@ -166,8 +166,11 @@ Codex may return a cached catalog, so the result is `unknown`. Without a thread,
 status loads system, user, and runtime settings
 [without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
 Check compares the launch fields and values supplied by `Server`; empty `args`
-and empty `env` match their defaults. Install keeps extra user settings, except
-fields that Codex rejects after a transport change.
+and empty `env` match their defaults. A disabled server reports `failed` with an
+instruction to enable it. Install keeps extra settings and reports conflicting
+Codex transport settings without changing the file. Supplied map keys override
+matching keys; header names match without case. Existing Copilot tool selections
+are kept.
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 `Status`, and, when present, `Issue`, as Claude Code 2.1.301 confirms. Only a
