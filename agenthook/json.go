@@ -8,6 +8,9 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -16,7 +19,7 @@ func planNestedJSONConfig(
 	path, marker, command, commandWindows string,
 	argv []string,
 	hooks []nativeHook,
-	uninstall bool,
+	uninstall bool, dir string,
 ) ([]byte, bool, error) {
 	root, exists, err := readJSONConfig(path)
 	if err != nil {
@@ -30,7 +33,7 @@ func planNestedJSONConfig(
 		maps.Copy(root, spec.newConfigFields)
 	}
 	if err := applyNestedJSONHooks(
-		root, path, marker, command, commandWindows, argv, hooks, uninstall,
+		root, path, marker, command, commandWindows, argv, hooks, uninstall, dir,
 	); err != nil {
 		return nil, false, err
 	}
@@ -52,7 +55,7 @@ func applyNestedJSONHooks(
 	path, marker, command, commandWindows string,
 	argv []string,
 	hooks []nativeHook,
-	uninstall bool,
+	uninstall bool, dir string,
 ) error {
 	hooksObject, err := jsonHooksObject(root, path, !uninstall)
 	if err != nil {
@@ -63,7 +66,7 @@ func applyNestedJSONHooks(
 	}
 	desired := map[string][]map[string]any{}
 	if uninstall {
-		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path)
+		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, dir)
 	}
 	for _, hook := range hooks {
 		entry := map[string]any{}
@@ -86,7 +89,7 @@ func applyNestedJSONHooks(
 		entry["hooks"] = []any{handler}
 		desired[hook.name] = append(desired[hook.name], entry)
 	}
-	return reconcileOwnedJSONHooks(hooksObject, desired, marker, path)
+	return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, dir)
 }
 
 func readJSONConfig(path string) (map[string]any, bool, error) {
@@ -166,7 +169,8 @@ func jsonEventEntries(hooks map[string]any, event, path string) ([]any, error) {
 
 // reconcileOwnedJSONHooks matches event/matcher registrations first, then uses
 // owned single-handler groups for changed matchers before appending registrations.
-func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[string]any, marker, path string) error {
+// A slot keeps its handler when only a resolving executable path differs.
+func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[string]any, marker, path, dir string) error {
 	for event, raw := range hooks {
 		entries, ok := raw.([]any)
 		if !ok {
@@ -222,9 +226,15 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 					}
 				}
 			}
+			existing, _ := owned.handlers[owned.index].(map[string]any)
 			owned.handlers[owned.index] = removed
 			if owned.desired != nil {
-				owned.handlers[owned.index] = owned.desired["hooks"].([]any)[0]
+				desiredHandler := owned.desired["hooks"].([]any)[0].(map[string]any)
+				if sameMovedHook(existing, desiredHandler, dir) {
+					owned.handlers[owned.index] = existing
+				} else {
+					owned.handlers[owned.index] = desiredHandler
+				}
 			}
 		}
 		keptEntries := make([]any, 0, len(entries))
@@ -283,4 +293,69 @@ func ownsJSONHandler(raw any, marker string) bool {
 		command = joined.String()
 	}
 	return strings.Contains(command, marker)
+}
+
+// lookupHookExecutable resolves a relative executable path from dir, or from
+// the process directory when dir is empty, and other names through PATH.
+func lookupHookExecutable(dir, executable string) error {
+	if !filepath.IsAbs(executable) && strings.ContainsAny(executable, `/\`) {
+		path, err := filepath.Abs(filepath.Join(dir, executable))
+		if err != nil {
+			return err
+		}
+		executable = path
+	}
+	_, err := exec.LookPath(executable)
+	return err
+}
+
+// sameMovedHook keeps an owned handler whose only difference from desired is
+// an executable path that resolves from dir.
+func sameMovedHook(existing, desired map[string]any, dir string) bool {
+	oldWords, err := hookWords(existing)
+	if err != nil {
+		return false
+	}
+	newWords, err := hookWords(desired)
+	if err != nil || !slices.Equal(oldWords[1:], newWords[1:]) {
+		return false
+	}
+	oldCopy, newCopy := maps.Clone(existing), maps.Clone(desired)
+	for _, key := range []string{"command", "commandWindows"} {
+		if _, ok := oldCopy[key]; ok {
+			oldCopy[key] = newCopy[key]
+		}
+	}
+	oldJSON, oldErr := json.Marshal(oldCopy)
+	newJSON, newErr := json.Marshal(newCopy)
+	if oldErr != nil || newErr != nil || !bytes.Equal(oldJSON, newJSON) {
+		return false
+	}
+	return lookupHookExecutable(dir, oldWords[0]) == nil
+}
+
+// hookWords returns a handler's executable followed by its arguments.
+func hookWords(handler map[string]any) ([]string, error) {
+	command, _ := handler["command"].(string)
+	args, ok := handler["args"]
+	if !ok {
+		windows, _ := handler["commandWindows"].(string)
+		return rawHookWords(command, windows)
+	}
+	words := []string{command}
+	switch values := args.(type) {
+	case []string:
+		words = append(words, values...)
+	case []any:
+		for _, value := range values {
+			arg, ok := value.(string)
+			if !ok {
+				return nil, errors.New("hook arguments must be strings")
+			}
+			words = append(words, arg)
+		}
+	default:
+		return nil, errors.New("hook arguments must be an array")
+	}
+	return words, nil
 }

@@ -3,7 +3,6 @@ package agentmcp
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"maps"
 	"strings"
@@ -47,17 +46,7 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	if present {
 		comparison := entry
 		if fields, ok := previous.(map[string]any); ok {
-			if agent == AgentCodex {
-				if err := codexTransportConflict(fields, entry); err != nil {
-					return nil, false, true, err
-				}
-			}
-			entry = mergeEntry(agent, fields, entry)
-			if agent == AgentCodex {
-				if err := codexAuthConflict(entry); err != nil {
-					return nil, false, true, err
-				}
-			}
+			entry = mergeEntry(fields, entry)
 			previous = maps.Clone(fields)
 			dropEmptyFields(previous.(map[string]any))
 			comparison = maps.Clone(entry)
@@ -88,36 +77,14 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	return data, true, present, err
 }
 
-func codexAuthConflict(entry map[string]any) error {
-	token, _ := entry["bearer_token_env_var"].(string)
-	if token == "" {
-		return nil
-	}
-	for _, key := range []string{"http_headers", "env_http_headers"} {
-		if fields, ok := entry[key].(map[string]any); ok {
-			for name := range fields {
-				if strings.EqualFold(name, "Authorization") {
-					return fmt.Errorf("Codex bearer_token_env_var conflicts with Authorization in %s", key)
-				}
-			}
-		}
-	}
-	return nil
-}
-
 // mergeEntry replaces launch fields and overlays the values the app supplied.
 // Other settings and map entries belong to the user.
-func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
+func mergeEntry(previous, desired map[string]any) map[string]any {
 	merged := maps.Clone(previous)
 	for _, key := range []string{"command", "args", "url", "httpUrl", "type", "transport"} {
 		delete(merged, key)
 	}
 	for key, value := range desired {
-		if key == "tools" && agent == AgentCopilot {
-			if _, exists := previous[key]; exists {
-				continue
-			}
-		}
 		if additions, ok := value.(map[string]string); ok {
 			fields, _ := merged[key].(map[string]any)
 			fields = maps.Clone(fields)
@@ -140,29 +107,6 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 		}
 	}
 	return merged
-}
-
-func codexTransportConflict(previous, desired map[string]any) error {
-	_, wasStdio := previous["command"]
-	_, wasHTTP := previous["url"]
-	_, toHTTP := desired["url"]
-	if !(wasStdio && toHTTP || wasHTTP && !toHTTP) {
-		return nil
-	}
-	incompatible := []string{"http_headers", "env_http_headers", "bearer_token_env_var"}
-	if toHTTP {
-		incompatible = []string{"env", "env_vars", "cwd"}
-	}
-	var conflicts []string
-	for _, key := range incompatible {
-		if _, present := previous[key]; present {
-			conflicts = append(conflicts, key)
-		}
-	}
-	if len(conflicts) > 0 {
-		return fmt.Errorf("Codex transport change cannot use settings: %s", strings.Join(conflicts, ", "))
-	}
-	return nil
 }
 
 // dropEmptyFields removes the empty args and env written by agent add commands.

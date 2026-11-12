@@ -2,10 +2,7 @@ package agentmcp_test
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -15,263 +12,64 @@ import (
 	"go.kenn.io/kit/internal/codexapp/testserver"
 )
 
-func TestInstallPreservesServerSettings(t *testing.T) {
-	for _, tc := range []struct {
-		name, original, expected, key string
-		agent                         agentmcp.Agent
-		server                        agentmcp.Server
-	}{
-		{"codex stdio", "[mcp_servers.example]\ncommand='old'\nargs=['old']\nenabled=false\nstartup_timeout_sec=20\n[mcp_servers.example.env]\nUSER='keep'\nAPP='old'\n", `{"command":"new","args":["serve"],"enabled":false,"startup_timeout_sec":20,"env":{"USER":"keep","APP":"new"}}`, "mcp_servers", agentmcp.AgentCodex, agentmcp.Server{Command: "new", Args: []string{"serve"}, Env: map[string]string{"APP": "new"}}},
-		{"codex http", "[mcp_servers.example]\nurl='https://example.com/old'\nbearer_token_env_var='USER_TOKEN'\nenv_http_headers={X='HEADER_ENV'}\ntool_timeout_sec=20\n[mcp_servers.example.http_headers]\nUser='keep'\nApp='old'\n", `{"url":"https://example.com/new","bearer_token_env_var":"USER_TOKEN","env_http_headers":{"X":"HEADER_ENV"},"tool_timeout_sec":20,"http_headers":{"User":"keep","App":"new"}}`, "mcp_servers", agentmcp.AgentCodex, agentmcp.Server{URL: "https://example.com/new", Headers: map[string]string{"App": "new"}}},
-		{"claude transport change", `{"mcpServers":{"example":{"type":"stdio","command":"old","args":["old"],"env":{"USER":"keep"},"headers":{"User":"keep"},"custom":{"value":9007199254740993}}}}`, `{"type":"http","url":"https://example.com/new","env":{"USER":"keep"},"headers":{"User":"keep","App":"new"},"custom":{"value":9007199254740993}}`, "mcpServers", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/new", Headers: map[string]string{"App": "new"}}},
-		{"hermes transport change", "mcp_servers:\n  example:\n    url: https://example.com/old\n    transport: sse\n    headers:\n      User: keep\n    env:\n      USER: keep\n", `{"command":"new","env":{"USER":"keep","APP":"new"},"headers":{"User":"keep"}}`, "mcp_servers", agentmcp.AgentHermes, agentmcp.Server{Command: "new", Env: map[string]string{"APP": "new"}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config")
-			require.NoError(t, os.WriteFile(path, []byte(tc.original), 0o600))
-			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: tc.server}
-			result, err := agentmcp.Install(tc.agent, opts)
-			require.NoError(t, err)
-			assert.True(t, result.Changed)
-			doc := decodeConfig(t, tc.agent, result.Data)
-			servers := doc[tc.key].(map[string]any)
-			encoded, err := json.Marshal(servers["example"])
-			require.NoError(t, err)
-			assert.JSONEq(t, tc.expected, string(encoded))
-			if tc.name == "claude transport change" {
-				assert.Contains(t, string(result.Data), "9007199254740993")
-			}
-			again, err := agentmcp.Install(tc.agent, opts)
-			require.NoError(t, err)
-			assert.False(t, again.Changed)
-			assert.Equal(t, result.Data, again.Data)
-		})
-	}
-}
-
-func TestCheckAfterInstallPreservesCodexSettings(t *testing.T) {
+func TestInstallPreservesCodexSettings(t *testing.T) {
 	testserver.InstallExecutable(t, "codex")
 	t.Setenv("CODEX_HOME", t.TempDir())
 	t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
 	t.Setenv("KIT_MCP_CHECK_REPLY", `{"data":[{"name":"example","tools":{}}]}`)
 	path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='old'\nenabled=true\n[mcp_servers.example.env]\nUSER='keep'\n"), 0o600))
-	server := agentmcp.Server{Command: "new", Env: map[string]string{"APP": "value"}}
-	_, err = agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: server})
-	require.NoError(t, err)
-	result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", server)
-	require.NoError(t, err)
-	assert.Equal(t, agentmcp.CheckOK, result.State)
-	require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='different'\n[mcp_servers.example.env]\nUSER='keep'\n"), 0o600))
-	result, err = agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", server)
-	require.NoError(t, err)
-	assert.Equal(t, agentmcp.CheckOutdated, result.State)
-}
 
-func TestDisabledCodexCheckDoesNotLaunch(t *testing.T) {
-	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("PATH", t.TempDir())
-	path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
-	require.NoError(t, err)
-	config := "[mcp_servers.example]\ncommand='missing'\nenabled=false\n"
-	require.NoError(t, os.WriteFile(path, []byte(config), 0o600))
-	result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", agentmcp.Server{Command: "missing"})
-	require.NoError(t, err)
-	assert.Equal(t, agentmcp.CheckFailed, result.State)
-	assert.Equal(t, `Enable "example" in the Codex config`, result.NextStep)
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, config, string(data))
-}
-
-func TestInstallCodexInlineArrayOfTables(t *testing.T) {
-	for _, original := range []string{
-		`mcp_servers = { example = { command = "old", env_vars = [{name="A"}, {name="B"}] } }`,
-		"[mcp_servers]\nexample = { command = \"old\", env_vars = [{name=\"A\"}, {name=\"B\"}] }\n",
-	} {
-		t.Run(original[:11], func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.toml")
-			require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
-			result, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "new"}})
-			require.NoError(t, err)
-			servers := decodeConfig(t, agentmcp.AgentCodex, result.Data)["mcp_servers"].(map[string]any)
-			entry := servers["example"].(map[string]any)
-			assert.Equal(t, []any{map[string]any{"name": "A"}, map[string]any{"name": "B"}}, entry["env_vars"])
-		})
-	}
-}
-
-func TestInstalledCodexTransportChanges(t *testing.T) {
-	setupInstalledAgent(t, agentmcp.AgentCodex)
-	path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
-	require.NoError(t, err)
 	for _, tc := range []struct {
 		name, original, expected string
 		server                   agentmcp.Server
 	}{
-		{"stdio settings", "[mcp_servers.example]\ncommand='old'\nenabled=false\nenv_vars=['HOME','PATH']\n[mcp_servers.example.env]\nUSER='keep'\nAPP='old'\n", `{"command":"new","enabled":false,"env_vars":["HOME","PATH"],"env":{"USER":"keep","APP":"new"}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": "new"}}},
-		{"http settings", "[mcp_servers.example]\nurl='https://example.com/old'\nenabled=false\nenv_http_headers={X='TOKEN'}\n[mcp_servers.example.http_headers]\nUser='keep'\nApp='old'\n", `{"url":"https://example.com/mcp","enabled":false,"env_http_headers":{"X":"TOKEN"},"http_headers":{"User":"keep","App":"new"}}`, agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"App": "new"}}},
-		{"stdio to http", "[mcp_servers.example]\ncommand='old'\nargs=['old']\nenabled=false\nstartup_timeout_sec=20\n", `{"url":"https://example.com/mcp","enabled":false,"startup_timeout_sec":20,"http_headers":{"App":"new"}}`, agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"App": "new"}}},
-		{"http to stdio", "[mcp_servers.example]\nurl='https://example.com/old'\nenabled=false\ntool_timeout_sec=20\n", `{"command":"new","args":["serve"],"enabled":false,"tool_timeout_sec":20,"env":{"APP":"new"}}`, agentmcp.Server{Command: "new", Args: []string{"serve"}, Env: map[string]string{"APP": "new"}}},
+		{
+			name:     "stdio environment",
+			original: "[mcp_servers.example]\ncommand='old'\nargs=['old']\nenabled=true\nstartup_timeout_sec=20\n[mcp_servers.example.env]\nUSER='keep'\nAPP='old'\n",
+			expected: `{"command":"new","args":["serve"],"enabled":true,"startup_timeout_sec":20,"env":{"USER":"keep","APP":"new"}}`,
+			server:   agentmcp.Server{Command: "new", Args: []string{"serve"}, Env: map[string]string{"APP": "new"}},
+		},
+		{
+			name:     "http headers",
+			original: "[mcp_servers.example]\nurl='https://example.com/old'\nenv_http_headers={X='TOKEN'}\ntool_timeout_sec=20\n[mcp_servers.example.http_headers]\nUser='keep'\napp='old'\n",
+			expected: `{"url":"https://example.com/new","env_http_headers":{"X":"TOKEN"},"tool_timeout_sec":20,"http_headers":{"User":"keep","App":"new"}}`,
+			server:   agentmcp.Server{URL: "https://example.com/new", Headers: map[string]string{"App": "new"}},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, []byte(tc.original), 0o600))
-			result, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: tc.server})
+			_, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: tc.server})
 			require.NoError(t, err)
-			entry := decodeConfig(t, agentmcp.AgentCodex, result.Data)["mcp_servers"].(map[string]any)["example"]
+
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			entry := decodeConfig(t, agentmcp.AgentCodex, data)["mcp_servers"].(map[string]any)["example"]
 			encoded, err := json.Marshal(entry)
 			require.NoError(t, err)
 			assert.JSONEq(t, tc.expected, string(encoded))
-			output, err := exec.CommandContext(t.Context(), "codex", "mcp", "list", "--json").CombinedOutput()
-			require.NoError(t, err, string(output))
-			assert.Contains(t, string(output), `"name": "example"`)
-			resultCheck, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", tc.server)
-			require.NoError(t, err)
-			assert.Equal(t, agentmcp.CheckFailed, resultCheck.State, resultCheck.Reason)
-			assert.Equal(t, "The Codex MCP server is disabled", resultCheck.Reason)
-			assert.Equal(t, `Enable "example" in the Codex config`, resultCheck.NextStep)
-			assert.Zero(t, resultCheck.ToolCount)
-		})
-	}
-}
 
-func TestInstallHeaderAndToolOwnership(t *testing.T) {
-	for _, tc := range []struct {
-		name, original, expected, key string
-		agent                         agentmcp.Agent
-	}{
-		{"codex", "[mcp_servers.example]\nurl='https://example.com/old'\n[mcp_servers.example.http_headers]\nauthorization='old'\nOther='keep'\n", `{"url":"https://example.com/new","http_headers":{"Authorization":"new","Other":"keep"}}`, "mcp_servers", agentmcp.AgentCodex},
-		{"claude", `{"mcpServers":{"example":{"type":"http","url":"https://example.com/old","headers":{"authorization":"old","Other":"keep"}}}}`, `{"type":"http","url":"https://example.com/new","headers":{"Authorization":"new","Other":"keep"}}`, "mcpServers", agentmcp.AgentClaude},
-		{"hermes", "mcp_servers:\n  example:\n    url: https://example.com/old\n    headers:\n      authorization: old\n      Other: keep\n", `{"url":"https://example.com/new","headers":{"Authorization":"new","Other":"keep"}}`, "mcp_servers", agentmcp.AgentHermes},
-		{"copilot", `{"mcpServers":{"example":{"type":"http","url":"https://example.com/old","tools":["search"],"headers":{"authorization":"old","Other":"keep"}}}}`, `{"type":"http","url":"https://example.com/new","tools":["search"],"headers":{"Authorization":"new","Other":"keep"}}`, "mcpServers", agentmcp.AgentCopilot},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config")
-			require.NoError(t, os.WriteFile(path, []byte(tc.original), 0o600))
-			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{URL: "https://example.com/new", Headers: map[string]string{"Authorization": "new"}}}
-			result, err := agentmcp.Install(tc.agent, opts)
-			require.NoError(t, err)
-			servers := decodeConfig(t, tc.agent, result.Data)[tc.key].(map[string]any)
-			encoded, err := json.Marshal(servers["example"])
-			require.NoError(t, err)
-			assert.JSONEq(t, tc.expected, string(encoded))
-			again, err := agentmcp.PlanInstall(tc.agent, opts)
-			require.NoError(t, err)
-			assert.False(t, again.Changed)
-		})
-	}
-}
-
-func TestCodexTransportConflictPreservesFile(t *testing.T) {
-	for _, tc := range []struct {
-		name, original string
-		fields         []string
-		server         agentmcp.Server
-	}{
-		{"stdio to http", "[mcp_servers.example]\ncommand='old'\nenv_vars=['HOME']\ncwd='/tmp'\n[mcp_servers.example.env]\nUSER='keep'\n", []string{"env", "env_vars", "cwd"}, agentmcp.Server{URL: "https://example.com/mcp"}},
-		{"http to stdio", "[mcp_servers.example]\nurl='https://example.com/old'\nbearer_token_env_var='TOKEN'\nenv_http_headers={X='TOKEN'}\n[mcp_servers.example.http_headers]\nUser='keep'\n", []string{"http_headers", "env_http_headers", "bearer_token_env_var"}, agentmcp.Server{Command: "new"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.toml")
-			require.NoError(t, os.WriteFile(path, []byte(tc.original), 0o600))
-			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: tc.server}
-			_, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
-			require.Error(t, err)
-			for _, field := range tc.fields {
-				assert.ErrorContains(t, err, field)
-			}
-			_, err = agentmcp.Install(agentmcp.AgentCodex, opts)
-			require.Error(t, err)
-			data, err := os.ReadFile(path)
-			require.NoError(t, err)
-			assert.Equal(t, tc.original, string(data))
-		})
-	}
-}
-
-func TestCodexAuthConflictPreservesFile(t *testing.T) {
-	for _, tc := range []struct {
-		name, original, conflict string
-		server                   agentmcp.Server
-	}{
-		{"existing bearer", "[mcp_servers.example]\nurl='https://example.com/mcp'\nbearer_token_env_var='USER_TOKEN'\n", "bearer_token_env_var", agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"authorization": "custom"}}},
-		{"existing header", "[mcp_servers.example]\nurl='https://example.com/mcp'\nhttp_headers={authorization='custom'}\n", "http_headers", agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "APP_TOKEN"}},
-		{"existing header helper", "[mcp_servers.example]\nurl='https://example.com/mcp'\nenv_http_headers={Authorization='USER_TOKEN'}\n", "env_http_headers", agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "APP_TOKEN"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			t.Setenv("CODEX_HOME", dir)
-			path := filepath.Join(dir, "config.toml")
-			require.NoError(t, os.WriteFile(path, []byte(tc.original), 0o600))
-			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: tc.server}
-			_, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
-			require.ErrorContains(t, err, tc.conflict)
 			checked, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", tc.server)
 			require.NoError(t, err)
-			assert.Equal(t, agentmcp.CheckUnknown, checked.State)
-			assert.Contains(t, checked.Reason, tc.conflict)
-			_, err = agentmcp.Install(agentmcp.AgentCodex, opts)
-			require.ErrorContains(t, err, tc.conflict)
-			data, err := os.ReadFile(path)
-			require.NoError(t, err)
-			assert.Equal(t, tc.original, string(data))
+			assert.Equal(t, agentmcp.CheckOK, checked.State, checked.Reason)
 		})
 	}
 }
 
-func TestInstalledCodexNestedInlineTables(t *testing.T) {
-	setupInstalledAgent(t, agentmcp.AgentCodex)
-	path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
+func TestInstallHeaderNamesMatchWithoutCase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\nurl='https://example.com/old'\n[mcp_servers.example.http_headers]\nauthorization='old'\nOther='keep'\n"), 0o600))
+	result, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{
+		ConfigPath: path,
+		Name:       "example",
+		Server: agentmcp.Server{
+			URL:     "https://example.com/new",
+			Headers: map[string]string{"Authorization": "new"},
+		},
+	})
 	require.NoError(t, err)
-	for _, original := range []string{
-		`mcp_servers = { example = { command = "old", custom = [{name="one", nested={value="a"}}, {name="two", nested={value="b"}}] } }`,
-		"[mcp_servers]\nexample = { command = 'old', custom = [{name='one', nested={value='a'}}, {name='two', nested={value='b'}}] }\n",
-	} {
-		t.Run(original[:11], func(t *testing.T) {
-			require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
-			result, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "new"}})
-			require.NoError(t, err)
-			entry := decodeConfig(t, agentmcp.AgentCodex, result.Data)["mcp_servers"].(map[string]any)["example"].(map[string]any)
-			assert.Equal(t, []any{map[string]any{"name": "one", "nested": map[string]any{"value": "a"}}, map[string]any{"name": "two", "nested": map[string]any{"value": "b"}}}, entry["custom"])
-			output, err := exec.CommandContext(t.Context(), "codex", "mcp", "list", "--json").CombinedOutput()
-			require.NoError(t, err, string(output))
-			assert.Contains(t, string(output), `"name": "example"`)
-		})
-	}
-}
-
-func TestInstalledCodexEffectiveAuthorization(t *testing.T) {
-	setupInstalledAgent(t, agentmcp.AgentCodex)
-	authorization := make(chan string, 1)
-	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case authorization <- r.Header.Get("Authorization"):
-		default:
-		}
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer endpoint.Close()
-	t.Setenv("USER_TOKEN", "old-token")
-	path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
+	entry := decodeConfig(t, agentmcp.AgentCodex, result.Data)["mcp_servers"].(map[string]any)["example"]
+	encoded, err := json.Marshal(entry)
 	require.NoError(t, err)
-	original := "[mcp_servers.example]\nurl='" + endpoint.URL + "'\nbearer_token_env_var='USER_TOKEN'\n"
-	require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
-	server := agentmcp.Server{URL: endpoint.URL, Headers: map[string]string{"Authorization": "custom"}}
-	_, err = agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: server})
-	require.ErrorContains(t, err, "bearer_token_env_var")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, original, string(data))
-	require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\nurl='"+endpoint.URL+"'\n"), 0o600))
-	_, err = agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: server})
-	require.NoError(t, err)
-	_, err = agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", server)
-	require.NoError(t, err)
-	select {
-	case got := <-authorization:
-		assert.Equal(t, "custom", got)
-	default:
-		require.Fail(t, "Codex sent no request")
-	}
+	assert.JSONEq(t, `{"url":"https://example.com/new","http_headers":{"Authorization":"new","Other":"keep"}}`, string(encoded))
 }

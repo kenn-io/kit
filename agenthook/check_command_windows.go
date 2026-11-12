@@ -8,9 +8,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func rawHookExecutable(command, commandWindows string) (string, error) {
+func rawHookWords(command, commandWindows string) ([]string, error) {
 	if commandWindows == "" {
-		return posixHookExecutable(command)
+		return posixHookWords(command)
 	}
 	quoted, backslashes := false, 0
 	for _, char := range commandWindows {
@@ -18,7 +18,7 @@ func rawHookExecutable(command, commandWindows string) (string, error) {
 			quoted = !quoted
 		}
 		if (!quoted && strings.ContainsRune(";|&<>~*?{}[]()\n", char)) || strings.ContainsRune("$`%", char) {
-			return "", errors.New("hook command requires shell interpretation")
+			return nil, errors.New("hook command requires shell interpretation")
 		}
 		if char == '\\' {
 			backslashes++
@@ -29,7 +29,7 @@ func rawHookExecutable(command, commandWindows string) (string, error) {
 
 	words, err := windows.DecomposeCommandLine(commandWindows)
 	if err != nil || len(words) == 0 {
-		return "", fmt.Errorf("cannot identify hook executable in %q", commandWindows)
+		return nil, fmt.Errorf("cannot identify hook executable in %q", commandWindows)
 	}
-	return words[0], nil
+	return words, nil
 }

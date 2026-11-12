@@ -31,7 +31,7 @@ func planScriptConfig(
 	path, marker string,
 	argv []string,
 	hooks []nativeHook,
-	uninstall bool,
+	uninstall bool, dir string,
 ) ([]byte, bool, error) {
 	existing, err := os.ReadFile(path)
 	exists := err == nil
@@ -51,7 +51,7 @@ func planScriptConfig(
 			return nil, false, err
 		}
 	}
-	if err := applyNestedJSONHooks(root, path, marker, "", "", argv, hooks, uninstall); err != nil {
+	if err := applyNestedJSONHooks(root, path, marker, "", "", argv, hooks, uninstall, dir); err != nil {
 		return nil, false, err
 	}
 	if remaining, _ := root["hooks"].(map[string]any); uninstall && len(remaining) == 0 {

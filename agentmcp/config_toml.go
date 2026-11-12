@@ -2,8 +2,6 @@ package agentmcp
 
 import (
 	"bytes"
-	"maps"
-	"reflect"
 	"slices"
 
 	"github.com/creachadair/tomledit"
@@ -24,14 +22,6 @@ func editTOML(original []byte, name string, entry map[string]any) ([]byte, error
 		return nil, err
 	}
 	key := parser.Key{"mcp_servers", name}
-	var inlineEntry parser.Inline
-	if doc.First("mcp_servers") != nil && doc.First("mcp_servers").IsMapping() || doc.First(key...) != nil && doc.First(key...).IsMapping() {
-		value, err := tomlInlineValue(reflect.ValueOf(entry))
-		if err != nil {
-			return nil, err
-		}
-		inlineEntry = value.X.(parser.Inline)
-	}
 	switch {
 	case doc.First("mcp_servers") != nil && doc.First("mcp_servers").IsMapping():
 		// TOML inline tables cannot be extended by a later section declaration.
@@ -47,13 +37,13 @@ func editTOML(original []byte, name string, entry map[string]any) ([]byte, error
 			}
 		}
 		parent.Block = append(parent.Block, comments...)
-		kept = append(kept, &parser.KeyValue{Name: parser.Key{name}, Value: parser.Value{X: inlineEntry}})
+		kept = append(kept, &parser.KeyValue{Name: parser.Key{name}, Value: parser.Value{X: tomlInline(replacement)}})
 		parent.Value.X = kept
 	case doc.First(key...) != nil && doc.First(key...).IsMapping():
 		// An existing inline table can be replaced without changing its parent.
 		target := doc.First(key...).KeyValue
 		target.Block = append(target.Block, tomlValueComments(target.Value.X)...)
-		target.Value.X = inlineEntry
+		target.Value.X = tomlInline(replacement)
 	default:
 		var comments parser.Comments
 		var kept []*tomledit.Section
@@ -104,47 +94,20 @@ func editTOML(original []byte, name string, entry map[string]any) ([]byte, error
 	return out.Bytes(), nil
 }
 
-func tomlInlineValue(value reflect.Value) (parser.Value, error) {
-	if value.Kind() == reflect.Interface {
-		value = value.Elem()
+// The generated server contains scalars/arrays and one-level string maps.
+func tomlInline(doc *tomledit.Document) parser.Inline {
+	var inline parser.Inline
+	for _, item := range doc.Global.Items {
+		inline = append(inline, item.(*parser.KeyValue))
 	}
-	switch value.Kind() {
-	case reflect.Map:
-		fields := make(map[string]reflect.Value, value.Len())
-		iter := value.MapRange()
-		for iter.Next() {
-			fields[iter.Key().String()] = iter.Value()
+	for _, section := range doc.Sections {
+		var fields parser.Inline
+		for _, item := range section.Items {
+			fields = append(fields, item.(*parser.KeyValue))
 		}
-		var inline parser.Inline
-		for _, name := range slices.Sorted(maps.Keys(fields)) {
-			item, err := tomlInlineValue(fields[name])
-			if err != nil {
-				return parser.Value{}, err
-			}
-			inline = append(inline, &parser.KeyValue{Name: parser.Key{name}, Value: item})
-		}
-		return parser.Value{X: inline}, nil
-	case reflect.Slice, reflect.Array:
-		var array parser.Array
-		for i := range value.Len() {
-			item, err := tomlInlineValue(value.Index(i))
-			if err != nil {
-				return parser.Value{}, err
-			}
-			array = append(array, item)
-		}
-		return parser.Value{X: array}, nil
-	default:
-		encoded, err := encodeDocument(AgentCodex, map[string]any{"value": value.Interface()})
-		if err != nil {
-			return parser.Value{}, err
-		}
-		doc, err := tomledit.Parse(bytes.NewReader(encoded))
-		if err != nil {
-			return parser.Value{}, err
-		}
-		return doc.Global.Items[0].(*parser.KeyValue).Value, nil
+		inline = append(inline, &parser.KeyValue{Name: section.Name, Value: parser.Value{X: fields}})
 	}
+	return inline
 }
 
 func tomlItemComments(items []parser.Item) parser.Comments {

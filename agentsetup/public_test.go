@@ -90,3 +90,36 @@ func TestApplicationSetup(t *testing.T) {
 		require.Equal(t, before[i], after)
 	}
 }
+
+func TestSetupKeepsMovedHook(t *testing.T) {
+	home := t.TempDir()
+	t.Chdir(t.TempDir())
+	t.Setenv("CODEX_HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", home)
+	t.Setenv("SETUP_HELPER", "1")
+	t.Setenv("SETUP_TRUST", "trusted")
+	executable := testserver.InstallExecutable(t, "codex")
+	hooks := agenthook.InstallOptions{Executable: executable, Arguments: []string{"example-hook"}, Marker: "example-hook", Hooks: []agenthook.Hook{{Event: agenthook.EventStop}}}
+	opts := agentsetup.Options{Agents: []string{"claude", "codex"}, SetupCommand: "example setup", Items: func(agent string) ([]agentsetup.Item, error) {
+		return []agentsetup.Item{agentsetup.Hooks(agent, hooks)}, nil
+	}}
+	_, err := agentsetup.Run(t.Context(), opts)
+	require.NoError(t, err)
+	paths := []string{filepath.Join(home, "settings.json"), filepath.Join(home, "hooks.json")}
+	before := make([][]byte, len(paths))
+	for i, path := range paths {
+		before[i], err = os.ReadFile(path)
+		require.NoError(t, err)
+	}
+	hooks.Executable = filepath.Join(t.TempDir(), "moved-hook")
+	report, err := agentsetup.Run(t.Context(), opts)
+	require.NoError(t, err)
+	for _, row := range report.Rows {
+		require.Equal(t, agentsetup.StateOK, row.State, row.Reason)
+	}
+	for i, path := range paths {
+		after, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Equal(t, before[i], after)
+	}
+}

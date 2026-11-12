@@ -13,27 +13,33 @@ import (
 // Hooks installs and checks one hook registration.
 func Hooks(agent string, opts agenthook.InstallOptions) Item {
 	a := agenthook.Agent(agent)
-	return Item{Name: "hooks", retrySetup: true, Install: func(context.Context) error {
-		_, err := agenthook.Install(a, opts)
-		return err
-	}, Check: func(ctx context.Context) (Status, error) {
+	_, known := agenthook.LookupProfile(a)
+	item := Item{Name: "hooks", retrySetup: true, Check: func(ctx context.Context) (Status, error) {
+		if !known {
+			return Status{State: StateUnknown, Reason: "Hook inspection is unavailable for " + agent, NextStep: "Inspect hooks in " + agent}, nil
+		}
 		r, err := agenthook.Check(ctx, a, opts)
 		if err != nil {
 			return Status{}, err
 		}
 		return Status{State: State(r.State), Reason: r.Reason, NextStep: r.NextStep, ConfigPath: r.ConfigPath, HookCount: r.HookCount}, nil
 	}}
+	if known {
+		item.Install = func(context.Context) error {
+			_, err := agenthook.Install(a, opts)
+			return err
+		}
+	}
+	return item
 }
 
 // MCP installs and checks a named MCP server.
 func MCP(agent, name string, server agentmcp.Server) Item {
 	a := agentmcp.Agent(agent)
-	return Item{Name: "mcp " + name, retrySetup: true, Install: func(context.Context) error {
-		_, err := agentmcp.Install(a, agentmcp.InstallOptions{Name: name, Server: server})
-		return err
-	}, Check: func(ctx context.Context) (Status, error) {
-		if _, ok := agentmcp.LookupProfile(a); !ok {
-			return Status{State: StateFailed, Reason: fmt.Sprintf("unsupported MCP agent %q", agent), NextStep: "Choose an agent that supports MCP"}, nil
+	_, known := agentmcp.LookupProfile(a)
+	item := Item{Name: "mcp " + name, retrySetup: true, Check: func(ctx context.Context) (Status, error) {
+		if !known {
+			return Status{State: StateUnknown, Reason: "MCP inspection is unavailable for " + agent, NextStep: "Inspect the server in " + agent}, nil
 		}
 		r, err := agentmcp.Check(ctx, a, name, server)
 		if err != nil {
@@ -44,7 +50,15 @@ func MCP(agent, name string, server agentmcp.Server) Item {
 			status.ToolCount = new(r.ToolCount)
 		}
 		return status, nil
-	}, Commands: func() (agenthook.Commands, error) { return agentmcp.Command(a, name, server) }}
+	}}
+	if known {
+		item.Install = func(context.Context) error {
+			_, err := agentmcp.Install(a, agentmcp.InstallOptions{Name: name, Server: server})
+			return err
+		}
+		item.Commands = func() (agenthook.Commands, error) { return agentmcp.Command(a, name, server) }
+	}
+	return item
 }
 
 // Print writes manual MCP commands without installing or checking items.

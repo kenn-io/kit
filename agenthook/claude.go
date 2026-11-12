@@ -42,11 +42,7 @@ func claudeProfile() profileSpec {
 }
 
 // https://code.claude.com/docs/en/settings#settings-precedence
-func claudeHooksDisabled(ctx context.Context, user map[string]any) (bool, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return false, err
-	}
+func claudeHooksDisabled(ctx context.Context, user map[string]any, cwd string) (bool, error) {
 	paths := []string{filepath.Join(cwd, ".claude", "settings.json"), filepath.Join(cwd, ".claude", "settings.local.json")}
 	if runtime.GOOS != "windows" {
 		// Claude keeps local settings at the main checkout root on Unix.

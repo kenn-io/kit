@@ -8,19 +8,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPosixHookExecutable(t *testing.T) {
-	for _, tc := range []struct{ name, command, want string }{
-		{"quoted executable with arguments", `'/example (stable)/hook' example-marker \* [literal] "$EXAMPLE_HOOK"`, "/example (stable)/hook"},
-		{"escaped executable", `/example/hook\[stable\] example-marker`, "/example/hook[stable]"},
-		{"shell assignment", "EXAMPLE_HOOK=1 example-hook example-marker", ""},
-		{"shell expansion", "${EXAMPLE_HOOK:-existing-program} example-marker", ""},
-		{"quoted expansion", `"$EXAMPLE_HOOK" example-marker`, ""},
-		{"glob executable", "*hook example-marker", ""},
-		{"tilde executable", "~/hook example-marker", ""},
+func TestPosixHookWords(t *testing.T) {
+	for _, tc := range []struct {
+		name, command string
+		want          []string
+	}{
+		{"quoted executable with arguments", `'/example (stable)/hook' example-marker \* [literal] "$EXAMPLE_HOOK"`, []string{"/example (stable)/hook", "example-marker", "*", "\x00[literal]", "\x00\"$EXAMPLE_HOOK\""}},
+		{"escaped executable", `/example/hook\[stable\] example-marker`, []string{"/example/hook[stable]", "example-marker"}},
+		{"equivalent quoting", `/example/hook "example-marker"`, []string{"/example/hook", "example-marker"}},
+		{"raw home argument", `/example/hook example-marker $HOME`, []string{"/example/hook", "example-marker", "\x00$HOME"}},
+		{"shell assignment", "EXAMPLE_HOOK=1 example-hook example-marker", nil},
+		{"shell expansion", "${EXAMPLE_HOOK:-existing-program} example-marker", nil},
+		{"quoted expansion", `"$EXAMPLE_HOOK" example-marker`, nil},
+		{"glob executable", "*hook example-marker", nil},
+		{"tilde executable", "~/hook example-marker", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := posixHookExecutable(tc.command)
-			if tc.want == "" {
+			got, err := posixHookWords(tc.command)
+			if tc.want == nil {
 				require.ErrorContains(t, err, "shell interpretation")
 				return
 			}
@@ -30,10 +35,10 @@ func TestPosixHookExecutable(t *testing.T) {
 	}
 }
 
-func TestRawHookExecutableWindowsCompound(t *testing.T) {
+func TestRawHookWordsWindowsCompound(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("CommandWindows is selected on Windows")
 	}
-	_, err := rawHookExecutable("example-missing-hook-executable example-marker", `"C:\example (stable).exe" example-marker & example-missing-hook-executable`)
+	_, err := rawHookWords("example-missing-hook-executable example-marker", `"C:\example (stable).exe" example-marker & example-missing-hook-executable`)
 	require.ErrorContains(t, err, "shell interpretation")
 }

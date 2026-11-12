@@ -10,21 +10,38 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-func posixHookExecutable(command string) (string, error) {
+// posixHookWords returns a literal executable followed by each argument's
+// value. An argument the shell would expand keeps its source text, prefixed
+// with NUL so it never equals a literal value, and is never evaluated.
+func posixHookWords(command string) ([]string, error) {
 	parsed, err := syntax.NewParser().Parse(strings.NewReader(command), "")
 	if err != nil {
-		return "", fmt.Errorf("parse hook command: %w", err)
+		return nil, fmt.Errorf("parse hook command: %w", err)
 	}
 	if len(parsed.Stmts) != 1 {
-		return "", errors.New("hook command requires shell interpretation")
+		return nil, errors.New("hook command requires shell interpretation")
 	}
 	stmt := parsed.Stmts[0]
 	call, ok := stmt.Cmd.(*syntax.CallExpr)
 	if !ok || len(call.Assigns) > 0 || len(call.Args) == 0 || stmt.Background || stmt.Coprocess || stmt.Disown || stmt.Negated || len(stmt.Redirs) > 0 {
-		return "", errors.New("hook command requires shell interpretation")
+		return nil, errors.New("hook command requires shell interpretation")
 	}
+	words := make([]string, len(call.Args))
+	for i, word := range call.Args {
+		value, ok := posixLiteral(word)
+		if !ok && i == 0 {
+			return nil, errors.New("hook command requires shell interpretation")
+		}
+		if !ok {
+			value = "\x00" + command[word.Pos().Offset():word.End().Offset()]
+		}
+		words[i] = value
+	}
+	return words, nil
+}
+
+func posixLiteral(word *syntax.Word) (string, bool) {
 	literal := true
-	word := call.Args[0]
 	syntax.SplitBraces(word)
 	syntax.Walk(word, func(node syntax.Node) bool {
 		switch node.(type) {
@@ -41,11 +58,11 @@ func posixHookExecutable(command string) (string, error) {
 		}
 	}
 	if !literal {
-		return "", errors.New("hook command requires shell interpretation")
+		return "", false
 	}
-	words, err := expand.Fields(nil, word)
-	if err != nil || len(words) == 0 {
-		return "", fmt.Errorf("cannot identify hook executable in %q", command)
+	fields, err := expand.Fields(nil, word)
+	if err != nil || len(fields) != 1 {
+		return "", false
 	}
-	return words[0], nil
+	return fields[0], true
 }

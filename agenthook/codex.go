@@ -42,7 +42,7 @@ func codexProfile() profileSpec {
 }
 
 // checkCodex reads native discovery and consent state. It never writes trust.
-func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (CheckState, string, string) {
+func checkCodex(ctx context.Context, path, cwd string, owned []ownedRegistration) (CheckState, string, string) {
 	const retryPause = 500 * time.Millisecond
 	const addedWaitBudget = 10 * time.Second
 	var state CheckState
@@ -58,7 +58,7 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		}
 		defer cancel()
 		var err error
-		state, reason, step, err = checkCodexAttempt(attemptCtx, path, owned)
+		state, reason, step, err = checkCodexAttempt(attemptCtx, path, cwd, owned)
 		if err == nil {
 			return struct{}{}, nil
 		}
@@ -84,11 +84,7 @@ func transientCodexError(err error) bool {
 	return ok && !errors.Is(err, os.ErrPermission) && (pathErr.Op == "read" || pathErr.Op == "write")
 }
 
-func checkCodexAttempt(ctx context.Context, path string, owned []ownedRegistration) (CheckState, string, string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return CheckUnknown, err.Error(), "Choose a working directory for Codex", nil
-	}
+func checkCodexAttempt(ctx context.Context, path, cwd string, owned []ownedRegistration) (CheckState, string, string, error) {
 	client, err := codexapp.Start(ctx, "codex", cwd)
 	if err != nil {
 		state, reason, step := codexFailure(err, "Check Codex app-server startup and retry")

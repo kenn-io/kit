@@ -3,7 +3,6 @@ package agentmcp
 import (
 	"context"
 	"encoding/json/jsontext"
-	"fmt"
 
 	"github.com/BurntSushi/toml"
 	"go.kenn.io/kit/internal/codexapp"
@@ -14,14 +13,9 @@ func checkCodex(ctx context.Context, name string, original []byte, result CheckR
 	var config struct {
 		Servers map[string]struct {
 			StartupReadiness string `toml:"startup_readiness"`
-			Enabled          *bool  `toml:"enabled"`
 		} `toml:"mcp_servers"`
 	}
 	_, _ = toml.Decode(string(original), &config)
-	if enabled := config.Servers[name].Enabled; enabled != nil && !*enabled {
-		result.State, result.Reason, result.NextStep = CheckFailed, "The Codex MCP server is disabled", fmt.Sprintf("Enable %q in the Codex config", name)
-		return result
-	}
 	client, err := codexapp.Start(ctx, "codex", "")
 	if err != nil {
 		return checkProbeError(err, result)

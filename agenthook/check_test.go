@@ -60,6 +60,11 @@ func runHookCheckHelper(mode string) int {
 			}
 		}
 	}
+	// Startup and every workspace RPC must use the exact requested workspace.
+	cwd, _ := os.Getwd()
+	if want := os.Getenv("KIT_HOOK_CHECK_CWD"); want != "" && cwd != want {
+		return 16
+	}
 	if mode == "initialize-eof" {
 		_, _ = testserver.Read(input)
 		return 0
@@ -107,7 +112,6 @@ func runHookCheckHelper(mode string) int {
 		}
 		switch request.Method {
 		case "config/read":
-			cwd, _ := os.Getwd()
 			if request.Params["includeLayers"] != false || request.Params["cwd"] != cwd {
 				return 11
 			}
@@ -120,7 +124,6 @@ func runHookCheckHelper(mode string) int {
 			}
 			fmt.Printf("{\"id\":%d,\"result\":{\"config\":{\"features\":{%s}}}}\n", request.ID, feature)
 		case "hooks/list":
-			cwd, _ := os.Getwd()
 			args, _ := request.Params["cwds"].([]any)
 			if len(args) != 1 || args[0] != cwd {
 				return 12
@@ -668,4 +671,162 @@ func TestTransientCodexError(t *testing.T) {
 			assert.Equal(t, tc.transient, transientCodexError(fmt.Errorf("codex: %w", tc.err)))
 		})
 	}
+}
+
+func TestMovedHookKeptBySetupAndCheck(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	installed := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+	first, err := Install(AgentClaude, installed)
+	require.NoError(t, err)
+	desired := installed
+	desired.Executable = filepath.Join(t.TempDir(), "moved-hook")
+	result, err := Check(t.Context(), AgentClaude, desired)
+	require.NoError(t, err)
+	assert.Equal(t, CheckOK, result.State, result.Reason)
+	plan, err := PlanInstall(AgentClaude, desired)
+	require.NoError(t, err)
+	assert.False(t, plan.Changed)
+	second, err := Install(AgentClaude, desired)
+	require.NoError(t, err)
+	assert.False(t, second.Changed)
+	actual, err := os.ReadFile(first.ConfigPath)
+	require.NoError(t, err)
+	assert.Equal(t, first.Data, actual)
+
+	arguments, timeout := desired, desired
+	arguments.Arguments = []string{"example-marker", "changed"}
+	timeout.Hooks = []Hook{{Event: EventStop, Timeout: time.Second}}
+	for _, changed := range []InstallOptions{arguments, timeout} {
+		result, err := Check(t.Context(), AgentClaude, changed)
+		require.NoError(t, err)
+		assert.Equal(t, CheckOutdated, result.State)
+		plan, err := PlanInstall(AgentClaude, changed)
+		require.NoError(t, err)
+		assert.True(t, plan.Changed)
+		assert.Contains(t, string(plan.Data), "moved-hook")
+	}
+}
+
+func TestCheckMissingInstalledHook(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	missing := filepath.Join(t.TempDir(), "missing-hook")
+	opts := InstallOptions{Executable: missing, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+	_, err := Install(AgentClaude, opts)
+	require.NoError(t, err)
+	result, err := Check(t.Context(), AgentClaude, opts)
+	require.NoError(t, err)
+	assert.Equal(t, CheckUnknown, result.State)
+	assert.Contains(t, result.Reason, missing)
+	opts.Executable, err = os.Executable()
+	require.NoError(t, err)
+	result, err = Check(t.Context(), AgentClaude, opts)
+	require.NoError(t, err)
+	assert.Equal(t, CheckOutdated, result.State)
+	plan, err := Install(AgentClaude, opts)
+	require.NoError(t, err)
+	assert.True(t, plan.Changed)
+	assert.NotContains(t, string(plan.Data), missing)
+}
+
+func TestMovedHookCommandArguments(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command fixture")
+	}
+	t.Chdir(t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	command, err := BuildCommand(executable, "example-marker")
+	require.NoError(t, err)
+	opts := InstallOptions{Command: command.POSIX + " $HOME", Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+	_, err = Install(AgentClaude, opts)
+	require.NoError(t, err)
+	path := filepath.Join(dir, "settings.json")
+	config, err := os.ReadFile(path)
+	require.NoError(t, err)
+	config = []byte(strings.Replace(string(config), "example-marker", "'example-marker'", 1))
+	require.NoError(t, os.WriteFile(path, config, 0o600))
+	moved, err := BuildCommand(filepath.Join(t.TempDir(), "moved-hook"), "example-marker")
+	require.NoError(t, err)
+	opts.Command = moved.POSIX + " $HOME"
+	result, err := Check(t.Context(), AgentClaude, opts)
+	require.NoError(t, err)
+	assert.Equal(t, CheckOK, result.State, result.Reason)
+	plan, err := PlanInstall(AgentClaude, opts)
+	require.NoError(t, err)
+	assert.False(t, plan.Changed)
+	for _, tail := range []string{` "$HOME"`, " $USER", " '$HOME'", ""} {
+		opts.Command = moved.POSIX + tail
+		result, err := Check(t.Context(), AgentClaude, opts)
+		require.NoError(t, err)
+		assert.Equal(t, CheckOutdated, result.State, tail)
+	}
+}
+
+func TestCheckNamedWorkspace(t *testing.T) {
+	start, workspace := t.TempDir(), t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".claude"), 0o700))
+	t.Chdir(start)
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, ".claude", "settings.json"), []byte(`{"disableAllHooks":true}`), 0o600))
+	executable := testserver.InstallExecutable(t, "codex")
+	opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+	_, err := Install(AgentClaude, opts)
+	require.NoError(t, err)
+	opts.WorkspaceDir = workspace
+	result, err := Check(t.Context(), AgentClaude, opts)
+	require.NoError(t, err)
+	assert.Equal(t, CheckDisabled, result.State)
+
+	t.Setenv("CODEX_HOME", t.TempDir())
+	_, err = Install(AgentCodex, opts)
+	require.NoError(t, err)
+	path := filepath.Join(os.Getenv("CODEX_HOME"), "hooks.json")
+	pathJSON, err := json.Marshal(path)
+	require.NoError(t, err)
+	keyJSON, err := json.Marshal(path + ":stop:0:0")
+	require.NoError(t, err)
+	reply := fmt.Sprintf(`{"data":[{"cwd":"CWD","hooks":[{"source":"user","sourcePath":%s,"key":%s,"trustStatus":"trusted","enabled":true}],"errors":[]}]}`, pathJSON, keyJSON)
+	t.Setenv("KIT_HOOK_CHECK_HELPER", "normal")
+	t.Setenv("KIT_HOOK_CHECK_REPLY", reply)
+	t.Setenv("KIT_HOOK_CHECK_CWD", workspace)
+	result, err = Check(t.Context(), AgentCodex, opts)
+	require.NoError(t, err)
+	assert.Equal(t, CheckOK, result.State, result.Reason)
+}
+
+func TestCheckMovedHookWindowsCommand(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows command override")
+	}
+	t.Chdir(t.TempDir())
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	executable := testserver.InstallExecutable(t, "codex")
+	old, err := BuildCommand(executable, "example-marker")
+	require.NoError(t, err)
+	opts := InstallOptions{Command: "unused example-marker", CommandWindows: old.Windows, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+	_, err = Install(AgentCodex, opts)
+	require.NoError(t, err)
+	path := filepath.Join(dir, "hooks.json")
+	pathJSON, err := json.Marshal(path)
+	require.NoError(t, err)
+	keyJSON, err := json.Marshal(path + ":stop:0:0")
+	require.NoError(t, err)
+	t.Setenv("KIT_HOOK_CHECK_HELPER", "normal")
+	t.Setenv("KIT_HOOK_CHECK_REPLY", fmt.Sprintf(`{"data":[{"cwd":"CWD","hooks":[{"source":"user","sourcePath":%s,"key":%s,"trustStatus":"trusted","enabled":true}],"errors":[]}]}`, pathJSON, keyJSON))
+	moved, err := BuildCommand(filepath.Join(t.TempDir(), "moved-hook.exe"), "example-marker")
+	require.NoError(t, err)
+	opts.CommandWindows = moved.Windows
+	result, err := Check(t.Context(), AgentCodex, opts)
+	require.NoError(t, err)
+	assert.Equal(t, CheckOK, result.State, result.Reason)
+	plan, err := PlanInstall(AgentCodex, opts)
+	require.NoError(t, err)
+	assert.False(t, plan.Changed)
 }
