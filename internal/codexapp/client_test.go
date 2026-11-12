@@ -3,14 +3,15 @@ package codexapp
 import (
 	"bufio"
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -32,10 +33,7 @@ func runClientHelper(mode string) int {
 	if mode == "hold-pipes" {
 		// Only the test's cleanup releases stdout, so a blocked read cannot
 		// accidentally finish because this descendant's timer expired.
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, os.Interrupt)
-		<-signals
-		signal.Stop(signals)
+		testserver.WaitForSignal()
 		return 0
 	}
 	if file := os.Getenv("KIT_CODEXAPP_TEST_PID"); file != "" {
@@ -88,13 +86,9 @@ func runClientHelper(mode string) int {
 		fmt.Println(`{"id":2,"result":{"ready":true}}`)
 	}
 	if mode == "block" || mode == "block-close" {
-		if err := os.WriteFile(os.Getenv("KIT_CODEXAPP_TEST_EXIT"), []byte("blocked"), 0o600); err != nil {
+		if err := testserver.WaitForInterrupt(os.Getenv("KIT_CODEXAPP_TEST_EXIT")); err != nil {
 			return 10
 		}
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, os.Interrupt)
-		<-signals
-		signal.Stop(signals)
 	}
 	if file := os.Getenv("KIT_CODEXAPP_TEST_EXIT"); file != "" {
 		_ = os.WriteFile(file, []byte("EOF"), 0o600)
@@ -187,6 +181,35 @@ func TestClientCancellationAndEOF(t *testing.T) {
 				require.NoError(t, err)
 				require.Error(t, process.Signal(syscall.Signal(0)), "the exact child must be reaped before returning")
 				_ = process.Release()
+			}
+		})
+	}
+}
+
+func TestClientCallResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, frame        string
+		discard, wantError bool
+	}{
+		{"missing result", `{"id":1}`, false, true},
+		{"missing discarded result", `{"id":1}`, true, false},
+		{"null result", `{"id":1,"result":null}`, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := Client{ctx: t.Context(), input: io.Discard, output: jsontext.NewDecoder(strings.NewReader(tc.frame))}
+			var result any = "previous value"
+			var destination any = &result
+			if tc.discard {
+				destination = nil
+			}
+			err := client.Call("example/read", nil, destination)
+			if tc.wantError {
+				require.ErrorContains(t, err, "codex example/read: missing result")
+			} else {
+				require.NoError(t, err)
+				if !tc.discard {
+					assert.Nil(t, result)
+				}
 			}
 		})
 	}

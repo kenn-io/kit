@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -33,6 +34,32 @@ func TestMain(m *testing.M) {
 // Native read replies use literal frames independent of the checker's types.
 func runHookCheckHelper(mode string) int {
 	input := bufio.NewScanner(os.Stdin)
+	if record := os.Getenv("KIT_HOOK_CHECK_LAUNCHES"); record != "" {
+		f, err := os.OpenFile(record, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return 14
+		}
+		info, err := f.Stat()
+		if err != nil {
+			return 15
+		}
+		_, _ = f.WriteString("x")
+		_ = f.Close()
+		if mode == "different-failures" {
+			if info.Size() == 0 {
+				mode = "initialize-eof"
+			} else {
+				mode = "config-eof"
+			}
+		}
+		if firstMode, ok := strings.CutPrefix(mode, "first-"); ok {
+			if info.Size() > 0 {
+				mode = "normal"
+			} else {
+				mode = firstMode
+			}
+		}
+	}
 	if mode == "initialize-eof" {
 		_, _ = testserver.Read(input)
 		return 0
@@ -47,6 +74,32 @@ func runHookCheckHelper(mode string) int {
 		}
 		if err != nil {
 			return 9
+		}
+		if mode == "truncated" {
+			fmt.Printf(`{"id":%d,"result":`, request.ID)
+			return 0
+		}
+		if mode == "discovery-no-result" && request.Method == "hooks/list" {
+			fmt.Printf("{\"id\":%d}\n", request.ID)
+			continue
+		}
+		if mode == "cancel-eof" {
+			_ = os.Stdout.Close()
+			return waitHookCleanup(input)
+		}
+		if mode == "rpc-error" || mode == "error-cleanup" {
+			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
+			if mode == "error-cleanup" {
+				return waitHookCleanup(input)
+			}
+			continue
+		}
+		if mode == "malformed" {
+			fmt.Printf("{\"id\":%d,\"result\":}\n", request.ID)
+			return 0
+		}
+		if (mode == "config-eof" && request.Method == "config/read") || (mode == "discovery-eof" && request.Method == "hooks/list") {
+			return 0
 		}
 		if mode == "rpc-timeout" || (mode == "discovery-timeout" && request.Method == "hooks/list") {
 			input.Scan()
@@ -78,6 +131,9 @@ func runHookCheckHelper(mode string) int {
 				response = strings.ReplaceAll(os.Getenv("KIT_HOOK_CHECK_REPLY"), "CWD", strings.ReplaceAll(cwd, `\`, `\\`))
 			}
 			fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, response)
+			if mode == "success-cleanup" {
+				return waitHookCleanup(input)
+			}
 		default:
 			return 13
 		}
@@ -86,35 +142,57 @@ func runHookCheckHelper(mode string) int {
 	return 0
 }
 
+func waitHookCleanup(input *bufio.Scanner) int {
+	input.Scan()
+	if err := testserver.WaitForInterrupt(os.Getenv("KIT_HOOK_CHECK_EVENT")); err != nil {
+		return 10
+	}
+	return 0
+}
+
 func TestCheckCodexNativeStates(t *testing.T) {
 	executable := testserver.InstallExecutable(t, "codex")
 	for _, tc := range []struct {
 		name, mode, trust, extra string
 		want                     CheckState
-		reason                   string
+		reason, nextStep         string
+		launches                 int
+		cancelDuringCleanup      bool
 	}{
-		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, ""},
-		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, ""},
-		{"reviewed", "normal", "trusted", "", CheckOK, ""},
-		{"native source capitalization", "source-case", "trusted", "", CheckOK, ""},
-		{"managed", "normal", "managed", "", CheckOK, ""},
-		{"other applications and source files", "mixed", "trusted", "", CheckOK, ""},
-		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, ""},
-		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "didn't list all"},
-		{"partial discovery", "partial", "trusted", "", CheckUnknown, "didn't list all"},
-		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, ""},
-		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, ""},
-		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated, ""},
-		{"disabled handler", "disabled", "untrusted", "", CheckDisabled, ""},
-		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled, ""},
-		{"unknown trust", "normal", "future", "", CheckUnknown, "unknown hook trust state"},
-		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, "invalid hooks"},
-		{"missing discovery data", "missing-data", "", "", CheckUnknown, "didn't report hooks for this folder"},
-		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, "EOF"},
-		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded"},
-		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded"},
-		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex"},
-		{"Windows command override", "windows-command", "trusted", "", CheckOK, ""},
+		{"discovery missing result", "discovery-no-result", "", "", CheckUnknown, "", "hooks in Codex", 1, false},
+		{"custom cause during cleanup", "cancel-eof", "", "", CheckUnknown, "context canceled", "", 1, true},
+		{"native error during cleanup", "error-cleanup", "", "", CheckUnknown, "native failure", "", 1, true},
+		{"success during cleanup", "success-cleanup", "trusted", "", CheckOK, "", "", 1, true},
+		{"retry initialization", "first-initialize-eof", "trusted", "", CheckOK, "", "", 2, false},
+		{"retry config", "first-config-eof", "trusted", "", CheckOK, "", "", 2, false},
+		{"retry truncated reply", "first-truncated", "trusted", "", CheckOK, "", "", 2, false},
+		{"last failure step", "different-failures", "", "", CheckUnknown, "EOF", "Codex config", 2, false},
+		{"retry discovery", "first-discovery-eof", "trusted", "", CheckOK, "", "", 2, false},
+		{"retry timeout", "first-rpc-timeout", "trusted", "", CheckOK, "", "", 2, false},
+		{"native error is terminal", "rpc-error", "", "", CheckUnknown, "native failure", "", 1, false},
+		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", "", 1, false},
+		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", "", 1, false},
+		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", "", 1, false},
+		{"reviewed", "normal", "trusted", "", CheckOK, "", "", 1, false},
+		{"native source capitalization", "source-case", "trusted", "", CheckOK, "", "", 1, false},
+		{"managed", "normal", "managed", "", CheckOK, "", "", 1, false},
+		{"other applications and source files", "mixed", "trusted", "", CheckOK, "", "", 1, false},
+		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, "", "", 1, false},
+		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "didn't list all", "", 1, false},
+		{"partial discovery", "partial", "trusted", "", CheckUnknown, "didn't list all", "", 1, false},
+		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, "", "", 1, false},
+		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, "", "", 1, false},
+		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated, "", "", 1, false},
+		{"disabled handler", "disabled", "untrusted", "", CheckDisabled, "", "", 1, false},
+		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled, "", "", 1, false},
+		{"unknown trust", "normal", "future", "", CheckUnknown, "unknown hook trust state", "", 1, false},
+		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, "invalid hooks", "", 1, false},
+		{"missing discovery data", "missing-data", "", "", CheckUnknown, "didn't report hooks for this folder", "", 1, false},
+		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, "EOF", "", 2, false},
+		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded", "", 1, false},
+		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded", "", 1, false},
+		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex", "", 0, false},
+		{"Windows command override", "windows-command", "trusted", "", CheckOK, "", "", 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.mode == "windows-command" && runtime.GOOS != "windows" {
@@ -199,23 +277,59 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.mode == "missing-data" {
 				reply = `{}`
 			}
+			record := filepath.Join(dir, "launches")
+			t.Setenv("KIT_HOOK_CHECK_LAUNCHES", record)
+			event := filepath.Join(dir, "event")
+			t.Setenv("KIT_HOOK_CHECK_EVENT", event)
 			t.Setenv("KIT_HOOK_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_HOOK_CHECK_REPLY", reply)
 			if tc.mode == "missing-cli" {
 				t.Setenv("PATH", t.TempDir())
 			}
 			ctx := t.Context()
-			if strings.HasSuffix(tc.mode, "timeout") {
+			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, time.Second)
 				defer cancel()
 			}
 			started := time.Now()
-			result, err := Check(ctx, AgentCodex, opts)
-			if strings.HasSuffix(tc.mode, "timeout") {
+			var result CheckResult
+			if tc.cancelDuringCleanup {
+				var cancel context.CancelCauseFunc
+				ctx, cancel = context.WithCancelCause(ctx)
+				defer cancel(nil)
+				finished := make(chan struct{})
+				go func() {
+					result, err = Check(ctx, AgentCodex, opts)
+					close(finished)
+				}()
+				require.Eventually(t, func() bool { _, err := os.Stat(event); return err == nil }, 30*time.Second, 10*time.Millisecond)
+				select {
+				case <-finished:
+					require.FailNow(t, "check returned before cancellation")
+				default:
+				}
+				cancel(errors.New("caller stopped"))
+				select {
+				case <-finished:
+				case <-time.After(30 * time.Second):
+					require.FailNow(t, "cancellation must finish the check")
+				}
+			} else {
+				result, err = Check(ctx, AgentCodex, opts)
+			}
+			if tc.mode == "rpc-timeout" || tc.mode == "discovery-timeout" {
 				assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound the native check")
 			}
 			require.NoError(t, err)
+			if tc.launches > 0 {
+				launches, err := os.ReadFile(record)
+				require.NoError(t, err)
+				assert.Len(t, launches, tc.launches)
+			}
+			if tc.nextStep != "" {
+				assert.Contains(t, result.NextStep, tc.nextStep)
+			}
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.reason != "" {
 				assert.Contains(t, result.Reason, tc.reason)
@@ -536,5 +650,22 @@ func TestCheckCodexConformance(t *testing.T) {
 			want = CheckDisabled
 		}
 		assert.Equal(t, want, result.State, result.Reason)
+	}
+}
+
+func TestTransientCodexError(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		transient bool
+	}{
+		{"pipe read", &os.PathError{Op: "read", Err: os.ErrClosed}, true},
+		{"pipe write", &os.PathError{Op: "write", Err: syscall.EPIPE}, true},
+		{"permission", &os.PathError{Op: "read", Err: os.ErrPermission}, false},
+		{"canceled", context.Canceled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.transient, transientCodexError(fmt.Errorf("codex: %w", tc.err)))
+		})
 	}
 }

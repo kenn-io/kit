@@ -35,6 +35,7 @@ type CheckResult struct {
 
 // Check inspects registrations without running hooks or changing hook config or trust.
 // Starting Codex app-server may create state files and install bundled skills.
+// A transient failure can cause Check to start Codex a second time.
 // Invalid install options return an error. Inspection failures return unknown.
 func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, error) {
 	spec, path, hooks, opts, argv, err := prepareRegistration(agent, opts)
