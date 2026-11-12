@@ -16,8 +16,8 @@ import (
 
 func fixture() mcpskills.Config {
 	return mcpskills.Config{ToolName: "alpha.skills", Guides: []mcpskills.Guide{
-		{Entry: mcpskills.Entry{Name: "workflow", Title: "Workflow", Summary: "Start here"}, Markdown: "# Workflow\n\nAuthored text.\n"},
-		{Entry: mcpskills.Entry{Name: "search", Title: "Search", Summary: "Find things"}, Markdown: "# Search\n"},
+		{Entry: {Name: "workflow", Title: "Workflow", Summary: "Start here"}, Markdown: "# Workflow\n\nAuthored text.\n"},
+		{Entry: {Name: "search", Title: "Search", Summary: "Find things"}, Markdown: "# Search\n"},
 	}}
 }
 
