@@ -127,6 +127,8 @@ func (c *Catalog) Tool() *mcp.Tool {
 // Register adds the tool to server using its raw handler. The caller owns server
 // instructions, authentication, authorization and any deferred tool discovery;
 // register the tool outside optional sections if it must always be present.
+// SDK AddTool replaces an existing tool with the same name, so the caller must
+// choose or reserve a unique tool name.
 func (c *Catalog) Register(server *mcp.Server) {
 	server.AddTool(c.Tool(), c.Handler)
 }

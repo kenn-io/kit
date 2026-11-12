@@ -37,7 +37,9 @@ func exampleConsumer(ctx context.Context, toolName string) error {
 	catalog, err := mcpskills.New(mcpskills.Config{
 		ToolName: toolName,
 		Guides: []mcpskills.Guide{{
-			Entry:    {Name: "workflow", Title: "Workflow", Summary: "Start here"},
+			Name:     "workflow",
+			Title:    "Workflow",
+			Summary:  "Start here",
 			Markdown: bundledWorkflow + "\nUse " + searchTool + " to find items.\n",
 		}},
 	})

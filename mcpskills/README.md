@@ -50,6 +50,8 @@ or tool annotation without changing the catalog.
 Append `catalog.Instructions()` before constructing the server; it preserves
 caller control over existing instructions. Register the guide tool outside
 optional sections to keep it always discoverable. Applications own their
+tool names: SDK `AddTool` replaces an existing tool with the same name, so choose
+or reserve a unique name. Applications own their
 catalog filters, deferred loading, authentication, authorization, result bounds
 and transport. The helper does not bypass that policy or turn guide text into
 an action. See the runnable two-consumer example and in-memory protocol tests.
