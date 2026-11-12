@@ -21,6 +21,9 @@ func TestInstallEntryOwnership(t *testing.T) {
 	}{
 		{"claude launch", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"},"timeout":9007199254740993}}}`, agentmcp.Server{Command: "new"}, `{"type":"stdio","command":"new","env":{"USER":"keep"},"timeout":9007199254740993}`, "9007199254740993"},
 		{"claude transport", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{URL: "https://example.com"}, `{"type":"http","url":"https://example.com"}`, ""},
+		{"claude http to sse", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"http","url":"https://example.com","headers":{"X":"user"}}}}`, agentmcp.Server{URL: "https://example.com", Transport: agentmcp.TransportSSE}, `{"type":"sse","url":"https://example.com"}`, ""},
+		{"claude sse to http", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"sse","url":"https://example.com","headers":{"X":"user"}}}}`, agentmcp.Server{URL: "https://example.com"}, `{"type":"http","url":"https://example.com"}`, ""},
+		{"claude url ampersand", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"http","url":"https://example.com/?a=1&b=2","timeout":9007199254740993}}}`, agentmcp.Server{URL: "https://example.com/?a=1&b=3"}, `{"type":"http","url":"https://example.com/?a=1&b=3","timeout":9007199254740993}`, "a=1&b=3"},
 		{"other agent", agentmcp.AgentGemini, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{Command: "new"}, `{"command":"new"}`, ""},
 		{"codex section", agentmcp.AgentCodex, "[mcp_servers.example]\ncommand='old'\nenabled=false\n[mcp_servers.example.env]\nMODE='test'\n", agentmcp.Server{Command: "new"}, `{"command":"new","enabled":false,"env":{"MODE":"test"}}`, ""},
 		{"codex dotted", agentmcp.AgentCodex, "mcp_servers.example.command='old'\nmcp_servers.example.env.MODE='test'\n", agentmcp.Server{Command: "new"}, `{"command":"new","env":{"MODE":"test"}}`, ""},
@@ -37,6 +40,7 @@ func TestInstallEntryOwnership(t *testing.T) {
 			require.NoError(t, err)
 			if tc.exact != "" {
 				assert.Contains(t, string(result.Data), tc.exact)
+				assert.Contains(t, string(result.Data), "9007199254740993")
 			}
 			key := "mcpServers"
 			if tc.agent == agentmcp.AgentCodex {

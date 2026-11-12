@@ -57,7 +57,12 @@ func MCP(agent, name string, server agentmcp.Server) Item {
 			_, err := agentmcp.Install(a, agentmcp.InstallOptions{Name: name, Server: server})
 			return err
 		}
-		item.Commands = func() (agenthook.Commands, error) { return agentmcp.Command(a, name, server) }
+	}
+	item.Commands = func() (agenthook.Commands, error) {
+		if !known {
+			return agenthook.Commands{}, fmt.Errorf("%w for agent %q", agentmcp.ErrCommandUnavailable, agent)
+		}
+		return agentmcp.Command(a, name, server)
 	}
 	return item
 }

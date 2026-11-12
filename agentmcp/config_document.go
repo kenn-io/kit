@@ -48,7 +48,7 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 			fields = maps.Clone(fields)
 			dropEmptyFields(fields)
 			if agent == AgentCodex {
-				entry = mergeEntry(fields, entry)
+				entry = mergeEntry(agent, fields, entry)
 			}
 			previous = fields
 		}
@@ -78,7 +78,7 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 }
 
 // mergeEntry keeps user settings only for a launch-only update on the same transport.
-func mergeEntry(previous, desired map[string]any) map[string]any {
+func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 	launch := []string{"command", "args", "url", "type"}
 	for key := range desired {
 		if !slices.Contains(launch, key) {
@@ -87,7 +87,9 @@ func mergeEntry(previous, desired map[string]any) map[string]any {
 	}
 	_, oldURL := previous["url"]
 	_, newURL := desired["url"]
-	if oldURL != newURL {
+	oldType, _ := previous["type"].(string)
+	newType, _ := desired["type"].(string)
+	if oldURL != newURL || (agent == AgentClaude && oldURL && oldType != newType) {
 		return desired
 	}
 	merged := maps.Clone(previous)

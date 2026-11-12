@@ -29,7 +29,7 @@ func Command(agent Agent, name string, server Server) (agenthook.Commands, error
 		allowed += ":@/."
 	}
 	if strings.ContainsFunc(name, func(r rune) bool { return !strings.ContainsRune(allowed, r) }) {
-		return agenthook.Commands{}, fmt.Errorf("%s mcp add rejects server name %q", agent, name)
+		return agenthook.Commands{}, fmt.Errorf("%s mcp add rejects server name %q: %w", agent, name, ErrCommandUnavailable)
 	}
 	args := []string{"mcp", "add"}
 	if agent == AgentClaude {

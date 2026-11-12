@@ -46,7 +46,7 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		}
 	}
 	previous, present := servers[name]
-	encoded, err := stdjson.Marshal(entry)
+	encoded, err := encodeJSON(entry)
 	if err != nil {
 		return nil, false, false, err
 	}
@@ -56,9 +56,9 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		decoder.UseNumber()
 		if agent == AgentClaude && decoder.Decode(&fields) == nil && fields != nil {
 			dropEmptyFields(fields)
-			entry = mergeEntry(fields, entry)
-			previous, _ = stdjson.Marshal(fields)
-			encoded, _ = stdjson.Marshal(entry)
+			entry = mergeEntry(agent, fields, entry)
+			previous, _ = encodeJSON(fields)
+			encoded, _ = encodeJSON(entry)
 		}
 		if err := previous.Canonicalize(); err != nil {
 			return nil, false, false, err
@@ -104,6 +104,14 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		root.Format()
 	}
 	return append(bom, root.Pack()...), true, present, nil
+}
+
+func encodeJSON(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := stdjson.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(value)
+	return bytes.TrimSpace(buf.Bytes()), err
 }
 
 // Extra contains only whitespace and comments already identified by HuJSON.

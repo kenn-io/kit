@@ -88,6 +88,21 @@ func TestPrint(t *testing.T) {
 		}
 		require.Contains(t, out.String(), "# cursor: manual MCP command unavailable for agent \"cursor\"\n"+command)
 	})
+	for _, tc := range []struct{ name, first, serverName string }{
+		{"unknown agent", "future", "example"},
+		{"unexpressible name", "claude", "a.b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := Print(&out, Options{Agents: []string{tc.first, "codex"}, Items: func(agent string) ([]Item, error) {
+				return []Item{MCP(agent, tc.serverName, agentmcp.Server{Command: "example"})}, nil
+			}})
+			require.NoError(t, err)
+			require.Contains(t, out.String(), "# "+tc.first+": ")
+			require.Contains(t, out.String(), "codex")
+		})
+	}
+
 	t.Run("codex headers", func(t *testing.T) {
 		var out bytes.Buffer
 		err := Print(&out, Options{Agents: []string{"codex"}, Items: func(agent string) ([]Item, error) {
