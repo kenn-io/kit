@@ -23,7 +23,6 @@ func TestCheckConfigStates(t *testing.T) {
 		{"missing name", `{"mcpServers":{"other":{"command":"other"}}}`, agentmcp.AgentClaude, agentmcp.CheckMissing, "The named MCP server is missing", "Install the application's MCP server"},
 		{"outdated Claude", `{"mcpServers":{"example":{"type":"stdio","command":"different"}}}`, agentmcp.AgentClaude, agentmcp.CheckOutdated, "The MCP server settings don't match this application's setup", "Reinstall the application's MCP server"},
 		{"changed connection", "[mcp_servers.example]\ncommand='different'\n", agentmcp.AgentCodex, agentmcp.CheckOutdated, "The MCP server settings don't match this application's setup", "Reinstall the application's MCP server"},
-		{"disabled", "[mcp_servers.example]\ncommand='example'\nenabled=false\n", agentmcp.AgentCodex, agentmcp.CheckOutdated, "The MCP server settings don't match this application's setup", "Reinstall the application's MCP server"},
 		{"malformed", `{"mcpServers":null}`, agentmcp.AgentClaude, agentmcp.CheckUnknown, "mcpServers must be an object", "Correct the agent MCP config"},
 		{"unsupported native check", "", agentmcp.AgentCopilot, agentmcp.CheckUnknown, "This check can't verify MCP servers in this agent", "Inspect the server in the agent"},
 	} {
@@ -90,6 +89,7 @@ func TestCheckCodex(t *testing.T) {
 		next        string
 	}{
 		// Matching config must reach the probe despite extra settings and explicit defaults.
+		{"disabled", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "Codex returned the server's tools", false, "[mcp_servers.example]\ncommand='example'\nenabled=false\n", ""},
 		{"matching config with user settings and effective defaults", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "Codex returned the server's tools", false, "[mcp_servers.example]\ncommand='example'\nenabled=true\nargs=[]\nenv={}\nrequired=true\nstartup_timeout_sec=30\nenv_vars=[{name='HOME',source='local'}]\ntools={search={approval_mode='auto'}}\n", ""},
 		{"catalog readiness", `{"data":[{"name":"example","tools":{"ping":{}}}]}`, agentmcp.CheckUnknown, 0, "Codex couldn't confirm the server's tools are current", false, "[mcp_servers.example]\ncommand='example'\nstartup_readiness='catalog'\n", "Inspect the server in the agent"},
 		{"deadline", "", agentmcp.CheckUnknown, 0, "context deadline exceeded; server startup may need longer", true, "", "Retry once the server is ready"},

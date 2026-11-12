@@ -97,7 +97,11 @@ mcp_servers:
 			if tt.agent == agentmcp.AgentCodex {
 				headerKey = "http_headers"
 			}
-			assert.Equal(t, map[string]any{"url": "https://example.com/mcp", headerKey: map[string]any{"Authorization": "Bearer example"}}, servers["example"])
+			expected := map[string]any{"url": "https://example.com/mcp", headerKey: map[string]any{"Authorization": "Bearer example"}}
+			if tt.name == "toml sections" || tt.name == "toml dotted" || tt.name == "yaml" {
+				expected["env"] = map[string]any{"MODE": "test"}
+			}
+			assert.Equal(t, expected, servers["example"])
 			if tt.agent == agentmcp.AgentHermes {
 				assert.Equal(t, before["defaults"], after["defaults"])
 				assert.Equal(t, before["copy"], after["copy"])
@@ -140,7 +144,7 @@ func TestJSONCReplacementKeepsFieldComments(t *testing.T) {
 	require.NoError(t, err)
 	parsed.Standardize()
 	doc := decodeConfig(t, agentmcp.AgentGemini, parsed.Pack())
-	assert.Equal(t, map[string]any{"mcpServers": map[string]any{"example": map[string]any{"httpUrl": "https://example.com/mcp"}}}, doc)
+	assert.Equal(t, map[string]any{"mcpServers": map[string]any{"example": map[string]any{"httpUrl": "https://example.com/mcp", "env": map[string]any{"MODE": "test"}}}}, doc)
 	second, err := agentmcp.Install(agentmcp.AgentGemini, opts)
 	require.NoError(t, err)
 	assert.False(t, second.Changed)

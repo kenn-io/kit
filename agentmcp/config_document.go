@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"slices"
+	"maps"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -43,19 +43,19 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	}
 	previous, present := servers[name]
 	if present {
-		if fields, ok := previous.(map[string]any); checkOnly && ok {
-			dropEmptyFields(fields)
-			for key, value := range fields {
-				if !slices.Contains(connectionFields, key) || key == "enabled" && value == true {
-					delete(fields, key)
-				}
-			}
+		comparison := entry
+		if fields, ok := previous.(map[string]any); ok {
+			entry = mergeEntry(fields, entry)
+			previous = maps.Clone(fields)
+			dropEmptyFields(previous.(map[string]any))
+			comparison = maps.Clone(entry)
+			dropEmptyFields(comparison)
 		}
 		before, err := encodeDocument(agent, previous)
 		if err != nil {
 			return nil, false, false, err
 		}
-		after, err := encodeDocument(agent, entry)
+		after, err := encodeDocument(agent, comparison)
 		if err != nil {
 			return nil, false, false, err
 		}
@@ -76,8 +76,30 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	return data, true, present, err
 }
 
-// connectionFields are the Codex settings Check compares with Server.
-var connectionFields = []string{"command", "args", "env", "url", "http_headers", "bearer_token_env_var", "enabled"}
+// mergeEntry replaces launch fields and overlays the values the app supplied.
+// Other settings and map entries belong to the user.
+func mergeEntry(previous, desired map[string]any) map[string]any {
+	merged := maps.Clone(previous)
+	for _, key := range []string{"command", "args", "url", "httpUrl", "type", "transport"} {
+		delete(merged, key)
+	}
+	for key, value := range desired {
+		if additions, ok := value.(map[string]string); ok {
+			fields, _ := merged[key].(map[string]any)
+			fields = maps.Clone(fields)
+			if fields == nil {
+				fields = make(map[string]any)
+			}
+			for name, setting := range additions {
+				fields[name] = setting
+			}
+			merged[key] = fields
+		} else {
+			merged[key] = value
+		}
+	}
+	return merged
+}
 
 // dropEmptyFields removes the empty args and env written by agent add commands.
 func dropEmptyFields(fields map[string]any) {
