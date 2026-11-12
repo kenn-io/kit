@@ -22,9 +22,9 @@ func TestDayBoundsSweep(t *testing.T) {
 	zones := []string{
 		"America/Santiago", "America/Havana", "America/Toronto", "Europe/London",
 		"Pacific/Apia", "Australia/Lord_Howe", "Asia/Kathmandu", "Pacific/Chatham",
-		"America/St_Johns", "Antarctica/Casey", "Asia/Tokyo", "UTC",
+		"America/St_Johns", "America/Goose_Bay", "Antarctica/Casey", "Asia/Tokyo", "UTC",
 	}
-	periods := [][2]int{{2010, 2012}, {2025, 2027}}
+	periods := [][2]int{{2005, 2007}, {2010, 2012}, {2025, 2027}}
 	for _, name := range zones {
 		for _, years := range periods {
 			t.Run(name, func(t *testing.T) {
@@ -75,18 +75,21 @@ func sweepZone(t *testing.T, loc *time.Location, firstYear, lastYear int) {
 		}
 	}
 
-	// The days partition time with no overlap and no hole: every sample lies
-	// in the day DateOf names, except where a zone set its clock back across
-	// midnight (St Johns until 2011) and showed an earlier date again. Those
-	// samples belong to the latest date already shown.
+	// The days partition time with no overlap and no hole, and DayOf names
+	// the day containing each sample. That is the date DateOf reports,
+	// except where a zone set its clock back across midnight (St Johns and
+	// Goose Bay until 2010-2011) and showed an earlier date again; there it
+	// is the latest date already shown.
 	latest := DateOf(first.midnight(), loc)
 	for at := first.midnight().Add(24 * time.Hour); at.Before(last.midnight()); at = at.Add(step) {
 		d := DateOf(at, loc)
 		if d.Compare(latest) > 0 {
 			latest = d
 		}
-		b := got[latest]
-		if !assert.True(t, b.ok && !at.Before(b.start) && at.Before(b.end), "%s (%s) outside the day of %s", at.UTC(), d, latest) {
+		day := DayOf(at, loc)
+		b := got[day]
+		if !assert.Equal(t, latest, day, "DayOf(%s)", at.UTC()) ||
+			!assert.True(t, b.ok && !at.Before(b.start) && at.Before(b.end), "%s outside the day of %s", at.UTC(), day) {
 			return
 		}
 	}

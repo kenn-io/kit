@@ -49,6 +49,23 @@ func ExampleDateOf() {
 	// 2026-09-05 2026-09-06
 }
 
+// ExampleDayOf places an instant on its day. In 2010 St John's set its
+// clocks back at 00:01, so 03:00Z showed 23:30 on the previous date after the
+// next day had begun. DateOf reports the clock's date; DayOf reports the day
+// whose DayBounds contain the instant.
+func ExampleDayOf() {
+	stJohns, err := civiltime.LoadZone("America/St_Johns")
+	if err != nil {
+		panic(err)
+	}
+	at := time.Date(2010, time.November, 7, 3, 0, 0, 0, time.UTC)
+	fmt.Println(at.In(stJohns).Format("2006-01-02 15:04 MST"))
+	fmt.Println(civiltime.DateOf(at, stJohns), civiltime.DayOf(at, stJohns))
+	// Output:
+	// 2010-11-06 23:30 NST
+	// 2010-11-06 2010-11-07
+}
+
 // ExampleRangeBounds turns an inclusive range of dates into the instants a
 // query should cover.
 func ExampleRangeBounds() {

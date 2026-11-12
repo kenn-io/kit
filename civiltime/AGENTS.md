@@ -15,6 +15,9 @@ live here; products own those and call these functions.
   for every date in every zone; `TestDayBoundsSweep` checks it against a
   brute-force scan. Never build a day from `time.Date(y, m, d, 0, 0, 0, 0,
   loc)` or `start.Add(24 * time.Hour)`.
+- `DayOf(t, loc)` names the date whose `DayBounds` interval contains `t`;
+  products place instants with it. `DateOf` stays the plain local date. They
+  differ only where a zone set its clock back across midnight.
 - A date a zone skipped (Pacific/Apia 2011-12-30) is `ok=false` with an empty
   interval at the next existing day's start, never an error from
   `DayBounds`.

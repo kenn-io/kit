@@ -50,6 +50,7 @@ func TestDayBoundsVectors(t *testing.T) {
 		{"Australia/Lord_Howe", "2026-04-05", "2026-04-04T13:00:00Z", "2026-04-05T13:30:00Z", 0},
 		{"Asia/Kathmandu", "2026-03-08", "2026-03-07T18:15:00Z", "2026-03-08T18:15:00Z", 24},
 		{"UTC", "2026-03-08", "2026-03-08T00:00:00Z", "2026-03-09T00:00:00Z", 24},
+		{"America/St_Johns", "2010-11-07", "2010-11-07T02:30:00Z", "2010-11-08T03:30:00Z", 25},
 	}
 	for _, tt := range tests {
 		t.Run(tt.zone+" "+tt.date, func(t *testing.T) {
@@ -129,6 +130,38 @@ func TestDateOf(t *testing.T) {
 	assert.Equal(t, mustDate(t, "2026-09-05"), DateOf(mustInstant(t, "2026-09-06T03:30:00Z"), santiago))
 	assert.Equal(t, mustDate(t, "2026-09-06"), DateOf(mustInstant(t, "2026-09-06T04:00:00Z"), santiago))
 	assert.Equal(t, mustDate(t, "2026-09-06"), DateOf(mustInstant(t, "2026-09-06T03:30:00Z"), nil))
+}
+
+func TestDayOf(t *testing.T) {
+	tests := []struct {
+		zone, at, dateOf, dayOf string
+	}{
+		// Clocks went back at 00:01 NDT, so 03:00Z shows 2010-11-06 23:30
+		// NST after 2010-11-07 has begun.
+		{"America/St_Johns", "2010-11-07T03:00:00Z", "2010-11-06", "2010-11-07"},
+		{"America/St_Johns", "2010-11-07T02:30:30Z", "2010-11-07", "2010-11-07"},
+		{"America/St_Johns", "2010-11-07T02:29:59Z", "2010-11-06", "2010-11-06"},
+		{"America/St_Johns", "2010-11-07T03:30:00Z", "2010-11-07", "2010-11-07"},
+		{"America/Santiago", "2026-09-06T03:30:00Z", "2026-09-05", "2026-09-05"},
+		{"America/Santiago", "2026-09-06T04:00:00Z", "2026-09-06", "2026-09-06"},
+		{"Pacific/Apia", "2011-12-30T10:00:00Z", "2011-12-31", "2011-12-31"},
+		{"UTC", "2026-03-08T23:59:59Z", "2026-03-08", "2026-03-08"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.zone+" "+tt.at, func(t *testing.T) {
+			loc := mustZone(t, tt.zone)
+			at := mustInstant(t, tt.at)
+
+			day := DayOf(at, loc)
+
+			assert.Equal(t, mustDate(t, tt.dateOf), DateOf(at, loc))
+			assert.Equal(t, mustDate(t, tt.dayOf), day)
+			start, end, ok := DayBounds(day, loc)
+			require.True(t, ok)
+			assert.True(t, !at.Before(start) && at.Before(end))
+		})
+	}
+	assert.Equal(t, mustDate(t, "2026-03-08"), DayOf(mustInstant(t, "2026-03-08T12:00:00Z"), nil))
 }
 
 func TestResolveLocal(t *testing.T) {

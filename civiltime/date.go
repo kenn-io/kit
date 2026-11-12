@@ -125,6 +125,8 @@ func dateOf(t time.Time) Date {
 }
 
 // DateOf returns the local date of instant t in loc. A nil loc means UTC.
+// To place t on a day, use DayOf: the two differ only for instants just after
+// a zone set its clock back across midnight.
 func DateOf(t time.Time, loc *time.Location) Date {
 	return dateOf(t.In(orUTC(loc)))
 }

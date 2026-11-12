@@ -107,7 +107,8 @@ func exists(d Date, loc *time.Location) bool {
 // time. Where a zone once set its clock back across midnight
 // (America/St_Johns until 2011 changed at 00:01), the instants after the
 // change show date d again after d+1 has begun; they belong to d+1 here,
-// while DateOf reports d for them.
+// while DateOf reports d for them. DayOf gives the day an instant belongs
+// to under this rule.
 func DayBounds(d Date, loc *time.Location) (start, end time.Time, ok bool) {
 	loc = orUTC(loc)
 	if !d.valid() {
@@ -122,6 +123,25 @@ func DayBounds(d Date, loc *time.Location) (start, end time.Time, ok bool) {
 		return time.Time{}, time.Time{}, false
 	}
 	return start, end, exists(d, loc)
+}
+
+// DayOf returns the day instant t belongs to in loc: the date whose DayBounds
+// interval contains t. A nil loc means UTC. It equals DateOf(t, loc) except
+// where a zone set its clock back across midnight and showed the previous
+// date again after the next day began (America/St_Johns until 2011): there
+// DateOf reports the earlier date and DayOf the later one.
+func DayOf(t time.Time, loc *time.Location) Date {
+	loc = orUTC(loc)
+	d := DateOf(t, loc)
+	// t shows d, so it is never before d's start; step forward past days
+	// that ended before it. Real zones need at most one step.
+	for range 3 {
+		if _, end, _ := DayBounds(d, loc); t.Before(end) {
+			return d
+		}
+		d = d.AddDays(1)
+	}
+	return d
 }
 
 // RangeBounds returns the half-open interval of instants covering the
