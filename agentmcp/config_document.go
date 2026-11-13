@@ -108,7 +108,6 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 		}
 		merged["env"] = env
 	}
-
 	return merged
 }
 

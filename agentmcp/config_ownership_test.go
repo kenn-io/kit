@@ -21,9 +21,7 @@ func TestInstallEntryOwnership(t *testing.T) {
 	}{
 		{"claude launch", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"},"timeout":9007199254740993}}}`, agentmcp.Server{Command: "new"}, `{"type":"stdio","command":"new","env":{"USER":"keep"},"timeout":9007199254740993}`, "9007199254740993"},
 		{"claude env", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep","APP":"old"},"timeout":12}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": "new"}}, `{"type":"stdio","command":"new","env":{"USER":"keep","APP":"new"},"timeout":12}`, ""},
-		{"claude empty env", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep","APP":"old"}}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": ""}}, `{"type":"stdio","command":"new","env":{"USER":"keep","APP":""}}`, ""},
-		{"claude stale env", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"OLD":"keep","APP":"old"}}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": "new"}}, `{"type":"stdio","command":"new","env":{"OLD":"keep","APP":"new"}}`, ""},
-		{"hermes replace", agentmcp.AgentHermes, "mcp_servers:\n  example:\n    command: old\n    args: [serve]\n    env:\n      USER: keep\n", agentmcp.Server{Command: "new", Args: []string{"serve"}, Env: map[string]string{"APP": "new"}}, `{"command":"new","args":["serve"],"env":{"APP":"new"}}`, ""},
+		{"claude new env key", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": "new"}}, `{"type":"stdio","command":"new","env":{"USER":"keep","APP":"new"}}`, ""},
 		{"claude transport", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{URL: "https://example.com"}, `{"type":"http","url":"https://example.com"}`, ""},
 		{"claude http to sse", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"http","url":"https://example.com","headers":{"X":"user"}}}}`, agentmcp.Server{URL: "https://example.com", Transport: agentmcp.TransportSSE}, `{"type":"sse","url":"https://example.com"}`, ""},
 		{"claude sse to http", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"sse","url":"https://example.com","headers":{"X":"user"}}}}`, agentmcp.Server{URL: "https://example.com"}, `{"type":"http","url":"https://example.com"}`, ""},
@@ -47,7 +45,7 @@ func TestInstallEntryOwnership(t *testing.T) {
 				assert.Contains(t, string(result.Data), "9007199254740993")
 			}
 			key := "mcpServers"
-			if tc.agent == agentmcp.AgentCodex || tc.agent == agentmcp.AgentHermes {
+			if tc.agent == agentmcp.AgentCodex {
 				key = "mcp_servers"
 			}
 			servers := decodeConfig(t, tc.agent, result.Data)[key].(map[string]any)

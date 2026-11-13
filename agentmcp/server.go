@@ -26,10 +26,9 @@ type Server struct {
 	Transport Transport
 	Command   string
 	Args      []string
-
-	Env     map[string]string
-	URL     string
-	Headers map[string]string
+	Env       map[string]string
+	URL       string
+	Headers   map[string]string
 	// BearerTokenEnvVar references a client environment variable for Claude or
 	// Codex remote servers. It cannot accompany an Authorization header.
 	// Names must match [A-Za-z_][A-Za-z0-9_]*.
