@@ -12,12 +12,14 @@ import (
 )
 
 // Options describes agent selection and the items each agent needs.
-// Items is required. SetupCommand is required by Run and supplies missing next steps.
+// Items is required. SetupCommand is required by Run and supplies the default repair command.
 type Options struct {
 	Agents       []string
 	CheckOnly    bool
 	SetupCommand string
-	Items        func(agent string) ([]Item, error)
+	// RepairCommand is shown as written for repairable missing or outdated items.
+	RepairCommand string
+	Items         func(agent string) ([]Item, error)
 }
 
 // Item describes one independently installed and checked piece of setup.
@@ -39,12 +41,12 @@ type entry struct {
 func normalizeAgents(names []string) ([]string, error) {
 	var result []string
 	for _, name := range names {
-		agent, err := agenthook.ParseAgent(name)
-		if err != nil {
-			return nil, err
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" || strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_-") != "" || name[0] == '-' {
+			return nil, fmt.Errorf("invalid agent name %q", name)
 		}
-		if !slices.Contains(result, string(agent)) {
-			result = append(result, string(agent))
+		if !slices.Contains(result, name) {
+			result = append(result, name)
 		}
 	}
 	return result, nil
@@ -68,7 +70,10 @@ func resolve(opts Options) ([]entry, error) {
 	var entries []entry
 	for _, name := range names {
 		agent := agenthook.Agent(name)
-		profile, _ := agenthook.LookupProfile(agent)
+		profile, ok := agenthook.LookupProfile(agent)
+		if !ok {
+			profile.DisplayName = name
+		}
 		items, err := opts.Items(string(agent))
 		if err != nil {
 			return nil, fmt.Errorf("%s items: %w", profile.DisplayName, err)
@@ -90,12 +95,19 @@ func detectedAgents() []string {
 	return names
 }
 
-func (opts Options) repairCommand() string {
+func (opts Options) setupCommand() string {
 	if len(opts.Agents) == 0 {
 		return opts.SetupCommand
 	}
 	names, _ := normalizeAgents(opts.Agents)
 	return opts.SetupCommand + " --agent " + strings.Join(names, ",")
+}
+
+func (opts Options) repairCommand() string {
+	if opts.RepairCommand != "" {
+		return opts.RepairCommand
+	}
+	return opts.setupCommand()
 }
 
 // Run installs each item once in order, then checks final readiness. On cancellation,
@@ -138,6 +150,8 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		}
 		if status.State != StateOK && (status.NextStep == "" || e.item.retrySetup && (status.State == StateMissing || status.State == StateOutdated)) {
 			status.NextStep = opts.repairCommand()
+		} else if (status.State == StateMissing || status.State == StateOutdated) && e.item.Install != nil && status.NextStep != opts.repairCommand() {
+			status.NextStep += "; " + opts.repairCommand()
 		}
 		if row := report.Rows[i]; row.State == StateFailed {
 			if status.NextStep == "" || status.Reason == "" || !strings.Contains(row.Reason, status.Reason) {

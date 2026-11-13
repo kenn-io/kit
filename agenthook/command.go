@@ -68,7 +68,10 @@ func profileCommands(spec profileSpec, commands Commands) (native, windows strin
 	native = commands.Native
 	switch spec.windowsCommandStyle {
 	case windowsCommandNested:
-		windows = commands.Windows
+		// The harness runs commandWindows in PowerShell and command in a POSIX
+		// shell on every other platform.
+		native = commands.POSIX
+		windows = commands.PowerShell
 	case windowsCommandPowerShell:
 		native = commands.POSIX
 		windows = commands.PowerShell

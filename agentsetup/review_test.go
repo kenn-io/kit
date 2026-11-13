@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/agenthook"
 	"go.kenn.io/kit/agentmcp"
 	"go.kenn.io/kit/internal/codexapp/testserver"
 )
@@ -39,19 +40,85 @@ func TestMCPGuidance(t *testing.T) {
 	require.Contains(t, status.NextStep, "Install Claude Code")
 	status, err = MCP("muse", "example", server).Check(t.Context())
 	require.NoError(t, err)
-	require.Equal(t, StateFailed, status.State)
-	require.Equal(t, "Choose an agent that supports MCP", status.NextStep)
+	require.Equal(t, StateUnknown, status.State)
+	require.Equal(t, "Inspect the server in muse", status.NextStep)
+}
+
+func TestAgentNameValidation(t *testing.T) {
+	for _, name := range []string{"../future", "future/name", "future;echo", "future$(cmd)", "-option", ""} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			_, err := Run(t.Context(), Options{Agents: []string{name}, SetupCommand: "app setup", Items: func(string) ([]Item, error) { called = true; return nil, nil }})
+			require.Error(t, err)
+			require.False(t, called)
+		})
+	}
+	_, err := normalizeAgents([]string{"future-agent_2"})
+	require.NoError(t, err)
+}
+
+func TestUnknownAgentAndKnownAgent(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	opts := Options{Agents: []string{" Future ", "claude", "FUTURE"}, SetupCommand: "app setup", Items: func(agent string) ([]Item, error) {
+		return []Item{Hooks(agent, agenthook.InstallOptions{Executable: "example", Marker: "example", Hooks: []agenthook.Hook{{Event: agenthook.EventStop}}}), MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
+	}}
+	report, err := Run(t.Context(), opts)
+	require.NoError(t, err)
+	require.Len(t, report.Rows, 4)
+	require.Equal(t, "future", report.Rows[0].AgentName)
+	require.Equal(t, StateUnknown, report.Rows[0].State)
+	require.Equal(t, "claude", report.Rows[2].Agent)
+	require.Equal(t, StateUnknown, report.Rows[2].State)
+	require.Equal(t, StateUnknown, report.Rows[3].State)
 }
 
 func TestPrint(t *testing.T) {
-	t.Run("unsupported", func(t *testing.T) {
+	t.Run("cursor then claude", func(t *testing.T) {
 		var out bytes.Buffer
-		err := Print(&out, Options{Agents: []string{"claude", "cursor"}, Items: func(agent string) ([]Item, error) {
+		err := Print(&out, Options{Agents: []string{"cursor", "claude"}, Items: func(agent string) ([]Item, error) {
 			return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
 		}})
-		require.Error(t, err)
-		require.Contains(t, out.String(), "claude")
+		require.NoError(t, err)
+		command := "claude mcp add"
+		if runtime.GOOS == "windows" {
+			command = "& 'claude' 'mcp' 'add'"
+		}
+		require.Contains(t, out.String(), "# manual MCP command unavailable for agent \"cursor\"\n"+command)
 	})
+	for _, tc := range []struct{ name, first, serverName string }{
+		{"unknown agent", "future", "example"},
+		{"unexpressible name", "claude", "a.b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := Print(&out, Options{Agents: []string{tc.first, "codex"}, Items: func(agent string) ([]Item, error) {
+				return []Item{MCP(agent, tc.serverName, agentmcp.Server{Command: "example"})}, nil
+			}})
+			require.NoError(t, err)
+			require.Regexp(t, "(?m)^# .*"+tc.first, out.String())
+			require.Contains(t, out.String(), "codex")
+		})
+	}
+
+	t.Run("codex headers", func(t *testing.T) {
+		var out bytes.Buffer
+		err := Print(&out, Options{Agents: []string{"codex"}, Items: func(agent string) ([]Item, error) {
+			return []Item{MCP(agent, "example", agentmcp.Server{URL: "https://example.com", Headers: map[string]string{"Authorization": "example"}})}, nil
+		}})
+		require.NoError(t, err)
+		require.Contains(t, out.String(), "# codex mcp add cannot express literal HTTP headers")
+	})
+	t.Run("invalid", func(t *testing.T) {
+		var out bytes.Buffer
+		err := Print(&out, Options{Agents: []string{"claude"}, Items: func(agent string) ([]Item, error) {
+			return []Item{MCP(agent, "example", agentmcp.Server{})}, nil
+		}})
+		require.Error(t, err)
+	})
+
 	t.Run("defaults without installed agents", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		var out bytes.Buffer

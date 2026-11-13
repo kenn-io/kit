@@ -1,0 +1,79 @@
+package agenthook
+
+import (
+	"errors"
+	"strings"
+)
+
+// powerShellHookWords accepts literal words without evaluating shell syntax.
+func powerShellHookWords(command string) ([]string, error) {
+	const shellSyntax = "$`\";|&<>(){}@,#\r\n"
+	fail := func() ([]string, error) {
+		return nil, errors.New("hook command requires shell interpretation")
+	}
+	command = strings.TrimLeft(command, " \t")
+	called := strings.HasPrefix(command, "& ") || strings.HasPrefix(command, "&\t")
+	if called {
+		command = strings.TrimLeft(command[1:], " \t")
+	}
+	// PowerShell runs a quoted executable only after the & call operator.
+	if !called && (strings.HasPrefix(command, "'") || strings.HasPrefix(command, `"`)) {
+		return fail()
+	}
+	var words []string
+	for len(command) > 0 {
+		var word strings.Builder
+		started := false
+		for len(command) > 0 && command[0] != ' ' && command[0] != '\t' {
+			char := command[0]
+			if char == '"' {
+				// A double-quoted word is literal unless it holds $ or a
+				// backtick, which PowerShell expands, or an escaped quote.
+				end := strings.IndexByte(command[1:], '"')
+				if end < 0 || strings.ContainsAny(command[1:end+1], "$`") ||
+					strings.HasPrefix(command[end+2:], `"`) {
+					return fail()
+				}
+				started = true
+				word.WriteString(command[1 : end+1])
+				command = command[end+2:]
+				continue
+			}
+			if char == '\'' {
+				started = true
+				command = command[1:]
+				closed := false
+				for len(command) > 0 {
+					if command[0] == '\'' {
+						command = command[1:]
+						if len(command) > 0 && command[0] == '\'' {
+							word.WriteByte('\'')
+							command = command[1:]
+							continue
+						}
+						closed = true
+						break
+					}
+					word.WriteByte(command[0])
+					command = command[1:]
+				}
+				if !closed {
+					return fail()
+				}
+				continue
+			}
+			if strings.ContainsRune(shellSyntax, rune(char)) || (!started && char == '~') {
+				return fail()
+			}
+			started = true
+			word.WriteByte(char)
+			command = command[1:]
+		}
+		words = append(words, word.String())
+		command = strings.TrimLeft(command, " \t")
+	}
+	if len(words) == 0 || words[0] == "" {
+		return fail()
+	}
+	return words, nil
+}

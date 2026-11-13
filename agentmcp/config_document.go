@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"maps"
 	"slices"
 
 	"github.com/BurntSushi/toml"
@@ -43,13 +44,13 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	}
 	previous, present := servers[name]
 	if present {
-		if fields, ok := previous.(map[string]any); checkOnly && ok {
+		if fields, ok := previous.(map[string]any); ok {
+			fields = maps.Clone(fields)
 			dropEmptyFields(fields)
-			for key, value := range fields {
-				if !slices.Contains(connectionFields, key) || key == "enabled" && value == true {
-					delete(fields, key)
-				}
+			if agent == AgentCodex {
+				entry = mergeEntry(agent, fields, entry)
 			}
+			previous = fields
 		}
 		before, err := encodeDocument(agent, previous)
 		if err != nil {
@@ -76,8 +77,28 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	return data, true, present, err
 }
 
-// connectionFields are the Codex settings Check compares with Server.
-var connectionFields = []string{"command", "args", "env", "url", "http_headers", "bearer_token_env_var", "enabled"}
+// mergeEntry keeps user settings only for a launch-only update on the same transport.
+func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
+	launch := []string{"command", "args", "url", "type"}
+	for key := range desired {
+		if !slices.Contains(launch, key) {
+			return desired
+		}
+	}
+	_, oldURL := previous["url"]
+	_, newURL := desired["url"]
+	oldType, _ := previous["type"].(string)
+	newType, _ := desired["type"].(string)
+	if oldURL != newURL || (agent == AgentClaude && oldURL && oldType != newType) {
+		return desired
+	}
+	merged := maps.Clone(previous)
+	for _, key := range launch {
+		delete(merged, key)
+	}
+	maps.Copy(merged, desired)
+	return merged
+}
 
 // dropEmptyFields removes the empty args and env written by agent add commands.
 func dropEmptyFields(fields map[string]any) {

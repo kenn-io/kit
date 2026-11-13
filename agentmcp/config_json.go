@@ -2,6 +2,7 @@ package agentmcp
 
 import (
 	"bytes"
+	stdjson "encoding/json"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -44,21 +45,31 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 			return nil, false, false, errors.New("mcpServers must be an object")
 		}
 	}
-	encoded, err := json.Marshal(entry, json.Deterministic(true))
+	previous, present := servers[name]
+	encoded, err := encodeJSON(entry)
 	if err != nil {
 		return nil, false, false, err
 	}
-	previous, present := servers[name]
 	if present {
 		var fields map[string]any
-		if agent == AgentClaude && json.Unmarshal(previous, &fields) == nil {
+		decoder := stdjson.NewDecoder(bytes.NewReader(previous))
+		decoder.UseNumber()
+		if agent == AgentClaude && decoder.Decode(&fields) == nil && fields != nil {
 			dropEmptyFields(fields)
-			previous, _ = json.Marshal(fields)
+			entry = mergeEntry(agent, fields, entry)
+			previous, err = encodeJSON(fields)
+			if err != nil {
+				return nil, false, false, err
+			}
+			encoded, err = encodeJSON(entry)
+			if err != nil {
+				return nil, false, false, err
+			}
 		}
 		if err := previous.Canonicalize(); err != nil {
 			return nil, false, false, err
 		}
-		canonical := jsontext.Value(encoded)
+		canonical := jsontext.Value(bytes.Clone(encoded))
 		if err := canonical.Canonicalize(); err != nil {
 			return nil, false, false, err
 		}
@@ -99,6 +110,14 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		root.Format()
 	}
 	return append(bom, root.Pack()...), true, present, nil
+}
+
+func encodeJSON(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := stdjson.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(value)
+	return bytes.TrimSpace(buf.Bytes()), err
 }
 
 // Extra contains only whitespace and comments already identified by HuJSON.

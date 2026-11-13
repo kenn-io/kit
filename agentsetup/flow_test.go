@@ -163,6 +163,16 @@ func TestCheckOnlyGuidance(t *testing.T) {
 			require.Equal(t, want, report.Rows[1].NextStep)
 		})
 	}
+	report, err := Run(t.Context(), Options{Agents: []string{"claude"}, SetupCommand: "app setup", RepairCommand: "app repair", CheckOnly: true, Items: func(string) ([]Item, error) {
+		return []Item{
+			{Name: "built-in", Install: func(context.Context) error { return nil }, Check: func(context.Context) (Status, error) { return Status{State: StateOutdated}, nil }},
+			{Name: "custom", Install: func(context.Context) error { return nil }, Check: func(context.Context) (Status, error) { return Status{State: StateMissing, NextStep: "custom fix"}, nil }},
+		}, nil
+	}})
+	require.NoError(t, err)
+	require.Equal(t, "app repair", report.Rows[0].NextStep)
+	require.Equal(t, "custom fix; app repair", report.Rows[1].NextStep)
+
 	require.False(t, installed)
 }
 

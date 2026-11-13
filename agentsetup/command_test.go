@@ -65,3 +65,14 @@ func TestCommandCancellationWithNoItems(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	require.Empty(t, out)
 }
+
+func TestCommandRepairGuidance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	opts := Options{RepairCommand: "app agent-hook install", Items: func(agent string) ([]Item, error) {
+		return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
+	}}
+	out, err := execute(t.Context(), opts, "--agent", "codex", "--check")
+	require.ErrorIs(t, err, ErrNotReady)
+	require.Contains(t, out, "Run `app setup --agent codex --check` afterwards.")
+}

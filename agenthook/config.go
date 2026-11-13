@@ -36,6 +36,9 @@ type Hook struct {
 // reject raw commands and matchers, and match the marker the same way. Hooks
 // defaults to every event supported by the selected profile.
 type InstallOptions struct {
+	// WorkspaceDir selects the workspace Check inspects and where setup and
+	// Check resolve relative executables. Empty means the process directory.
+	WorkspaceDir      string
 	ConfigPath        string
 	Executable        string
 	Arguments         []string
@@ -64,7 +67,7 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 		return Result{}, err
 	}
 	data, changed, err := planConfig(
-		spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false,
+		spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false, opts.WorkspaceDir,
 	)
 	if err != nil {
 		return Result{}, err
@@ -81,6 +84,12 @@ func prepareRegistration(agent Agent, opts InstallOptions) (profileSpec, string,
 	spec, ok := profiles[agent]
 	if !ok {
 		return profileSpec{}, "", nil, opts, nil, fmt.Errorf("unsupported agent hook integration %q", agent)
+	}
+	if spec.windowsCommandStyle == windowsCommandNested && commands.Windows != "" && commands.PowerShell == "" {
+		return profileSpec{}, "", nil, opts, nil, fmt.Errorf(
+			"%s runs Windows hooks in PowerShell; set CommandPowerShell instead of CommandWindows",
+			spec.profile.DisplayName,
+		)
 	}
 	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
 	argv, err := execArgv(spec, opts)
@@ -156,7 +165,7 @@ func PlanUninstall(agent Agent, configPath, marker string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	data, changed, err := planConfig(spec, path, marker, "", "", nil, nil, true)
+	data, changed, err := planConfig(spec, path, marker, "", "", nil, nil, true, "")
 	if err != nil {
 		return Result{}, err
 	}
@@ -272,11 +281,11 @@ func planConfig(
 	path, marker, command, commandWindows string,
 	argv []string,
 	hooks []nativeHook,
-	uninstall bool,
+	uninstall bool, dir string,
 ) ([]byte, bool, error) {
 	switch spec.format {
 	case formatNestedJSON:
-		return planNestedJSONConfig(spec, path, marker, command, commandWindows, argv, hooks, uninstall)
+		return planNestedJSONConfig(spec, path, marker, command, commandWindows, argv, hooks, uninstall, dir)
 	case formatDirectJSON:
 		return planDirectJSONConfig(
 			spec, path, marker, command, commandWindows, hooks, uninstall,

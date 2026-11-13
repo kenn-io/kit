@@ -4,8 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
+	"path/filepath"
 
 	"go.kenn.io/kit/pathresolve"
 )
@@ -66,11 +65,16 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
 	}
 	result.HookCount = len(records)
+	cwd, err := filepath.Abs(opts.WorkspaceDir)
+	info, statErr := os.Stat(cwd)
+	if err != nil || statErr != nil || !info.IsDir() {
+		return set(CheckUnknown, fmt.Sprintf("Can't access workspace %q", opts.WorkspaceDir), "Choose a working directory for the hook check")
+	}
 	if len(records) == 0 {
 		return set(CheckMissing, "This application's hooks are not installed", "Install the application's hooks")
 	}
 	if agent == AgentClaude {
-		disabled, err := claudeHooksDisabled(ctx, root)
+		disabled, err := claudeHooksDisabled(ctx, root, cwd)
 		if err != nil {
 			return set(CheckUnknown, err.Error(), "Check Claude Code user, project, and local settings")
 		}
@@ -80,12 +84,12 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 	}
 	state, reason, step := CheckOK, "", ""
 	if agent == AgentCodex {
-		state, reason, step = checkCodex(ctx, path, records)
+		state, reason, step = checkCodex(ctx, path, cwd, records)
 		if state != CheckOK && state != CheckUntrusted {
 			return set(state, reason, step)
 		}
 	}
-	_, changed, err := planConfig(spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false)
+	_, changed, err := planConfig(spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false, cwd)
 	if err != nil {
 		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
 	}
@@ -95,14 +99,14 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 	if state == CheckUntrusted {
 		return set(state, reason, step)
 	}
-	executable := strings.TrimSpace(opts.Executable)
-	if executable == "" {
-		if executable, err = rawHookExecutable(opts.Command, opts.CommandWindows); err != nil {
+	for _, record := range records {
+		words, err := hookWords(record.handler)
+		if err != nil {
 			return set(CheckUnknown, err.Error(), "Use a literal executable for the hook")
 		}
-	}
-	if _, err := exec.LookPath(executable); err != nil {
-		return set(CheckUnknown, fmt.Sprintf("Can't find a usable hook command %q: %v", executable, err), "Install the executable or add its directory to PATH")
+		if err := lookupHookExecutable(cwd, words[0]); err != nil {
+			return set(CheckUnknown, fmt.Sprintf("Can't find a usable hook command %q: %v", words[0], err), "Install the executable or add its directory to PATH")
+		}
 	}
 	if agent == AgentClaude {
 		return set(CheckOK, "Claude Code's user, project, and local settings allow these hooks, and this process can find their command. Organization policy and whether Claude Code loads them have not been checked", "")
@@ -124,6 +128,7 @@ func sameConfigPath(a, b string) bool {
 type ownedRegistration struct {
 	event               string
 	group, handlerIndex int
+	handler             map[string]any
 }
 
 func ownedRegistrations(root map[string]any, path, marker string) ([]ownedRegistration, error) {
@@ -152,7 +157,7 @@ func ownedRegistrations(root map[string]any, path, marker string) ([]ownedRegist
 					return nil, fmt.Errorf("invalid hook handler for %s", event)
 				}
 				if ownsJSONHandler(handler, marker) {
-					records = append(records, ownedRegistration{event, i, j})
+					records = append(records, ownedRegistration{event, i, j, handler})
 				}
 			}
 		}

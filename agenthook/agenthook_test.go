@@ -112,6 +112,25 @@ func TestBuildCommandQuotesPowerShellArguments(t *testing.T) {
 	)
 }
 
+func TestNestedProfilesWritePowerShellCommand(t *testing.T) {
+	for _, agent := range []Agent{AgentCodex, AgentMuse} {
+		t.Run(string(agent), func(t *testing.T) {
+			result, err := PlanInstall(agent, InstallOptions{
+				ConfigPath: filepath.Join(t.TempDir(), "hooks.json"),
+				Executable: "C:\\hook $%`\\hook.exe",
+				Arguments:  []string{"example-marker", "arg $%`"},
+				Marker:     "example-marker",
+				Hooks:      []Hook{{Event: EventStop}},
+			})
+			require.NoError(t, err)
+			var root map[string]any
+			require.NoError(t, json.Unmarshal(result.Data, &root))
+			handler := root["hooks"].(map[string]any)["Stop"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+			assert.Equal(t, "& 'C:\\hook $%`\\hook.exe' 'example-marker' 'arg $%`'", handler["commandWindows"])
+		})
+	}
+}
+
 func TestPlanInstallBuildsCommandFromExecutable(t *testing.T) {
 	result, err := PlanInstall(AgentClaude, InstallOptions{
 		ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
@@ -232,7 +251,7 @@ func TestInstallJSONPreservesOtherHooksAndReplacesOwnedHooks(t *testing.T) {
 	opts := InstallOptions{
 		ConfigPath: path,
 		Command:    command,
-		CommandWindows: `C:\Program Files\middleman.exe agent-hook run ` +
+		CommandPowerShell: `& 'C:\Program Files\middleman.exe' agent-hook run ` +
 			testMarker,
 		Marker: testMarker,
 		Hooks: []Hook{
@@ -406,10 +425,10 @@ func TestInstallMuseCreatesStartableSettings(t *testing.T) {
 	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "settings.json")
 	opts := InstallOptions{
-		ConfigPath:     path,
-		Command:        "/opt/hook " + testMarker,
-		CommandWindows: `C:\hook.exe ` + testMarker,
-		Marker:         testMarker,
+		ConfigPath:        path,
+		Command:           "/opt/hook " + testMarker,
+		CommandPowerShell: `& 'C:\hook.exe' ` + testMarker,
+		Marker:            testMarker,
 		Hooks: []Hook{{
 			Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second,
 		}},
@@ -428,7 +447,7 @@ func TestInstallMuseCreatesStartableSettings(t *testing.T) {
       "hooks": [{
         "type": "command",
         "command": "/opt/hook `+testMarker+`",
-        "commandWindows": "C:\\hook.exe `+testMarker+`",
+        "commandWindows": "& 'C:\\hook.exe' `+testMarker+`",
         "timeout": 2
       }]
     }]
@@ -598,6 +617,17 @@ func TestCopilotCommandSelectionKeepsBashPOSIXOnWindows(t *testing.T) {
 
 	assert.Equal(t, `'C:\Program Files\hook.exe' run`, native)
 	assert.Equal(t, `& 'C:\Program Files\hook.exe' 'run'`, windows)
+}
+
+func TestPlanInstallCodexRequiresPowerShellOverride(t *testing.T) {
+	_, err := PlanInstall(AgentCodex, InstallOptions{
+		ConfigPath:     filepath.Join(t.TempDir(), "hooks.json"),
+		Command:        "/opt/hook " + testMarker,
+		CommandWindows: `"C:\Program Files\hook.exe" ` + testMarker,
+		Marker:         testMarker,
+		Hooks:          []Hook{{Event: EventStop}},
+	})
+	require.ErrorContains(t, err, "set CommandPowerShell")
 }
 
 func TestPlanInstallCopilotDistinguishesWin32AndPowerShellOverrides(t *testing.T) {

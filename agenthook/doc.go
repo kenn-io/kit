@@ -27,8 +27,10 @@
 // record per terminal.
 //
 // Applications identify their hooks with a stable marker embedded in the
-// command. Reinstalling replaces commands carrying that marker even when the
-// executable path changed, and uninstalling removes only those commands.
+// command. Reinstalling keeps a marked hook whose executable moved when its
+// active command arguments and other settings match and the installed executable
+// resolves, and otherwise writes the requested executable. Uninstalling removes
+// only marked commands.
 // Nested JSON reinstalls retain the group and handler positions of existing
 // event/matcher registrations. Changed matchers reuse single-handler groups
 // in the same event, and new registrations append after existing groups.
@@ -49,20 +51,23 @@
 // Check inspects an application's registrations for Claude Code or Codex without
 // executing hooks or changing hook config or trust. Starting Codex app-server may
 // create state files and install bundled skills. Pass the desired InstallOptions
-// directly. State is ok, missing, outdated, untrusted, modified, disabled,
-// or unknown; Reason and NextStep explain any action needed.
-// Executable lookup uses the checking process's environment and PATH.
+// directly. Set WorkspaceDir to inspect another workspace; it defaults to the
+// process directory, and a missing workspace is unknown. State is ok, missing,
+// outdated, untrusted, modified, disabled, or unknown; Reason and NextStep
+// explain any action needed. Executable lookup uses the checking process's
+// environment and PATH, with relative executable paths resolved in the workspace
+// during both installation and Check.
 // Plain command strings use POSIX syntax on every platform. Codex's active
-// commandWindows override uses Win32 argument quoting on Windows.
+// commandWindows override uses PowerShell syntax on Windows.
 // Missing registrations return missing before inspecting disablement or starting
 // Codex.
-// Codex checks its current workspace's effective feature, discovery, enablement,
+// Codex checks the selected workspace's effective feature, discovery, enablement,
 // and trust through app-server. For discovered Codex hooks, states take precedence:
 // disabled, modified, outdated, untrusted, ok. Only enabled trusted or managed
 // hooks can be ok. Review consent remains with Codex's /hooks interface.
 // Claude Code has no native hook probe here: ok covers its active user
 // registrations, disableAllHooks in user, project, and local settings for the
-// current directory, and executable resolution. Managed policy remains unverified.
+// selected workspace, and executable resolution. Managed policy remains unverified.
 // Raw POSIX commands inspect only the executable word; argument execution remains
 // unverified. Executable expansions, compound commands, and executable lookup
 // failures return unknown with the reason and a corrective step. Neither check

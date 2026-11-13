@@ -22,8 +22,9 @@ func TestCheckConfigStates(t *testing.T) {
 		{"missing file", "", agentmcp.AgentClaude, agentmcp.CheckMissing, "The named MCP server is missing", "Install the application's MCP server"},
 		{"missing name", `{"mcpServers":{"other":{"command":"other"}}}`, agentmcp.AgentClaude, agentmcp.CheckMissing, "The named MCP server is missing", "Install the application's MCP server"},
 		{"outdated Claude", `{"mcpServers":{"example":{"type":"stdio","command":"different"}}}`, agentmcp.AgentClaude, agentmcp.CheckOutdated, "The MCP server settings don't match this application's setup", "Reinstall the application's MCP server"},
+		{"disabled old command", "[mcp_servers.example]\ncommand='different'\nenabled=false\n", agentmcp.AgentCodex, agentmcp.CheckFailed, "The MCP server is disabled", "Set `enabled = true` for `mcp_servers.example` in Codex's config.toml"},
+		{"disabled matching command", "[mcp_servers.example]\ncommand='example'\nenabled=false\n", agentmcp.AgentCodex, agentmcp.CheckFailed, "The MCP server is disabled", "Set `enabled = true` for `mcp_servers.example` in Codex's config.toml"},
 		{"changed connection", "[mcp_servers.example]\ncommand='different'\n", agentmcp.AgentCodex, agentmcp.CheckOutdated, "The MCP server settings don't match this application's setup", "Reinstall the application's MCP server"},
-		{"disabled", "[mcp_servers.example]\ncommand='example'\nenabled=false\n", agentmcp.AgentCodex, agentmcp.CheckOutdated, "The MCP server settings don't match this application's setup", "Reinstall the application's MCP server"},
 		{"malformed", `{"mcpServers":null}`, agentmcp.AgentClaude, agentmcp.CheckUnknown, "mcpServers must be an object", "Correct the agent MCP config"},
 		{"unsupported native check", "", agentmcp.AgentCopilot, agentmcp.CheckUnknown, "This check can't verify MCP servers in this agent", "Inspect the server in the agent"},
 	} {

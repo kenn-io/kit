@@ -2,6 +2,6 @@
 
 package agenthook
 
-func rawHookExecutable(command, _ string) (string, error) {
-	return posixHookExecutable(command)
+func rawHookWords(command, _ string) ([]string, error) {
+	return posixHookWords(command)
 }
