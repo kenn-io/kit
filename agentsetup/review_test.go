@@ -86,7 +86,7 @@ func TestPrint(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			command = "& 'claude' 'mcp' 'add'"
 		}
-		require.Contains(t, out.String(), "# cursor: manual MCP command unavailable for agent \"cursor\"\n"+command)
+		require.Contains(t, out.String(), "# manual MCP command unavailable for agent \"cursor\"\n"+command)
 	})
 	for _, tc := range []struct{ name, first, serverName string }{
 		{"unknown agent", "future", "example"},
@@ -98,7 +98,7 @@ func TestPrint(t *testing.T) {
 				return []Item{MCP(agent, tc.serverName, agentmcp.Server{Command: "example"})}, nil
 			}})
 			require.NoError(t, err)
-			require.Contains(t, out.String(), "# "+tc.first+": ")
+			require.Regexp(t, "(?m)^# .*"+tc.first, out.String())
 			require.Contains(t, out.String(), "codex")
 		})
 	}
@@ -109,7 +109,7 @@ func TestPrint(t *testing.T) {
 			return []Item{MCP(agent, "example", agentmcp.Server{URL: "https://example.com", Headers: map[string]string{"Authorization": "example"}})}, nil
 		}})
 		require.NoError(t, err)
-		require.Contains(t, out.String(), "# codex: codex mcp add cannot express literal HTTP headers")
+		require.Contains(t, out.String(), "# codex mcp add cannot express literal HTTP headers")
 	})
 	t.Run("invalid", func(t *testing.T) {
 		var out bytes.Buffer

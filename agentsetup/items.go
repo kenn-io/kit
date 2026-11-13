@@ -85,7 +85,8 @@ func Print(w io.Writer, opts Options) error {
 		}
 		commands, err := e.item.Commands()
 		if errors.Is(err, agentmcp.ErrCommandUnavailable) {
-			if _, err := fmt.Fprintf(w, "# %s: %s\n", e.agent, err); err != nil {
+			// Each unavailable-command error already names its agent.
+			if _, err := fmt.Fprintf(w, "# %s\n", err); err != nil {
 				return err
 			}
 			continue
