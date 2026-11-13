@@ -34,11 +34,6 @@ type Server struct {
 	// Codex remote servers. It cannot accompany an Authorization header.
 	// Names must match [A-Za-z_][A-Za-z0-9_]*.
 	BearerTokenEnvVar string
-	// OptionalArgs lists flag names retained from an existing entry, matching
-	// --flag and --flag=value. Separate value tokens are not retained. Supplied
-	// args with the same name take priority. This field does not affect rendered
-	// standalone configuration or commands.
-	OptionalArgs []string
 }
 
 var bearerEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

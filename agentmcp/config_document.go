@@ -6,13 +6,12 @@ import (
 	"io"
 	"maps"
 	"slices"
-	"strings"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 )
 
-func planDocument(agent Agent, original []byte, name string, entry map[string]any, optionalArgs []string, checkOnly bool) ([]byte, bool, bool, error) {
+func planDocument(agent Agent, original []byte, name string, entry map[string]any, checkOnly bool) ([]byte, bool, bool, error) {
 	doc := map[string]any{}
 	if len(original) > 0 {
 		if agent == AgentCodex {
@@ -49,7 +48,7 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 			fields = maps.Clone(fields)
 			dropEmptyFields(fields)
 			if agent == AgentCodex {
-				entry = mergeEntry(agent, fields, entry, optionalArgs)
+				entry = mergeEntry(agent, fields, entry)
 			}
 			previous = fields
 		}
@@ -79,7 +78,7 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 }
 
 // mergeEntry keeps user settings for a launch and env update on the same transport.
-func mergeEntry(agent Agent, previous, desired map[string]any, optionalArgs []string) map[string]any {
+func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 	launch := []string{"command", "args", "url", "type"}
 	for key := range desired {
 		if key != "env" && !slices.Contains(launch, key) {
@@ -109,36 +108,7 @@ func mergeEntry(agent Agent, previous, desired map[string]any, optionalArgs []st
 		}
 		merged["env"] = env
 	}
-	if len(optionalArgs) > 0 {
-		args, _ := desired["args"].([]string)
-		carried := make(map[string]bool, len(args))
-		for _, arg := range args {
-			name, _, _ := strings.Cut(arg, "=")
-			carried[name] = true
-		}
-		buckets := make([][]string, len(args)+1)
-		position := 0
-		old, _ := previous["args"].([]any)
-		for _, value := range old {
-			arg, valid := value.(string)
-			name, _, _ := strings.Cut(arg, "=")
-			if valid && slices.Contains(optionalArgs, name) && !carried[name] {
-				index := min(position, len(args))
-				buckets[index] = append(buckets[index], arg)
-			} else {
-				position++
-			}
-		}
-		combined := make([]string, 0, len(args)+len(old))
-		for i, arg := range args {
-			combined = append(combined, buckets[i]...)
-			combined = append(combined, arg)
-		}
-		combined = append(combined, buckets[len(args)]...)
-		if len(combined) > 0 {
-			merged["args"] = combined
-		}
-	}
+
 	return merged
 }
 

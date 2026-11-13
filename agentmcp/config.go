@@ -13,8 +13,8 @@ import (
 // InstallOptions registers one caller-owned server name. An existing entry
 // for Claude Code and Codex keeps user settings when the supplied entry contains
 // only launch fields and env and uses the same transport. Supplied env values
-// override matching user values; other env values and OptionalArgs flags are
-// kept in position unless supplied args carry the same flag name.
+// override matching user values; other env values are kept. Args follow the
+// application; hand-added arguments make Check report outdated.
 // Env keys no longer supplied remain in the entry and must be removed manually.
 // Other entries are replaced.
 // ConfigPath overrides the user config path with a file using the same top-level
@@ -43,7 +43,7 @@ func MarshalConfig(agent Agent, name string, server Server) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, _, _, err := planConfig(agent, nil, name, entry, nil)
+	data, _, _, err := planConfig(agent, nil, name, entry)
 	return data, err
 }
 
@@ -57,11 +57,11 @@ func prepareConfig(agent Agent, name string, server Server) (map[string]any, err
 	return server.native(agent)
 }
 
-func planConfig(agent Agent, original []byte, name string, entry map[string]any, optionalArgs []string) ([]byte, bool, bool, error) {
+func planConfig(agent Agent, original []byte, name string, entry map[string]any) ([]byte, bool, bool, error) {
 	if agent == AgentCodex || agent == AgentHermes {
-		return planDocument(agent, original, name, entry, optionalArgs, false)
+		return planDocument(agent, original, name, entry, false)
 	}
-	return planJSON(agent, original, name, entry, optionalArgs)
+	return planJSON(agent, original, name, entry)
 }
 
 // PlanInstall computes a registration without writing files. Other server
@@ -84,7 +84,7 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Result{}, fmt.Errorf("read MCP config %s: %w", path, err)
 	}
-	data, changed, _, err := planConfig(agent, original, opts.Name, entry, opts.Server.OptionalArgs)
+	data, changed, _, err := planConfig(agent, original, opts.Name, entry)
 	if err != nil {
 		return Result{}, fmt.Errorf("plan MCP config %s: %w", path, err)
 	}
