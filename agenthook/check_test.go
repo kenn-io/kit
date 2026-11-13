@@ -223,8 +223,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				command, err := BuildCommand(literal, "example-marker")
 				require.NoError(t, err)
 				opts.Command = "example-missing-hook-executable example-marker"
-				opts.CommandWindows = command.Windows
-				encoded, err := json.Marshal(opts.CommandWindows)
+				opts.CommandPowerShell = command.PowerShell
+				encoded, err := json.Marshal(opts.CommandPowerShell)
 				require.NoError(t, err)
 				extra += `,"commandWindows":` + string(encoded)
 			}
@@ -820,11 +820,11 @@ func TestCheckMovedHookWindowsCommand(t *testing.T) {
 	t.Chdir(t.TempDir())
 	dir := t.TempDir()
 	t.Setenv("CODEX_HOME", dir)
-	executable := testserver.InstallExecutable(t, "codex")
-	old, err := BuildCommand(executable, "example-marker")
-	require.NoError(t, err)
-	opts := InstallOptions{Command: "unused example-marker", CommandWindows: old.Windows, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
-	_, err = Install(AgentCodex, opts)
+	testserver.InstallExecutable(t, "codex")
+	executable := filepath.Join(t.TempDir(), "hook $%`.exe")
+	require.NoError(t, os.WriteFile(executable, []byte("hook"), 0o700))
+	opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker", "arg $%`"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+	first, err := Install(AgentCodex, opts)
 	require.NoError(t, err)
 	path := filepath.Join(dir, "hooks.json")
 	pathJSON, err := json.Marshal(path)
@@ -833,15 +833,14 @@ func TestCheckMovedHookWindowsCommand(t *testing.T) {
 	require.NoError(t, err)
 	t.Setenv("KIT_HOOK_CHECK_HELPER", "normal")
 	t.Setenv("KIT_HOOK_CHECK_REPLY", fmt.Sprintf(`{"data":[{"cwd":"CWD","hooks":[{"source":"user","sourcePath":%s,"key":%s,"trustStatus":"trusted","enabled":true}],"errors":[]}]}`, pathJSON, keyJSON))
-	moved, err := BuildCommand(filepath.Join(t.TempDir(), "moved-hook.exe"), "example-marker")
-	require.NoError(t, err)
-	opts.CommandWindows = moved.Windows
+	opts.Executable = filepath.Join(t.TempDir(), "moved $%`.exe")
 	result, err := Check(t.Context(), AgentCodex, opts)
 	require.NoError(t, err)
 	assert.Equal(t, CheckOK, result.State, result.Reason)
 	plan, err := PlanInstall(AgentCodex, opts)
 	require.NoError(t, err)
 	assert.False(t, plan.Changed)
+	assert.Equal(t, first.Data, plan.Data)
 }
 
 func TestMovedCodexHooksKeepMatchingPositions(t *testing.T) {

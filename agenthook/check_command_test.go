@@ -1,7 +1,6 @@
 package agenthook
 
 import (
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,13 +34,29 @@ func TestPosixHookWords(t *testing.T) {
 	}
 }
 
-func TestRawHookWordsWindowsCompound(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("CommandWindows is selected on Windows")
+func TestPowerShellHookWords(t *testing.T) {
+	for _, tc := range []struct {
+		name, command string
+		want          []string
+	}{
+		{"generated literals", "& 'C:\\hook $%`\\hook.exe' 'example-marker' 'a''b $%`' ''", []string{"C:\\hook $%`\\hook.exe", "example-marker", "a'b $%`", ""}},
+		{"short path", `C:\Users\RUNNER~1\hook.exe example-marker`, []string{`C:\Users\RUNNER~1\hook.exe`, "example-marker"}},
+		{"percent", `C:\hook%1.exe 100%`, []string{`C:\hook%1.exe`, "100%"}},
+		{"variable", `C:\hook.exe $value`, nil},
+		{"double quote", `"C:\hook.exe" example-marker`, nil},
+		{"compound", `C:\hook.exe example-marker & other`, nil},
+		{"tilde", `~/hook example-marker`, nil},
+		{"unterminated", `& 'C:\hook.exe`, nil},
+		{"newline", "C:\\hook.exe\nother", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			words, err := powerShellHookWords(tc.command)
+			if tc.want == nil {
+				require.ErrorContains(t, err, "shell interpretation")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, words)
+		})
 	}
-	_, err := rawHookWords("example-missing-hook-executable example-marker", `"C:\example (stable).exe" example-marker & example-missing-hook-executable`)
-	require.ErrorContains(t, err, "shell interpretation")
-	words, err := rawHookWords("", `C:\Users\RUNNER~1\hook.exe example-marker`)
-	require.NoError(t, err)
-	assert.Equal(t, []string{`C:\Users\RUNNER~1\hook.exe`, "example-marker"}, words)
 }

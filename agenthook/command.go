@@ -68,7 +68,7 @@ func profileCommands(spec profileSpec, commands Commands) (native, windows strin
 	native = commands.Native
 	switch spec.windowsCommandStyle {
 	case windowsCommandNested:
-		windows = commands.Windows
+		windows = commands.PowerShell
 	case windowsCommandPowerShell:
 		native = commands.POSIX
 		windows = commands.PowerShell

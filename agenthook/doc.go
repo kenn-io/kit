@@ -58,7 +58,7 @@
 // environment and PATH, with relative executable paths resolved in the workspace
 // during both installation and Check.
 // Plain command strings use POSIX syntax on every platform. Codex's active
-// commandWindows override uses Win32 argument quoting on Windows.
+// commandWindows override uses PowerShell syntax on Windows.
 // Missing registrations return missing before inspecting disablement or starting
 // Codex.
 // Codex checks the selected workspace's effective feature, discovery, enablement,
