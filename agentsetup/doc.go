@@ -9,8 +9,9 @@
 //
 // Claude Code and Codex MCP setup keeps user settings when the supplied entry
 // contains only launch fields and env and uses the same transport. App env values
-// override matching user values. Args follow the application, so hand-added
-// arguments make Check report outdated.
+// override matching user values. Env keys the app stops supplying remain until
+// manually removed. Args follow the application, so hand-added arguments make
+// Check report outdated.
 // Other entries are replaced.
 //
 // RepairCommand supplies the next step for missing or outdated built-in items.
