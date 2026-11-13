@@ -75,15 +75,21 @@ func TestCommandRepairGuidance(t *testing.T) {
 	}}
 	out, err := execute(t.Context(), opts, "--agent", "codex", "--check")
 	require.ErrorIs(t, err, ErrNotReady)
-	require.Contains(t, out, "Attention needed for 1 step.")
 	require.Contains(t, out, "app agent-hook install")
-	require.NotContains(t, out, "afterwards")
+}
 
-	out, err = execute(t.Context(), Options{Items: func(string) ([]Item, error) {
+func TestCommandCheckFooter(t *testing.T) {
+	opts := Options{Items: func(string) ([]Item, error) {
 		return []Item{{Name: "custom", Check: func(context.Context) (Status, error) {
 			return Status{State: StateMissing}, nil
 		}}}, nil
-	}}, "--agent", "codex")
+	}}
+	out, err := execute(t.Context(), opts, "--agent", "codex", "--check")
 	require.ErrorIs(t, err, ErrNotReady)
-	require.Contains(t, out, "Run `app setup --agent codex --check` afterwards.")
+	require.Contains(t, out, "Attention needed for 1 step.")
+	require.NotContains(t, out, "afterwards")
+
+	out, err = execute(t.Context(), opts, "--agent", "codex")
+	require.ErrorIs(t, err, ErrNotReady)
+	require.Contains(t, out, "app setup --agent codex --check")
 }
