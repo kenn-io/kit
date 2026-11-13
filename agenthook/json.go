@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -352,6 +353,9 @@ func sameMovedHook(existing, desired map[string]any, dir string) bool {
 	if err != nil || !slices.Equal(oldWords[1:], newWords[1:]) {
 		return false
 	}
+	if !sameInactiveArguments(existing, desired, oldWords[0], newWords[0]) {
+		return false
+	}
 	oldCopy, newCopy := maps.Clone(existing), maps.Clone(desired)
 	for _, key := range []string{"command", "commandWindows", "args"} {
 		delete(oldCopy, key)
@@ -363,6 +367,30 @@ func sameMovedHook(existing, desired map[string]any, dir string) bool {
 		return false
 	}
 	return lookupHookExecutable(dir, oldWords[0]) == nil
+}
+
+// sameInactiveArguments reports whether the other platform's command, which
+// this platform never runs, is unchanged or names the same moved executable as
+// the active command with the same arguments, so a stale or replaced override
+// gets rewritten.
+func sameInactiveArguments(existing, desired map[string]any, oldExecutable, newExecutable string) bool {
+	if _, exec := existing["args"]; exec {
+		// An exec-form handler has no shell command to compare.
+		return true
+	}
+	key, words := "commandWindows", powerShellHookWords
+	if runtime.GOOS == "windows" {
+		key, words = "command", posixHookWords
+	}
+	oldCommand, _ := existing[key].(string)
+	newCommand, _ := desired[key].(string)
+	if oldCommand == newCommand {
+		return true
+	}
+	oldWords, oldErr := words(oldCommand)
+	newWords, newErr := words(newCommand)
+	return oldErr == nil && newErr == nil && slices.Equal(oldWords[1:], newWords[1:]) &&
+		oldWords[0] == oldExecutable && newWords[0] == newExecutable
 }
 
 // hookWords returns a handler's executable followed by its arguments.

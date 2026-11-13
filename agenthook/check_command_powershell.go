@@ -17,7 +17,7 @@ func powerShellHookWords(command string) ([]string, error) {
 		command = strings.TrimLeft(command[1:], " \t")
 	}
 	// PowerShell runs a quoted executable only after the & call operator.
-	if !called && strings.HasPrefix(command, "'") {
+	if !called && (strings.HasPrefix(command, "'") || strings.HasPrefix(command, `"`)) {
 		return fail()
 	}
 	var words []string
@@ -26,6 +26,19 @@ func powerShellHookWords(command string) ([]string, error) {
 		started := false
 		for len(command) > 0 && command[0] != ' ' && command[0] != '\t' {
 			char := command[0]
+			if char == '"' {
+				// A double-quoted word is literal unless it holds $ or a
+				// backtick, which PowerShell expands, or an escaped quote.
+				end := strings.IndexByte(command[1:], '"')
+				if end < 0 || strings.ContainsAny(command[1:end+1], "$`") ||
+					strings.HasPrefix(command[end+2:], `"`) {
+					return fail()
+				}
+				started = true
+				word.WriteString(command[1 : end+1])
+				command = command[end+2:]
+				continue
+			}
 			if char == '\'' {
 				started = true
 				command = command[1:]

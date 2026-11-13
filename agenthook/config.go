@@ -85,6 +85,12 @@ func prepareRegistration(agent Agent, opts InstallOptions) (profileSpec, string,
 	if !ok {
 		return profileSpec{}, "", nil, opts, nil, fmt.Errorf("unsupported agent hook integration %q", agent)
 	}
+	if spec.windowsCommandStyle == windowsCommandNested && commands.Windows != "" && commands.PowerShell == "" {
+		return profileSpec{}, "", nil, opts, nil, fmt.Errorf(
+			"%s runs Windows hooks in PowerShell; set CommandPowerShell instead of CommandWindows",
+			spec.profile.DisplayName,
+		)
+	}
 	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
 	argv, err := execArgv(spec, opts)
 	if err != nil {

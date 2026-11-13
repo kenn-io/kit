@@ -68,16 +68,10 @@ func profileCommands(spec profileSpec, commands Commands) (native, windows strin
 	native = commands.Native
 	switch spec.windowsCommandStyle {
 	case windowsCommandNested:
-		// The harness runs this in PowerShell; a caller's own Windows command
-		// is still used when it gives no PowerShell one, with the & PowerShell
-		// needs to run a quoted executable.
+		// The harness runs commandWindows in PowerShell and command in a POSIX
+		// shell on every other platform.
+		native = commands.POSIX
 		windows = commands.PowerShell
-		if windows == "" {
-			windows = commands.Windows
-			if strings.HasPrefix(windows, `"`) {
-				windows = "& " + windows
-			}
-		}
 	case windowsCommandPowerShell:
 		native = commands.POSIX
 		windows = commands.PowerShell

@@ -843,6 +843,28 @@ func TestCheckMovedHookWindowsCommand(t *testing.T) {
 	assert.Equal(t, first.Data, plan.Data)
 }
 
+func TestMovedCodexHookReplacesStaleInactiveCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX command fixture")
+	}
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	command, err := BuildCommand(executable, "example-marker")
+	require.NoError(t, err)
+	existing := map[string]any{"type": "command", "command": command.POSIX, "commandWindows": `"C:\\hook.exe" example-marker`}
+	desired := map[string]any{"type": "command", "command": command.POSIX, "commandWindows": command.PowerShell}
+	assert.False(t, sameMovedHook(existing, desired, ""))
+	existing["commandWindows"] = `& 'C:\old.exe' 'example-marker'`
+	desired["commandWindows"] = `& 'C:\new.exe' 'example-marker'`
+	assert.False(t, sameMovedHook(existing, desired, ""))
+}
+
+func TestMovedExecHookIgnoresInactiveCommand(t *testing.T) {
+	existing := map[string]any{"command": `C:\old\hook.exe`, "commandWindows": `C:\old\hook.exe`, "args": []any{"example-marker"}}
+	desired := map[string]any{"command": `C:\new\hook.exe`, "commandWindows": `C:\new\hook.exe`, "args": []any{"example-marker"}}
+	assert.True(t, sameInactiveArguments(existing, desired, `C:\old\hook.exe`, `C:\new\hook.exe`))
+}
+
 func TestMovedCodexHooksKeepMatchingPositions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX command fixture")
@@ -853,15 +875,15 @@ func TestMovedCodexHooksKeepMatchingPositions(t *testing.T) {
 	require.NoError(t, err)
 	moved, err := BuildCommand(filepath.Join(t.TempDir(), "new-hook"), "example-marker", "arg with space")
 	require.NoError(t, err)
-	first := map[string]any{"type": "command", "command": old.POSIX, "commandWindows": "inactive example-marker", "timeout": 2}
-	second := map[string]any{"type": "command", "command": old.POSIX, "commandWindows": "inactive example-marker", "timeout": 1}
+	first := map[string]any{"type": "command", "command": old.POSIX, "commandWindows": old.PowerShell, "timeout": 2}
+	second := map[string]any{"type": "command", "command": old.POSIX, "commandWindows": old.PowerShell, "timeout": 1}
 	hooks := map[string]any{"event": []any{
 		map[string]any{"matcher": "same", "hooks": []any{first}},
 		map[string]any{"matcher": "same", "hooks": []any{second}},
 	}}
 	desired := map[string][]map[string]any{"event": {
-		{"matcher": "same", "hooks": []any{map[string]any{"type": "command", "command": moved.POSIX, "commandWindows": "changed inactive", "timeout": 1}}},
-		{"matcher": "same", "hooks": []any{map[string]any{"type": "command", "command": moved.POSIX, "commandWindows": "changed inactive", "timeout": 2}}},
+		{"matcher": "same", "hooks": []any{map[string]any{"type": "command", "command": moved.POSIX, "commandWindows": moved.PowerShell, "timeout": 1}}},
+		{"matcher": "same", "hooks": []any{map[string]any{"type": "command", "command": moved.POSIX, "commandWindows": moved.PowerShell, "timeout": 2}}},
 	}}
 	require.NoError(t, reconcileOwnedJSONHooks(hooks, desired, "example-marker", "hooks.json", "", true))
 	entries := hooks["event"].([]any)
