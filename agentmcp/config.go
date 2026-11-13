@@ -14,6 +14,7 @@ import (
 // for Claude Code and Codex keeps user settings when the supplied entry contains
 // only launch fields and env and uses the same transport. Supplied env values
 // override matching user values; other env values and OptionalArgs are kept.
+// Env keys no longer supplied remain in the entry and must be removed manually.
 // Other entries are replaced.
 // ConfigPath overrides the user config path with a file using the same top-level
 // schema. Nested Claude local-scope entries and Copilot bare server maps are not

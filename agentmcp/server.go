@@ -27,8 +27,9 @@ type Server struct {
 	Command   string
 	Args      []string
 	// OptionalArgs lists exact whole-token arguments retained from an existing
-	// entry after Args, such as boolean flags. It does not add missing arguments
-	// and is ignored when rendering standalone configuration and commands.
+	// entry after Args, such as boolean flags. It does not retain separate values
+	// for value-taking flags, add missing arguments, or affect standalone config
+	// or rendered commands.
 	OptionalArgs []string
 	Env          map[string]string
 	URL          string
