@@ -1,6 +1,7 @@
 package agenthook
 
 import (
+	"cmp"
 	"errors"
 	"runtime"
 	"strings"
@@ -68,7 +69,9 @@ func profileCommands(spec profileSpec, commands Commands) (native, windows strin
 	native = commands.Native
 	switch spec.windowsCommandStyle {
 	case windowsCommandNested:
-		windows = commands.PowerShell
+		// The harness runs this in PowerShell; a caller's own Windows command
+		// is still used when it gives no PowerShell one.
+		windows = cmp.Or(commands.PowerShell, commands.Windows)
 	case windowsCommandPowerShell:
 		native = commands.POSIX
 		windows = commands.PowerShell

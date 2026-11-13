@@ -47,6 +47,7 @@ func TestPowerShellHookWords(t *testing.T) {
 		{"compound", `C:\hook.exe example-marker & other`, nil},
 		{"tilde", `~/hook example-marker`, nil},
 		{"unterminated", `& 'C:\hook.exe`, nil},
+		{"quoted without call", `'C:\hook.exe' example-marker`, nil},
 		{"newline", "C:\\hook.exe\nother", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

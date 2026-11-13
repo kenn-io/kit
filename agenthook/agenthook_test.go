@@ -619,6 +619,11 @@ func TestCopilotCommandSelectionKeepsBashPOSIXOnWindows(t *testing.T) {
 	assert.Equal(t, `& 'C:\Program Files\hook.exe' 'run'`, windows)
 }
 
+func TestCodexCommandSelectionKeepsWindowsOverride(t *testing.T) {
+	_, windows := profileCommands(codexProfile(), Commands{Native: "/opt/hook run", POSIX: "/opt/hook run", Windows: `C:\hook.exe run`})
+	assert.Equal(t, `C:\hook.exe run`, windows)
+}
+
 func TestPlanInstallCopilotDistinguishesWin32AndPowerShellOverrides(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)

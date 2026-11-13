@@ -12,8 +12,13 @@ func powerShellHookWords(command string) ([]string, error) {
 		return nil, errors.New("hook command requires shell interpretation")
 	}
 	command = strings.TrimLeft(command, " \t")
-	if strings.HasPrefix(command, "& ") || strings.HasPrefix(command, "&\t") {
+	called := strings.HasPrefix(command, "& ") || strings.HasPrefix(command, "&\t")
+	if called {
 		command = strings.TrimLeft(command[1:], " \t")
+	}
+	// PowerShell runs a quoted executable only after the & call operator.
+	if !called && strings.HasPrefix(command, "'") {
+		return fail()
 	}
 	var words []string
 	for len(command) > 0 {
