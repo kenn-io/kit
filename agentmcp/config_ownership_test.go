@@ -20,6 +20,11 @@ func TestInstallEntryOwnership(t *testing.T) {
 		want, exact string
 	}{
 		{"claude launch", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"},"timeout":9007199254740993}}}`, agentmcp.Server{Command: "new"}, `{"type":"stdio","command":"new","env":{"USER":"keep"},"timeout":9007199254740993}`, "9007199254740993"},
+		{"claude env", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep","APP":"old"},"timeout":12}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": "new"}}, `{"type":"stdio","command":"new","env":{"USER":"keep","APP":"new"},"timeout":12}`, ""},
+		{"claude empty env", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep","APP":"old"}}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": ""}}, `{"type":"stdio","command":"new","env":{"USER":"keep","APP":""}}`, ""},
+		{"claude optional", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"stdio","command":"old","args":["serve","--write","--obsolete"]}}}`, agentmcp.Server{Command: "new", Args: []string{"serve", "--new"}, OptionalArgs: []string{"--write", "--new"}}, `{"type":"stdio","command":"new","args":["serve","--new","--write"]}`, ""},
+		{"codex optional", agentmcp.AgentCodex, "[mcp_servers.example]\ncommand='old'\nargs=['serve','--write','--obsolete']\n", agentmcp.Server{Command: "new", Args: []string{"serve", "--new"}, OptionalArgs: []string{"--write", "--new"}}, `{"command":"new","args":["serve","--new","--write"]}`, ""},
+		{"codex optional absent", agentmcp.AgentCodex, "[mcp_servers.example]\ncommand='old'\n", agentmcp.Server{Command: "new", OptionalArgs: []string{"--write"}}, `{"command":"new"}`, ""},
 		{"claude transport", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{URL: "https://example.com"}, `{"type":"http","url":"https://example.com"}`, ""},
 		{"claude http to sse", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"http","url":"https://example.com","headers":{"X":"user"}}}}`, agentmcp.Server{URL: "https://example.com", Transport: agentmcp.TransportSSE}, `{"type":"sse","url":"https://example.com"}`, ""},
 		{"claude sse to http", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"sse","url":"https://example.com","headers":{"X":"user"}}}}`, agentmcp.Server{URL: "https://example.com"}, `{"type":"http","url":"https://example.com"}`, ""},
@@ -29,7 +34,7 @@ func TestInstallEntryOwnership(t *testing.T) {
 		{"codex dotted", agentmcp.AgentCodex, "mcp_servers.example.command='old'\nmcp_servers.example.env.MODE='test'\n", agentmcp.Server{Command: "new"}, `{"command":"new","env":{"MODE":"test"}}`, ""},
 		{"codex inline root", agentmcp.AgentCodex, `mcp_servers = { example = { command = "old", enabled = false, env = {K = "v"}, nested = { x = { y = 2 } }, list = [{ name = "one" }] }, other = { command = "other" } }`, agentmcp.Server{Command: "new"}, `{"command":"new","enabled":false,"env":{"K":"v"},"nested":{"x":{"y":2}},"list":[{"name":"one"}]}`, ""},
 		{"codex inline parent", agentmcp.AgentCodex, "[mcp_servers]\nexample = { command = 'old', enabled = false, env = {K = 'v'}, nested = { x = { y = 2 } }, list = [{ name = 'one' }] }\nother = { command = 'other' }\n", agentmcp.Server{Command: "new"}, `{"command":"new","enabled":false,"env":{"K":"v"},"nested":{"x":{"y":2}},"list":[{"name":"one"}]}`, ""},
-		{"codex env", agentmcp.AgentCodex, "[mcp_servers.example]\ncommand='old'\nenabled=true\nstartup_timeout_sec=20\n[mcp_servers.example.env]\nUSER='keep'\nAPP='old'\n", agentmcp.Server{Command: "new", Args: []string{"serve"}, Env: map[string]string{"APP": "new"}}, `{"command":"new","args":["serve"],"env":{"APP":"new"}}`, ""},
+		{"codex env", agentmcp.AgentCodex, "[mcp_servers.example]\ncommand='old'\nenabled=true\nstartup_timeout_sec=20\n[mcp_servers.example.env]\nUSER='keep'\nAPP='old'\n", agentmcp.Server{Command: "new", Args: []string{"serve"}, Env: map[string]string{"APP": "new"}}, `{"command":"new","args":["serve"],"env":{"APP":"new","USER":"keep"},"enabled":true,"startup_timeout_sec":20}`, ""},
 		{"codex headers", agentmcp.AgentCodex, "[mcp_servers.example]\nurl='https://example.com/old'\nenv_http_headers={X='TOKEN'}\ntool_timeout_sec=20\n[mcp_servers.example.http_headers]\nUser='keep'\napp='old'\n", agentmcp.Server{URL: "https://example.com/new", Headers: map[string]string{"App": "new"}}, `{"url":"https://example.com/new","http_headers":{"App":"new"}}`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,6 +60,7 @@ func TestInstallEntryOwnership(t *testing.T) {
 			}
 			second, err := agentmcp.Install(tc.agent, opts)
 			require.NoError(t, err)
+			assert.False(t, second.Changed)
 			assert.Equal(t, result.Data, second.Data)
 		})
 	}

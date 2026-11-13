@@ -26,9 +26,13 @@ type Server struct {
 	Transport Transport
 	Command   string
 	Args      []string
-	Env       map[string]string
-	URL       string
-	Headers   map[string]string
+	// OptionalArgs lists exact whole-token arguments retained from an existing
+	// entry after Args, such as boolean flags. It does not add missing arguments
+	// and is ignored when rendering standalone configuration and commands.
+	OptionalArgs []string
+	Env          map[string]string
+	URL          string
+	Headers      map[string]string
 	// BearerTokenEnvVar references a client environment variable for Claude or
 	// Codex remote servers. It cannot accompany an Authorization header.
 	// Names must match [A-Za-z_][A-Za-z0-9_]*.

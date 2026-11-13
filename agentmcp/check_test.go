@@ -127,6 +127,31 @@ func TestCheckCodex(t *testing.T) {
 	}
 }
 
+func TestCheckCodexUserSettings(t *testing.T) {
+	testserver.InstallExecutable(t, "codex")
+	server := agentmcp.Server{Command: "example", Args: []string{"serve"}, Env: map[string]string{"APP": "current"}, OptionalArgs: []string{"--write"}}
+	for _, tc := range []struct {
+		name, args, app string
+		want            agentmcp.CheckState
+	}{
+		{"user settings", "'serve','--write'", "current", agentmcp.CheckOK},
+		{"unlisted arg", "'serve','--other'", "current", agentmcp.CheckOutdated},
+		{"wrong app env", "'serve','--write'", "old", agentmcp.CheckOutdated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CODEX_HOME", dir)
+			t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
+			t.Setenv("KIT_MCP_CHECK_REPLY", `{"data":[{"name":"example","tools":{}}]}`)
+			config := "[mcp_servers.example]\ncommand='example'\nargs=[" + tc.args + "]\nstartup_timeout_sec=30\n[mcp_servers.example.env]\nAPP='" + tc.app + "'\nUSER='keep'\n"
+			require.NoError(t, os.WriteFile(dir+"/config.toml", []byte(config), 0o600))
+			result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, "example", server)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, result.State, result.Reason)
+		})
+	}
+}
+
 func TestCheckClaude(t *testing.T) {
 	testserver.InstallExecutable(t, "claude")
 	for _, tc := range []struct {

@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func planDocument(agent Agent, original []byte, name string, entry map[string]any, checkOnly bool) ([]byte, bool, bool, error) {
+func planDocument(agent Agent, original []byte, name string, entry map[string]any, optionalArgs []string, checkOnly bool) ([]byte, bool, bool, error) {
 	doc := map[string]any{}
 	if len(original) > 0 {
 		if agent == AgentCodex {
@@ -48,7 +48,7 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 			fields = maps.Clone(fields)
 			dropEmptyFields(fields)
 			if agent == AgentCodex {
-				entry = mergeEntry(agent, fields, entry)
+				entry = mergeEntry(agent, fields, entry, optionalArgs)
 			}
 			previous = fields
 		}
@@ -77,11 +77,11 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	return data, true, present, err
 }
 
-// mergeEntry keeps user settings only for a launch-only update on the same transport.
-func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
+// mergeEntry keeps user settings for a launch and env update on the same transport.
+func mergeEntry(agent Agent, previous, desired map[string]any, optionalArgs []string) map[string]any {
 	launch := []string{"command", "args", "url", "type"}
 	for key := range desired {
-		if !slices.Contains(launch, key) {
+		if key != "env" && !slices.Contains(launch, key) {
 			return desired
 		}
 	}
@@ -97,6 +97,32 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 		delete(merged, key)
 	}
 	maps.Copy(merged, desired)
+	if supplied, ok := desired["env"].(map[string]string); ok {
+		env, _ := previous["env"].(map[string]any)
+		env = maps.Clone(env)
+		if env == nil {
+			env = make(map[string]any)
+		}
+		for key, value := range supplied {
+			env[key] = value
+		}
+		merged["env"] = env
+	}
+	if len(optionalArgs) > 0 {
+		args, _ := desired["args"].([]string)
+		args = slices.Clone(args)
+		if old, ok := previous["args"].([]any); ok {
+			for _, value := range old {
+				arg, ok := value.(string)
+				if ok && slices.Contains(optionalArgs, arg) && !slices.Contains(args, arg) {
+					args = append(args, arg)
+				}
+			}
+		}
+		if len(args) > 0 {
+			merged["args"] = args
+		}
+	}
 	return merged
 }
 
