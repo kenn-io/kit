@@ -17,3 +17,6 @@ classification here. Products own those.
   interval at the next day's start.
 - The package does not import `time/tzdata`; test packages that load named
   zones import it in a `_test.go` file.
+- Sweep coverage includes leap years beyond explicit TZif transitions. Go's
+  POSIX-rule extension can return non-advancing `ZoneBounds` on December 31;
+  the sampling walk must keep advancing without skipping transitions.

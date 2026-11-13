@@ -25,7 +25,9 @@ func TestDayBoundsSweep(t *testing.T) {
 		"Europe/London", "Pacific/Apia", "Australia/Lord_Howe", "Asia/Kathmandu",
 		"Pacific/Chatham", "Antarctica/Casey", "Asia/Tokyo", "UTC",
 	}
-	periods := [][2]int{{2000, 2002}, {2010, 2012}, {2025, 2027}}
+	// Include a leap year beyond explicit TZif transitions so every platform
+	// exercises Go's POSIX-rule extension, including its year-end bounds.
+	periods := [][2]int{{2000, 2002}, {2010, 2012}, {2025, 2027}, {2040, 2042}}
 	for _, name := range zones {
 		for _, years := range periods {
 			t.Run(name, func(t *testing.T) {
@@ -84,6 +86,14 @@ func sampleStep(t *testing.T, loc *time.Location, lo, hi time.Time) time.Duratio
 		_, end := local.ZoneBounds()
 		if end.IsZero() || !end.Before(hi) {
 			break
+		}
+		if !end.After(at) {
+			// Go's POSIX-rule extension can return an end at or before at
+			// on the last day of a leap year. Inspect each second until
+			// bounds advance again, preserving offsets and transitions
+			// without getting stuck or skipping part of the sweep.
+			at = at.Add(time.Second)
+			continue
 		}
 		step = gcd(step, end.Unix())
 		at = end
