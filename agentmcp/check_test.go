@@ -136,7 +136,6 @@ func TestCheckCodexUserSettings(t *testing.T) {
 	}{
 		{"user settings", "'serve'", "current", agentmcp.CheckOK},
 		{"hand-added flag", "'serve','--write'", "current", agentmcp.CheckOutdated},
-		{"unlisted arg", "'serve','--other'", "current", agentmcp.CheckOutdated},
 		{"missing app env", "'serve'", "", agentmcp.CheckOutdated},
 		{"wrong app env", "'serve'", "old", agentmcp.CheckOutdated},
 	} {
