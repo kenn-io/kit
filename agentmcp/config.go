@@ -13,8 +13,8 @@ import (
 // InstallOptions registers one caller-owned server name. An existing entry
 // for Claude Code and Codex keeps user settings when the supplied entry contains
 // only launch fields and env and uses the same transport. Supplied env values
-// override matching user values; other env values and exact OptionalArgs are
-// kept unless supplied args carry the same flag.
+// override matching user values; other env values and OptionalArgs flags are
+// kept in position unless supplied args carry the same flag name.
 // Env keys no longer supplied remain in the entry and must be removed manually.
 // Other entries are replaced.
 // ConfigPath overrides the user config path with a file using the same top-level

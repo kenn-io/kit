@@ -116,24 +116,26 @@ func mergeEntry(agent Agent, previous, desired map[string]any, optionalArgs []st
 			name, _, _ := strings.Cut(arg, "=")
 			carried[name] = true
 		}
-		var required, saved []string
-		old, ok := previous["args"].([]any)
+		buckets := make([][]string, len(args)+1)
+		position := 0
+		old, _ := previous["args"].([]any)
 		for _, value := range old {
 			arg, valid := value.(string)
-			if !valid {
-				ok = false
-				break
-			}
 			name, _, _ := strings.Cut(arg, "=")
-			if slices.Contains(optionalArgs, arg) && !carried[name] {
-				saved = append(saved, arg)
+			if valid && slices.Contains(optionalArgs, name) && !carried[name] {
+				index := min(position, len(args))
+				buckets[index] = append(buckets[index], arg)
 			} else {
-				required = append(required, arg)
+				position++
 			}
 		}
-		if ok && slices.Equal(required, args) {
-			merged["args"] = old
-		} else if combined := append(slices.Clone(args), saved...); len(combined) > 0 {
+		combined := make([]string, 0, len(args)+len(old))
+		for i, arg := range args {
+			combined = append(combined, buckets[i]...)
+			combined = append(combined, arg)
+		}
+		combined = append(combined, buckets[len(args)]...)
+		if len(combined) > 0 {
 			merged["args"] = combined
 		}
 	}

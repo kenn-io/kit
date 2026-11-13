@@ -135,7 +135,8 @@ func TestCheckCodexUserSettings(t *testing.T) {
 		desired         []string
 		want            agentmcp.CheckState
 	}{
-		{"saved flags reordered", "'--archive','serve','--write'", "current", nil, agentmcp.CheckOK},
+		{"saved flags around command", "'--archive','serve','--write'", "current", nil, agentmcp.CheckOK},
+		{"saved equals form", "'--write=true','serve'", "current", nil, agentmcp.CheckOK},
 		{"flags first and repeated", "'--write','--write','serve'", "current", nil, agentmcp.CheckOK},
 		{"explicit false", "'serve','--write'", "current", []string{"serve", "--write=false"}, agentmcp.CheckOutdated},
 		{"user settings", "'serve','--write'", "current", nil, agentmcp.CheckOK},
@@ -162,6 +163,21 @@ func TestCheckCodexUserSettings(t *testing.T) {
 			assert.Equal(t, tc.want, result.State, result.Reason)
 		})
 	}
+}
+
+func TestCheckClaudeUserSettings(t *testing.T) {
+	testserver.InstallExecutable(t, "claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("KIT_MCP_CHECK_HELPER", "claude")
+	t.Setenv("KIT_MCP_CHECK_REPLY", "Scope: User config\nStatus: ✓ Connected\n")
+	path, err := agentmcp.ConfigPath(agentmcp.AgentClaude)
+	require.NoError(t, err)
+	config := `{"mcpServers":{"example":{"type":"stdio","command":"example","args":["--write=true","serve"],"env":{"APP":"value","USER":"keep"},"timeout":30}}}`
+	require.NoError(t, os.WriteFile(path, []byte(config), 0o600))
+	server := agentmcp.Server{Command: "example", Args: []string{"serve"}, Env: map[string]string{"APP": "value"}, OptionalArgs: []string{"--write"}}
+	result, err := agentmcp.Check(t.Context(), agentmcp.AgentClaude, "example", server)
+	require.NoError(t, err)
+	assert.Equal(t, agentmcp.CheckOK, result.State, result.Reason)
 }
 
 func TestCheckClaude(t *testing.T) {

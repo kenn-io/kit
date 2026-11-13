@@ -26,19 +26,19 @@ type Server struct {
 	Transport Transport
 	Command   string
 	Args      []string
-	// OptionalArgs lists exact whole-token arguments retained from an existing
-	// entry, such as boolean flags. Supplied args with the same name take priority.
-	// It does not retain separate values
-	// for value-taking flags, add missing arguments, or affect standalone config
-	// or rendered commands.
-	OptionalArgs []string
-	Env          map[string]string
-	URL          string
-	Headers      map[string]string
+
+	Env     map[string]string
+	URL     string
+	Headers map[string]string
 	// BearerTokenEnvVar references a client environment variable for Claude or
 	// Codex remote servers. It cannot accompany an Authorization header.
 	// Names must match [A-Za-z_][A-Za-z0-9_]*.
 	BearerTokenEnvVar string
+	// OptionalArgs lists flag names retained from an existing entry, matching
+	// --flag and --flag=value. Separate value tokens are not retained. Supplied
+	// args with the same name take priority. This field does not affect rendered
+	// standalone configuration or commands.
+	OptionalArgs []string
 }
 
 var bearerEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
