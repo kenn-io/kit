@@ -5,9 +5,13 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
+
+	"github.com/cenkalti/backoff/v7"
 
 	"go.kenn.io/kit/internal/codexapp"
 )
@@ -39,13 +43,56 @@ func codexProfile() profileSpec {
 
 // checkCodex reads native discovery and consent state. It never writes trust.
 func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (CheckState, string, string) {
+	const retryPause = 500 * time.Millisecond
+	const addedWaitBudget = 10 * time.Second
+	var state CheckState
+	var reason, step string
+	attempt := 0
+	_, retryErr := backoff.Retry(ctx, func() (struct{}, error) {
+		attempt++
+		attemptCtx := ctx
+		cancel := func() {}
+		if attempt == 2 {
+			// The pause and second attempt together add at most ten seconds.
+			attemptCtx, cancel = context.WithTimeout(ctx, addedWaitBudget-retryPause)
+		}
+		defer cancel()
+		var err error
+		state, reason, step, err = checkCodexAttempt(attemptCtx, path, owned)
+		if err == nil {
+			return struct{}{}, nil
+		}
+		if !transientCodexError(err) {
+			return struct{}{}, backoff.Permanent(err)
+		}
+		return struct{}{}, err
+	}, backoff.WithBackOff(backoff.NewConstantBackOff(retryPause)), backoff.WithMaxTries(2), backoff.WithMaxElapsedTime(0))
+	if retryErr != nil {
+		cause := backoff.AsRetryError(retryErr).Cause
+		if !errors.Is(cause, backoff.ErrPermanent) && !errors.Is(cause, backoff.ErrExhausted) && ctx.Err() != nil {
+			state, reason, step = codexFailure(ctx.Err(), step)
+		}
+	}
+	return state, reason, step
+}
+
+func transientCodexError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.DeadlineExceeded) || transientCodexResourceError(err) {
+		return true
+	}
+	pathErr, ok := errors.AsType[*os.PathError](err)
+	return ok && !errors.Is(err, os.ErrPermission) && (pathErr.Op == "read" || pathErr.Op == "write")
+}
+
+func checkCodexAttempt(ctx context.Context, path string, owned []ownedRegistration) (CheckState, string, string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return CheckUnknown, err.Error(), "Choose a working directory for Codex"
+		return CheckUnknown, err.Error(), "Choose a working directory for Codex", nil
 	}
 	client, err := codexapp.Start(ctx, "codex", cwd)
 	if err != nil {
-		return codexFailure(err, "Check Codex app-server startup and retry")
+		state, reason, step := codexFailure(err, "Check Codex app-server startup and retry")
+		return state, reason, step, err
 	}
 	defer client.Close()
 	var config struct {
@@ -54,13 +101,14 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		} `json:"config"`
 	}
 	if err := client.Call("config/read", map[string]any{"includeLayers": false, "cwd": cwd}, &config); err != nil {
-		return codexFailure(err, "Check Codex config and retry")
+		state, reason, step := codexFailure(err, "Check Codex config and retry")
+		return state, reason, step, err
 	}
 	if config.Config == nil {
-		return CheckUnknown, "Codex did not report its effective hooks feature", "Check Codex config and retry"
+		return CheckUnknown, "Codex didn't report whether hooks are enabled for this workspace", "Check Codex config and retry", nil
 	}
 	if enabled := config.Config.Features["hooks"]; enabled != nil && !*enabled {
-		return CheckDisabled, "Codex hooks feature is disabled for this workspace", "Enable features.hooks in the effective Codex config for this workspace"
+		return CheckDisabled, "Codex hooks are turned off for this workspace", "Set features.hooks to true in the Codex config that applies to this workspace", nil
 	}
 	var listed struct {
 		Data []struct {
@@ -75,14 +123,15 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 		} `json:"data"`
 	}
 	if err := client.Call("hooks/list", map[string]any{"cwds": []string{cwd}}, &listed); err != nil {
-		return codexFailure(err, "Check Codex hook discovery and retry")
+		state, reason, step := codexFailure(err, "Check hooks in Codex and retry")
+		return state, reason, step, err
 	}
 	if len(listed.Data) != 1 {
-		return CheckUnknown, "Codex did not report hooks for the requested directory", "Check Codex hook discovery and retry"
+		return CheckUnknown, "Codex didn't report hooks for this folder", "Check hooks in Codex and retry", nil
 	}
 	entry := listed.Data[0]
 	if len(entry.Errors) > 0 {
-		return CheckUnknown, fmt.Sprintf("Codex hook discovery errors: %s", entry.Errors), "Correct the reported hook discovery errors"
+		return CheckUnknown, fmt.Sprintf("Codex reported errors while loading hooks: %s", entry.Errors), "Fix the reported hook errors", nil
 	}
 	states := make(map[string]bool)
 	count := 0
@@ -107,19 +156,19 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 			case "trusted", "managed", "untrusted", "modified":
 				states[hook.TrustStatus] = true
 			default:
-				return CheckUnknown, "Codex reported unknown hook trust state: " + hook.TrustStatus, "Review hooks in Codex with /hooks"
+				return CheckUnknown, "Codex reported unknown hook trust state: " + hook.TrustStatus, "Review hooks in Codex with /hooks", nil
 			}
 		}
 	}
 	if count != len(owned) {
-		return CheckUnknown, "Codex did not discover all of this application's installed hooks", "Review Codex hook discovery with /hooks"
+		return CheckUnknown, "Codex didn't list all of this application's installed hooks", "Open Codex and run /hooks to review the hooks", nil
 	}
 	for _, state := range []CheckState{CheckDisabled, CheckModified, CheckUntrusted} {
 		if states[string(state)] {
-			return state, "Codex reports this application's hooks as " + string(state), "Open Codex and run /hooks to review the hooks"
+			return state, "Codex says these hooks need review: " + string(state), "Open Codex and run /hooks to review the hooks", nil
 		}
 	}
-	return CheckOK, "", ""
+	return CheckOK, "", "", nil
 }
 
 func codexFailure(err error, step string) (CheckState, string, string) {

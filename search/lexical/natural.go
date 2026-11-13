@@ -18,14 +18,15 @@ type Term struct {
 // Natural holds required phrases and words for ranking.
 // Match requires all phrases when present, or any word otherwise.
 type Natural struct {
-	Match    string
-	Words    []Term
-	Phrases  []string
-	Identity Identity
+	Match      string
+	Words      []Term
+	CountTerms []Term
+	Phrases    []string
+	Identity   Identity
 }
 
 // PrepareNatural quotes words, expands regular English forms, and requires
-// quoted phrases. Callers count matches with each Word's Match expression.
+// quoted phrases. Callers count matches with each CountTerm's Match expression.
 // Chinese phrases stay literal, as in PreparePhrase.
 func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	if err := a.valid(); err != nil || strings.ContainsRune(text, 0) {
@@ -33,21 +34,25 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	}
 	segmentHan := a.Identity.Kind == KindChinese && !containsKanaOrHangul(text)
 	result := Natural{Identity: a.Identity}
-	var words []string
+	var words, phraseWords []string
 	segments := strings.Split(strings.NewReplacer("“", `"`, "”", `"`, "„", `"`).Replace(text), `"`)
 	for i, segment := range segments {
 		if i%2 == 0 || i == len(segments)-1 {
 			words = append(words, strings.Fields(segment)...)
 		} else {
 			result.Phrases = append(result.Phrases, strings.Join(strings.Fields(segment), " "))
+			phraseWords = append(phraseWords, strings.Fields(segment)...)
 		}
 	}
 	var normalized []string
-	for _, word := range words {
+	normalize := func(word string) string {
 		if !segmentHan || !containsHan(word) {
 			word = strings.ToLower(word)
 		}
-		if word = strings.TrimFunc(word, wordless); hasLetterOrNumber(word) {
+		return strings.TrimFunc(word, wordless)
+	}
+	for _, word := range words {
+		if word = normalize(word); hasLetterOrNumber(word) {
 			normalized = append(normalized, word)
 		}
 	}
@@ -55,19 +60,18 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	for _, word := range normalized {
 		if !hasContent || !IsStopWord(word) {
 			result.Words = coalesce(result.Words, word)
+			result.CountTerms = coalesce(result.CountTerms, word)
+		}
+	}
+	for _, word := range phraseWords {
+		if word = normalize(word); hasLetterOrNumber(word) {
+			result.CountTerms = coalesce(result.CountTerms, word)
 		}
 	}
 	var parts []string
 	join := " OR "
 	for i, term := range result.Words {
-		var forms []string
-		for _, form := range term.Forms {
-			forms = append(forms, a.renderTerm(form))
-		}
-		term.Match = strings.Join(forms, " OR ")
-		if len(forms) > 1 {
-			term.Match = "(" + term.Match + ")"
-		}
+		term.Match = a.renderForms(term.Forms)
 		if segmentHan && containsHan(term.Text) {
 			prepared, err := a.segmented(term.Text)
 			if err != nil {
@@ -77,6 +81,15 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 		}
 		result.Words[i] = term
 		parts = append(parts, term.Match)
+	}
+	for i, term := range result.CountTerms {
+		term.Match = a.renderForms(term.Forms)
+		if segmentHan && containsHan(term.Text) {
+			if j := slices.IndexFunc(result.Words, func(word Term) bool { return word.Text == term.Text }); j >= 0 {
+				term.Match = result.Words[j].Match
+			}
+		}
+		result.CountTerms[i] = term
 	}
 	if len(result.Phrases) > 0 {
 		parts, join = nil, " AND "
@@ -89,6 +102,18 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 		return Natural{}, errors.New("lexical: query text or a quoted phrase is empty")
 	}
 	return result, nil
+}
+
+func (a Analyzer) renderForms(forms []string) string {
+	var rendered []string
+	for _, form := range forms {
+		rendered = append(rendered, a.renderTerm(form))
+	}
+	match := strings.Join(rendered, " OR ")
+	if len(rendered) > 1 {
+		match = "(" + match + ")"
+	}
+	return match
 }
 
 // coalesce merges overlapping forms so word order does not change matches or counts.

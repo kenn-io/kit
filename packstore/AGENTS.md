@@ -51,9 +51,54 @@
   and leaves packing and required deletion checks active. Zero examines every
   indexed entry, reading packed bytes only as described above.
   Capture the last indexed entry at the start of each sweep
-  so continued ingestion cannot postpone revisiting older entries. A failed
-  pass or deferred repair retains both previous sweep bounds so uncommitted
-  repairs are revisited; a new maintainer starts a fresh sweep.
+  so continued ingestion cannot postpone revisiting older entries. A failed or
+  canceled pass keeps the entries it examined, so a deadline that keeps
+  expiring cannot pin the sweep to one window. A repair found but not
+  committed, through failure, a packing budget, or a retryable read failure
+  such as a full disk, moves the resume point back to just before that repair
+  so it is found again; never advance past such a repair. Only a repair whose
+  loose source is proven bad (content mismatch or a size limit) lets the sweep
+  advance, so an unrepairable entry cannot pin it. An exhaustive pass (zero)
+  starts from the beginning and records its own position, so a retryable
+  repair it finds is not hidden behind an earlier bounded cursor. A new
+  maintainer starts a fresh sweep.
+
+## Pack growth
+
+- `PackOptions.MinSealBytes` and `MaxLooseAge` hold loose members so frequent
+  passes do not seal one small pack each. They never hold repairs. Readiness
+  merges rows of the same hash as packing does. Members packing always skips
+  (oversized, conflicting sizes, no existing path) never make a pass ready,
+  or one stuck member would force a small pack every pass; a held pass
+  counts them in `PackStats` as packing would. Readiness never reads loose
+  content: the Maintainer remembers members packing rejected after reading
+  them (a damaged file that still exists) and leaves them out, so a new
+  Maintainer can seal once before it learns them. Remember only what reading
+  proved: content that fails its hash or size check (`ErrContentMismatch`,
+  `pack.ErrBlobMismatch`) or exceeds a size limit. Other read failures, such
+  as permissions or a full scratch disk, stay retryable, and conflicts and
+  missing files are rechecked every pass. The decoder and verifier wrap file
+  read errors in `ErrContentMismatch`, so loose file reads go through
+  `looseFileReader`, which marks them as `looseReadError`; that marker wins. A remembered rejection holds only
+  while the cataloged size, the row conflict state, and every path's
+  existence, length, and modification time stay the same, so a repair, a new
+  copy, or a catalog fix makes the member eligible again.
+- `RepackSelection.MergeBelowStored` is opt-in: existing callers scope repack
+  to chosen sources and count `PacksSelected`. Merges go through
+  `CommitRepack` with every source of a group, and admit whole groups against
+  `MaxBytes` so outputs stay near the target size. An automatic merge leaves
+  out a source whose payload cannot be read and merges the rest, so one
+  damaged pack cannot block its group on every pass.
+- Repack and merge copy each live entry's stored frame into the output
+  without recompressing it. A copied frame must pass its footer CRC32C and
+  a streamed decode that checks its raw length and SHA-256 before it is
+  appended; a failure is a `sourceReadError` so a merge can drop that
+  source. Frames above `maxCopiedFrameBytes` keep the verified-stream
+  `PrepareBlob` path. Sources are read under the store's limits, one source
+  pack open at a time.
+- Orphan reconciliation lists pack records once per pass. Pack records change
+  only under the maintenance lease or during a restore that already excludes
+  maintenance.
 
 ## Orphan removal
 

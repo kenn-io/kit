@@ -110,6 +110,9 @@ func (c *Client) Call(method string, params, result any) error {
 		if result == nil {
 			return nil
 		}
+		if len(response.Result) == 0 {
+			return fmt.Errorf("codex %s: missing result", method)
+		}
 		return json.Unmarshal(response.Result, result)
 	}
 }

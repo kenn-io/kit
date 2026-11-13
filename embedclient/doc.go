@@ -2,9 +2,11 @@
 //
 // The caller owns the HTTP client when it supplies one. This package clones
 // that client, pins requests to the configured origin, and can attach a bearer
-// token. Failures are not retried unless the caller sets Options.Retry,
-// which retries only failures that may succeed later. A non-2xx response, a
-// short body, or a vector that fails validation fails the whole call.
+// token. A multi-input request that times out is split into halves, recursively,
+// while the caller's context remains active. Single-input timeouts and other
+// eligible failures are retried only when the caller sets Options.Retry.
+// A non-2xx response, a short body, or a vector that fails validation fails
+// the whole call.
 // Response indexes are applied inside each request. A missing index on every item means the
 // provider kept request order.
 //
@@ -37,7 +39,9 @@
 //
 // Failures are typed. APIError reports the status, a Reason derived from the
 // status and the provider's error code or message, and whether a retry may
-// help. The provider body itself is never kept. TransportError keeps the network cause behind a generic message.
+// help. The provider body itself is never kept. TransportError keeps the
+// network cause behind a generic message: "embed request timed out" for a
+// timeout and "embed request failed" for other transport failures.
 // VectorError names the input whose vector failed validation, and matches
 // ErrInvalidVector.
 //

@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/mod/semver"
 
 	"go.kenn.io/kit/internal/renamebusy"
@@ -761,7 +762,7 @@ func (c Client) doHTTPRequest(req *http.Request, requireHTTPSRedirects bool) (*h
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return resp, err
 	}
 	if requireHTTPSRedirects && resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Scheme != "https" {
 		resp.Body.Close()
@@ -1178,26 +1179,53 @@ func releaseTagFromURL(u *url.URL) (string, error) {
 }
 
 func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
+	client := *c.httpClient()
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
 	}
-	req.Header.Set("User-Agent", c.userAgent())
+	defaultTransport, isHTTPTransport := transport.(*http.Transport)
+	client.Transport = checksumTransport{base: transport, custom: client.Transport != nil && (!isHTTPTransport || defaultTransport != http.DefaultTransport)}
+	c.HTTPClient = &client
 
-	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusNotFound {
-			return "", fmt.Errorf("%w: %s", errChecksumAssetNotFound, resp.Status)
+	body, err := checksumRetry(ctx, func() ([]byte, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, backoff.Permanent(err)
 		}
-		return "", fmt.Errorf("failed to fetch checksums: %s", resp.Status)
-	}
+		req.Header.Set("User-Agent", c.userAgent())
+		resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
+		if err != nil {
+			if resp == nil && ctx.Err() == nil && (checksumTransportError(err) || errors.Is(err, context.DeadlineExceeded)) {
+				return nil, err
+			}
+			return nil, backoff.Permanent(err)
+		}
+		defer resp.Body.Close()
 
-	body, err := readLimited(resp.Body, maxChecksumBytes)
+		if resp.StatusCode != http.StatusOK {
+			if resp.StatusCode == http.StatusNotFound {
+				return nil, backoff.Permanent(fmt.Errorf("%w: %s", errChecksumAssetNotFound, resp.Status))
+			}
+			err := fmt.Errorf("failed to fetch checksums: %s", resp.Status)
+			if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 && resp.StatusCode <= 599 {
+				if delay := checksumRetryAfter(resp.Header.Get("Retry-After")); delay > 0 {
+					return nil, backoff.RetryAfter(delay, err)
+				}
+				return nil, err
+			}
+			return nil, backoff.Permanent(err)
+		}
+
+		body, err := readLimited(checksumBody{resp.Body}, maxChecksumBytes)
+		if err != nil {
+			if checksumTransportError(err) && ctx.Err() == nil {
+				return nil, err
+			}
+			return nil, backoff.Permanent(err)
+		}
+		return body, nil
+	})
 	if err != nil {
 		return "", err
 	}

@@ -57,16 +57,17 @@ jobs:
               metadata = subprocess.check_output(['go', 'version', '-m', str(executable)], text=True)
               if release and ('vcs.revision=' + revision not in metadata or 'vcs.modified=false' not in metadata):
                   raise RuntimeError('bundle source does not match the selected tag')
+              # selfupdate.ExtractTarGz and ExtractZip require these archive formats.
+              name = output / ('kennembed_' + version + '_' + target + '_' + arch)
+              archive = shutil.make_archive(str(name), 'zip' if target == 'windows' else 'gztar', bundle)
               if arch == native_arch:
                   with open(os.environ['GITHUB_ENV'], 'a') as env:
-                      env.write('KIT_EMBED_TEST_EXECUTABLE=' + str(executable) + '\n')
+                      # The bundle test installs from the final archive, not this staging directory.
+                      env.write('KIT_EMBED_TEST_ARCHIVE=' + str(pathlib.Path(archive).resolve()) + '\n')
                       libraries = list(bundle.glob('libonnxruntime.*')) + list(bundle.glob('onnxruntime.dll'))
                       library = next(path for path in libraries if path.name.endswith(('1.23.2', '1.23.2.dylib', '.dll')))
                       env.write('KIT_EMBED_TEST_LIBRARY=' + str(library) + '\n')
                       env.write('KIT_EMBED_TEST_DIR=' + str(bundle.parent / 'model') + '\n')
-              # selfupdate.ExtractTarGz and ExtractZip require these archive formats.
-              name = output / ('kennembed_' + version + '_' + target + '_' + arch)
-              shutil.make_archive(str(name), 'zip' if target == 'windows' else 'gztar', bundle)
       - name: Cache verified model and photograph fixtures
         uses: actions/cache@v6.1.0
         with:

@@ -6,8 +6,13 @@
   retries. When set, retry only a `Retryable` `APIError` and a
   `TransportError`, never an input or credential rejection, and stop when the
   context ends. `Retry-After` stays on `APIError` either way.
+  `Retry.RetryRateLimits` retries 429 without limit and keeps it off
+  `MaxAttempts`.
   `OllamaMetalRecovery` is separate: keep usable vectors and recover the
   others through Ollama's native embed route.
+- A transport timeout on a multi-input text request splits it into halves
+  before retrying. Continue splitting until requests succeed or reach one
+  input. Do not split after the caller's context ends.
 - Do not return a short vector slice. A failed request fails the call.
 - Reorder by the per-request `index`. Do not treat that index as an offset
   into a larger `vector.EncodeBatched` input.
@@ -25,7 +30,8 @@
 - A transport failure is a `*TransportError`, including a failure while
   reading a response body. Its message stays generic because the cause can
   name internal hosts; `Unwrap` keeps the cause, so a deadline or cancel
-  still matches `errors.Is`.
+  still matches `errors.Is`. Timeouts report `embed request timed out` and
+  other failures report `embed request failed`.
 - An invalid vector is a `*VectorError` whose `Index` is the caller's input
   position, not the position inside one request. Recovery reads the index
   with `errors.AsType`, never by parsing the message.
