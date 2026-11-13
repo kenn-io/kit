@@ -24,6 +24,10 @@ func TestInstallEntryOwnership(t *testing.T) {
 		{"claude empty env", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep","APP":"old"}}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": ""}}, `{"type":"stdio","command":"new","env":{"USER":"keep","APP":""}}`, ""},
 		{"claude optional", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"stdio","command":"old","args":["serve","--write","--obsolete"]}}}`, agentmcp.Server{Command: "new", Args: []string{"serve", "--new"}, OptionalArgs: []string{"--write", "--new"}}, `{"type":"stdio","command":"new","args":["serve","--new","--write"]}`, ""},
 		{"codex optional", agentmcp.AgentCodex, "[mcp_servers.example]\ncommand='old'\nargs=['serve','--write','--obsolete']\n", agentmcp.Server{Command: "new", Args: []string{"serve", "--new"}, OptionalArgs: []string{"--write", "--new"}}, `{"command":"new","args":["serve","--new","--write"]}`, ""},
+		{"claude stale env", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"OLD":"keep","APP":"old"}}}}`, agentmcp.Server{Command: "new", Env: map[string]string{"APP": "new"}}, `{"type":"stdio","command":"new","env":{"OLD":"keep","APP":"new"}}`, ""},
+		{"codex false overrides saved", agentmcp.AgentCodex, "[mcp_servers.example]\ncommand='example'\nargs=['serve','--write']\n", agentmcp.Server{Command: "example", Args: []string{"serve", "--write=false"}, OptionalArgs: []string{"--write"}}, `{"command":"example","args":["serve","--write=false"]}`, ""},
+		{"codex repeats and order", agentmcp.AgentCodex, "[mcp_servers.example]\ncommand='example'\nargs=['--a','--b','--a','serve']\n", agentmcp.Server{Command: "example", Args: []string{"serve"}, OptionalArgs: []string{"--a", "--b"}}, `{"command":"example","args":["--a","--b","--a","serve"]}`, ""},
+		{"claude repeated saved", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","args":["serve","--a","--a"]}}}`, agentmcp.Server{Command: "new", Args: []string{"start"}, OptionalArgs: []string{"--a"}}, `{"type":"stdio","command":"new","args":["start","--a","--a"]}`, ""},
 		{"codex optional absent", agentmcp.AgentCodex, "[mcp_servers.example]\ncommand='old'\n", agentmcp.Server{Command: "new", OptionalArgs: []string{"--write"}}, `{"command":"new"}`, ""},
 		{"claude transport", agentmcp.AgentClaude, `{"mcpServers":{"example":{"command":"old","env":{"USER":"keep"}}}}`, agentmcp.Server{URL: "https://example.com"}, `{"type":"http","url":"https://example.com"}`, ""},
 		{"claude http to sse", agentmcp.AgentClaude, `{"mcpServers":{"example":{"type":"http","url":"https://example.com","headers":{"X":"user"}}}}`, agentmcp.Server{URL: "https://example.com", Transport: agentmcp.TransportSSE}, `{"type":"sse","url":"https://example.com"}`, ""},
@@ -43,6 +47,9 @@ func TestInstallEntryOwnership(t *testing.T) {
 			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: tc.server}
 			result, err := agentmcp.Install(tc.agent, opts)
 			require.NoError(t, err)
+			if tc.name == "codex repeats and order" {
+				assert.False(t, result.Changed)
+			}
 			if tc.exact != "" {
 				assert.Contains(t, string(result.Data), tc.exact)
 				assert.Contains(t, string(result.Data), "9007199254740993")

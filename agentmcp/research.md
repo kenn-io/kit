@@ -1,7 +1,7 @@
 ---
 title: "MCP registration research"
 description: "Research on MCP server registration formats and discovery across agent tools."
-last_edited: 2026-11-09
+last_edited: 2026-11-13
 ---
 
 # MCP registration research
@@ -167,8 +167,10 @@ status loads system, user, and runtime settings
 [without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
 Check compares only the connection fields represented by `Server`, plus
 `enabled = false`; explicit `enabled = true`, empty `args`, and empty `env` match
-their defaults. Extra user settings don't make an entry outdated, although
-`Install` replaces the whole entry when it differs.
+their defaults. Check and `Install` share one merge: extra user settings, env
+keys, and saved `OptionalArgs` flags do not make an entry outdated or get
+removed. The app owns only the env keys it supplies; a wrong value for one
+makes an entry outdated.
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 `Status`, and, when present, `Issue`, as Claude Code 2.1.301 confirms. Only a

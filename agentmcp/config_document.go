@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -110,17 +111,30 @@ func mergeEntry(agent Agent, previous, desired map[string]any, optionalArgs []st
 	}
 	if len(optionalArgs) > 0 {
 		args, _ := desired["args"].([]string)
-		args = slices.Clone(args)
-		if old, ok := previous["args"].([]any); ok {
-			for _, value := range old {
-				arg, ok := value.(string)
-				if ok && slices.Contains(optionalArgs, arg) && !slices.Contains(args, arg) {
-					args = append(args, arg)
-				}
+		carried := make(map[string]bool, len(args))
+		for _, arg := range args {
+			name, _, _ := strings.Cut(arg, "=")
+			carried[name] = true
+		}
+		var required, saved []string
+		old, ok := previous["args"].([]any)
+		for _, value := range old {
+			arg, valid := value.(string)
+			if !valid {
+				ok = false
+				break
+			}
+			name, _, _ := strings.Cut(arg, "=")
+			if slices.Contains(optionalArgs, arg) && !carried[name] {
+				saved = append(saved, arg)
+			} else {
+				required = append(required, arg)
 			}
 		}
-		if len(args) > 0 {
-			merged["args"] = args
+		if ok && slices.Equal(required, args) {
+			merged["args"] = old
+		} else if combined := append(slices.Clone(args), saved...); len(combined) > 0 {
+			merged["args"] = combined
 		}
 	}
 	return merged
