@@ -101,9 +101,18 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 	for _, field := range []string{"env", "headers", "http_headers"} {
 		values, _ := previous[field].(map[string]any)
 		values = maps.Clone(values)
+		_, bearer := desired["bearer_token_env_var"]
+		codexBearer := agent == AgentCodex && field == "http_headers" && bearer
 		if agent == AgentClaude && field == "headers" {
 			for key, value := range values {
 				if v, _ := value.(string); strings.EqualFold(key, "Authorization") && bearerEnvHeader.MatchString(v) {
+					delete(values, key)
+				}
+			}
+		}
+		if codexBearer {
+			for key := range values {
+				if strings.EqualFold(key, "Authorization") {
 					delete(values, key)
 				}
 			}
@@ -123,7 +132,7 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 				values[key] = value
 			}
 			merged[field] = values
-		} else if agent == AgentClaude && field == "headers" {
+		} else if (agent == AgentClaude && field == "headers") || codexBearer {
 			if len(values) == 0 {
 				delete(merged, field)
 			} else {
