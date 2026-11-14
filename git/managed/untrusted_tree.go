@@ -25,9 +25,10 @@ import (
 // configuration remain trusted; only the fetched commit is treated as
 // untrusted.
 type untrustedTreeIsolation struct {
-	runner             gitcmd.Runner
-	config             []gitcmd.Config
-	mergeDriverCommand string
+	runner              gitcmd.Runner
+	config              []gitcmd.Config
+	mergeDriverCommand  string
+	trustedMergeDrivers []string
 }
 
 // Git invokes these through its compiled-in shell because they contain shell
@@ -194,7 +195,7 @@ func localGitConfigValue(
 }
 
 func prepareUntrustedTreeIsolation(
-	ctx context.Context, root string,
+	ctx context.Context, root string, trustedMergeDrivers []string,
 ) (untrustedTreeIsolation, error) {
 	if err := rejectCommandScopeIsolationOverrides(
 		ctx, root, lifecycleRunner(ctx),
@@ -229,7 +230,11 @@ func prepareUntrustedTreeIsolation(
 		config = append(config, entry)
 		runner = runner.WithConfig(entry.Key, entry.Value)
 	}
-	return untrustedTreeIsolation{runner: runner, config: config, mergeDriverCommand: safeMergeDriverCommand(gitPath, hooksPath)}, nil
+	return untrustedTreeIsolation{
+		runner: runner, config: config,
+		mergeDriverCommand:  safeMergeDriverCommand(gitPath, hooksPath),
+		trustedMergeDrivers: slices.Clone(trustedMergeDrivers),
+	}, nil
 }
 
 func rejectCommandScopeIsolationOverrides(
@@ -333,7 +338,7 @@ func completeUntrustedTreeIsolation(
 		return untrustedTreeIsolation{}, err
 	}
 	drivers := neutralizeAttributeDrivers(
-		configuredAttributeDrivers(keys), isolation.mergeDriverCommand,
+		configuredAttributeDrivers(keys), isolation.mergeDriverCommand, isolation.trustedMergeDrivers,
 	)
 	for _, name := range configuredGitHooks(keys) {
 		drivers = append(drivers, gitcmd.Config{Key: "hook." + name + ".enabled", Value: "false"})
@@ -713,7 +718,7 @@ func (drivers attributeDrivers) configured() bool {
 }
 
 func neutralizeAttributeDrivers(
-	drivers attributeDrivers, mergeDriverCommand string,
+	drivers attributeDrivers, mergeDriverCommand string, trustedMergeDrivers []string,
 ) []gitcmd.Config {
 	var config []gitcmd.Config
 	for _, driver := range sortedDriverNames(drivers.filters) {
@@ -733,6 +738,9 @@ func neutralizeAttributeDrivers(
 		)
 	}
 	for _, driver := range sortedDriverNames(drivers.merges) {
+		if slices.Contains(trustedMergeDrivers, driver) {
+			continue
+		}
 		config = append(config, gitcmd.Config{
 			Key: "merge." + driver + ".driver", Value: mergeDriverCommand,
 		})

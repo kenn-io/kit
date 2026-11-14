@@ -105,6 +105,15 @@ type CreateWorktreeOptions struct {
 	Mode CheckoutMode
 	// CheckoutIsolated suppresses programs selected by a checked-out tree.
 	Checkout CheckoutPolicy
+	// TrustedMergeDrivers names merge drivers that isolated checkouts may execute.
+	// Names match exactly, including case. An empty list keeps every custom
+	// merge driver disabled. This also permits repository-controlled attributes
+	// to select these drivers: only allow programs safe on untrusted content.
+	// The caller must source this policy from trusted configuration, never the
+	// fetched tree. Filter and diff drivers remain disabled, even by these names.
+	// This affects newly created worktrees only; it does not restore drivers in
+	// an existing isolated worktree. Ordinary trusted checkout is unaffected.
+	TrustedMergeDrivers []string
 	// NoCheckout registers the worktree without materializing tracked files.
 	NoCheckout bool
 	// LockReason locks the new registration with this Git lock reason.
@@ -274,7 +283,7 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 		if err := validateUntrustedTreeCheckoutGitVersion(ctx, root); err != nil {
 			return CreateWorktreeResult{}, err
 		}
-		isolation, err = prepareUntrustedTreeIsolation(ctx, root)
+		isolation, err = prepareUntrustedTreeIsolation(ctx, root, opts.TrustedMergeDrivers)
 		if err != nil {
 			return CreateWorktreeResult{}, err
 		}

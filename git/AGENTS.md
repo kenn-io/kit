@@ -38,7 +38,10 @@ specific application or forge workflow.
 - Merge-request import treats the fetched tree as untrusted: keep checkout-time
   hooks disabled, neutralize configured filter/fsmonitor/diff/merge programs
   the tree can select, disable implicit submodule recursion, and persist those
-  settings in the imported worktree. This is a narrow Git execution boundary,
+  settings in the imported worktree. The caller may explicitly allow exact,
+  case-sensitive merge driver names through `TrustedMergeDrivers`; this allows
+  repository attributes to select those programs too. Never derive that policy
+  from the fetched tree, or extend it to filter, diff, fsmonitor, or hook programs. This is a narrow Git execution boundary,
   not an OS sandbox for hostile configuration, remotes, lifecycle scripts,
   same-user replacement races, or resource exhaustion.
 - Replacement merge drivers for untrusted merge-request imports must run the
