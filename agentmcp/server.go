@@ -63,10 +63,12 @@ func (server Server) native(agent Agent) (map[string]any, error) {
 	if transport == TransportSSE && agent == AgentCodex {
 		return nil, errors.New("the Codex profile requires streamable HTTP or stdio")
 	}
-	if server.BearerTokenEnvVar != "" {
-		if !bearerEnvName.MatchString(server.BearerTokenEnvVar) {
+	for _, name := range []string{server.BearerTokenEnvVar, server.PreviousBearerTokenEnvVar} {
+		if name != "" && !bearerEnvName.MatchString(name) {
 			return nil, errors.New("MCP bearer token environment variable must be a valid identifier")
 		}
+	}
+	if server.BearerTokenEnvVar != "" {
 		if transport == TransportStdio {
 			return nil, errors.New("MCP stdio server cannot include a bearer token environment variable")
 		}
@@ -104,10 +106,8 @@ func (server Server) native(agent Agent) (map[string]any, error) {
 			if agent == AgentCodex {
 				entry["bearer_token_env_var"] = server.BearerTokenEnvVar
 			} else {
-				headers := maps.Clone(server.Headers)
-				if headers == nil {
-					headers = map[string]string{}
-				}
+				headers := map[string]string{}
+				maps.Copy(headers, server.Headers)
 				headers["Authorization"] = "Bearer ${" + server.BearerTokenEnvVar + "}"
 				entry[headerKey] = headers
 			}

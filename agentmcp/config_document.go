@@ -80,7 +80,6 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 
 // mergeEntry keeps user settings when updating an entry on the same transport.
 func mergeEntry(agent Agent, previous, desired map[string]any, owned string) map[string]any {
-	launch := []string{"command", "args", "url", "type"}
 	_, oldURL := previous["url"]
 	_, newURL := desired["url"]
 	oldType, _ := previous["type"].(string)
@@ -90,25 +89,25 @@ func mergeEntry(agent Agent, previous, desired map[string]any, owned string) map
 	}
 	merged := maps.Clone(previous)
 	maps.DeleteFunc(merged, func(k string, v any) bool {
-		return slices.Contains(launch, k) || k == "bearer_token_env_var" && v == owned
+		return slices.Contains([]string{"command", "args", "url", "type"}, k) || k == "bearer_token_env_var" && v == owned
 	})
 	maps.Copy(merged, desired)
-	_, bearer := desired["bearer_token_env_var"]
 	for _, field := range []string{"env", "headers", "http_headers", "env_http_headers"} {
 		values := map[string]any{}
 		saved, _ := previous[field].(map[string]any)
 		maps.Copy(values, saved)
 		claudeHeaders := agent == AgentClaude && field == "headers"
-		codexBearer := strings.HasSuffix(field, "http_headers") && bearer
+		codexBearer := strings.HasSuffix(field, "http_headers") && desired["bearer_token_env_var"] != nil
 		maps.DeleteFunc(values, func(k string, v any) bool {
 			return strings.EqualFold(k, "Authorization") && (codexBearer || claudeHeaders && v == "Bearer ${"+owned+"}")
 		})
 		supplied, ok := desired[strings.TrimPrefix(field, "env_")].(map[string]string)
 		for key, value := range supplied {
-			for old := range values {
-				if field != "env" && strings.EqualFold(old, key) {
-					delete(values, old)
-				}
+			maps.DeleteFunc(values, func(old string, _ any) bool {
+				return field != "env" && strings.EqualFold(old, key)
+			})
+			if strings.HasSuffix(field, "http_headers") && strings.EqualFold(key, "Authorization") {
+				delete(merged, "bearer_token_env_var")
 			}
 			if field != "env_http_headers" {
 				values[key] = value
