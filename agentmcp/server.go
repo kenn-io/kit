@@ -106,8 +106,10 @@ func (server Server) native(agent Agent) (map[string]any, error) {
 			if agent == AgentCodex {
 				entry["bearer_token_env_var"] = server.BearerTokenEnvVar
 			} else {
-				headers := map[string]string{}
-				maps.Copy(headers, server.Headers)
+				headers := maps.Clone(server.Headers)
+				if headers == nil {
+					headers = map[string]string{}
+				}
 				headers["Authorization"] = "Bearer ${" + server.BearerTokenEnvVar + "}"
 				entry[headerKey] = headers
 			}
