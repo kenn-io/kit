@@ -150,9 +150,11 @@ type InstallOptions struct {
 
 // verifyRunTimeout bounds one run of the new binary before it is installed.
 // verifyWaitDelay bounds the wait for its output after it exits or is killed.
+// verifyOutputLimit bounds the output kept to explain a failed run.
 const (
-	verifyRunTimeout = time.Minute
-	verifyWaitDelay  = 5 * time.Second
+	verifyRunTimeout  = time.Minute
+	verifyWaitDelay   = 5 * time.Second
+	verifyOutputLimit = 4 << 10
 )
 
 // Check checks the latest GitHub release and returns update metadata when an
@@ -432,19 +434,46 @@ func runNewBinary(ctx context.Context, path string, args []string) error {
 	// binary exits or is killed. Stop waiting for it instead of hanging the
 	// update; Wait then fails with exec.ErrWaitDelay.
 	cmd.WaitDelay = verifyWaitDelay
-	output, err := cmd.CombinedOutput()
-	if err == nil {
+	output := &outputPrefix{}
+	cmd.Stdout, cmd.Stderr = output, output
+	err := cmd.Run()
+	// If the binary exits 0 and the deadline or cancellation comes while Wait
+	// still reads its output, Wait reports success. The update was stopped,
+	// so do not count the run as verified.
+	ctxErr := ctx.Err()
+	if err == nil && ctxErr == nil {
 		return nil
 	}
-	const limit = 4 << 10
-	text := strings.TrimSpace(string(output))
-	if len(text) > limit {
-		text = text[:limit] + "..."
+	switch {
+	case err == nil:
+		err = ctxErr
+	case ctxErr != nil:
+		err = fmt.Errorf("%w: %w", ctxErr, err)
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fmt.Errorf("%w: %w: %s", ctxErr, err, text)
+	return fmt.Errorf("%w: %s", err, output)
+}
+
+// outputPrefix keeps the first verifyOutputLimit bytes a process writes and
+// discards the rest, so a binary that prints without end cannot exhaust memory.
+// It accepts every write, so the process never blocks on a full pipe.
+type outputPrefix struct {
+	buf       []byte
+	truncated bool
+}
+
+func (w *outputPrefix) Write(p []byte) (int, error) {
+	n := min(len(p), verifyOutputLimit-len(w.buf))
+	w.buf = append(w.buf, p[:n]...)
+	w.truncated = w.truncated || n < len(p)
+	return len(p), nil
+}
+
+func (w *outputPrefix) String() string {
+	text := strings.TrimSpace(string(w.buf))
+	if w.truncated {
+		text += "..."
 	}
-	return fmt.Errorf("%w: %s", err, text)
+	return text
 }
 
 // HashFile computes the SHA-256 hash of a file.

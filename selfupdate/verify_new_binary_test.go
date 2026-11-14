@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,15 +34,20 @@ func TestNewBinaryHelper(t *testing.T) {
 		_, _ = os.Stderr.WriteString("version `GLIBC_9.99' not found\n")
 		os.Exit(1)
 	case "hold":
-		// Start a long-lived process from the original test executable that
-		// inherits this run's output pipe, then exit successfully.
-		child := consolewindow.CommandContext(t.Context(), os.Args[i+2], newBinaryArgs("sleep")...)
+		// Start a process from the original test executable that inherits
+		// this run's output pipe and holds it for a duration, then exit
+		// successfully.
+		child := consolewindow.CommandContext(t.Context(), os.Args[i+2], newBinaryArgs("sleep", os.Args[i+3])...)
 		child.Stdout, child.Stderr = os.Stdout, os.Stderr
 		if err := child.Start(); err != nil {
 			os.Exit(2)
 		}
 	case "sleep":
-		time.Sleep(20 * time.Second) //nolint:kennlint // sleeptest: a separate helper process must outlive the update's wait for its output; no test state exists to wait on
+		d, err := time.ParseDuration(os.Args[i+2])
+		if err != nil {
+			os.Exit(2)
+		}
+		time.Sleep(d) //nolint:kennlint // sleeptest: a separate helper process holds the update's output pipe for a set time; no test state exists to wait on
 	}
 	os.Exit(0)
 }
@@ -51,7 +58,7 @@ func newBinaryArgs(outcome string, extra ...string) []string {
 
 // installTestExecutable serves an archive holding this test executable and
 // installs it over an existing binary with verifyArgs.
-func installTestExecutable(t *testing.T, verifyArgs []string) (dstPath string, executable []byte, err error) {
+func installTestExecutable(ctx context.Context, t *testing.T, verifyArgs []string) (dstPath string, executable []byte, err error) {
 	t.Helper()
 	require := require.New(t)
 
@@ -99,7 +106,7 @@ func installTestExecutable(t *testing.T, verifyArgs []string) (dstPath string, e
 	require.NoError(os.WriteFile(dstPath, []byte("old-binary"), 0o755))
 
 	client := Client{Owner: "kenn", Repo: "tool", BinaryName: "tool", TrustedPublicKeys: []ed25519.PublicKey{publicKey}}
-	err = client.Install(t.Context(), &Info{
+	err = client.Install(ctx, &Info{
 		DownloadURL:   server.URL + "/archive",
 		SignatureURL:  server.URL + "/archive.sig",
 		AssetName:     filepath.Base(archivePath),
@@ -113,7 +120,7 @@ func installTestExecutable(t *testing.T, verifyArgs []string) (dstPath string, e
 func TestInstallKeepsInstalledBinaryWhenNewBinaryFailsToRun(t *testing.T) {
 	t.Parallel()
 
-	dstPath, _, err := installTestExecutable(t, newBinaryArgs("fail"))
+	dstPath, _, err := installTestExecutable(t.Context(), t, newBinaryArgs("fail"))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "new binary failed to run; kept the installed binary")
@@ -135,7 +142,7 @@ func TestInstallStopsWaitingForOutputHeldByADescendant(t *testing.T) {
 	self, err := os.Executable()
 	require.NoError(t, err)
 
-	dstPath, _, err := installTestExecutable(t, newBinaryArgs("hold", self))
+	dstPath, _, err := installTestExecutable(t.Context(), t, newBinaryArgs("hold", self, "20s"))
 
 	require.ErrorIs(t, err, exec.ErrWaitDelay)
 	got, readErr := os.ReadFile(dstPath)
@@ -143,10 +150,49 @@ func TestInstallStopsWaitingForOutputHeldByADescendant(t *testing.T) {
 	assert.Equal(t, "old-binary", string(got))
 }
 
+func TestInstallKeepsInstalledBinaryWhenStoppedWhileReadingOutput(t *testing.T) {
+	t.Parallel()
+	self, err := os.Executable()
+	require.NoError(t, err)
+	// The new binary exits 0 at once. A process it starts holds the output
+	// pipe for three seconds, so the deadline passes while Install still
+	// reads the output, and the pipe closes before the wait for it ends.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	dstPath, _, err := installTestExecutable(ctx, t, newBinaryArgs("hold", self, "3s"))
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	got, readErr := os.ReadFile(dstPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, "old-binary", string(got))
+}
+
+func TestVerifyOutputKeepsOnlyItsBeginning(t *testing.T) {
+	t.Parallel()
+	output := &outputPrefix{}
+	first := "version `GLIBC_9.99' not found\n"
+	chunk := bytes.Repeat([]byte("x"), 32<<10)
+
+	n, err := output.Write([]byte(first))
+	require.NoError(t, err)
+	assert.Equal(t, len(first), n)
+	for range 64 {
+		n, err = output.Write(chunk)
+		require.NoError(t, err)
+		assert.Equal(t, len(chunk), n, "a discarded write must still report success so the process keeps running")
+	}
+
+	assert.Len(t, output.buf, verifyOutputLimit)
+	text := output.String()
+	assert.True(t, strings.HasPrefix(text, strings.TrimSpace(first)))
+	assert.True(t, strings.HasSuffix(text, "..."))
+}
+
 func TestInstallReplacesBinaryWhenNewBinaryRuns(t *testing.T) {
 	t.Parallel()
 
-	dstPath, executable, err := installTestExecutable(t, newBinaryArgs("pass"))
+	dstPath, executable, err := installTestExecutable(t.Context(), t, newBinaryArgs("pass"))
 
 	require.NoError(t, err)
 	got, readErr := os.ReadFile(dstPath)
