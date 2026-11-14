@@ -97,6 +97,8 @@ For Codex, it emits the native [`bearer_token_env_var` field](https://github.com
 This field supports Claude and Codex remote servers and rejects stdio,
 conflicting Authorization headers, and other clients.
 The referenced variable must be present in the client's environment.
+Setup removes the bearer setting when the app no longer supplies it. For Claude,
+this removes only an Authorization header in the `Bearer ${NAME}` form.
 
 ## Optional additions
 
@@ -167,11 +169,11 @@ status loads system, user, and runtime settings
 [without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
 Check compares only the connection fields represented by `Server`, plus
 `enabled = false`; explicit `enabled = true`, empty `args`, and empty `env` match
-their defaults. Check and `Install` share one merge: extra user settings and env
-keys do not make an entry outdated or get removed. The app owns only the env
-keys it supplies; a wrong value for one makes an entry outdated. Env keys the
-app stops supplying stay until removed. Args follow the app, so a hand-added
-argument makes Check report outdated.
+their defaults. Check and `Install` share one merge: extra user settings, env
+keys, and headers do not make an entry outdated or get removed. The app owns
+the env and header keys it supplies; a wrong value for one makes an entry
+outdated. Keys the app stops supplying stay until removed. The bearer setting
+and args follow the app, so a hand-added argument makes Check report outdated.
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 `Status`, and, when present, `Issue`, as Claude Code 2.1.301 confirms. Only a

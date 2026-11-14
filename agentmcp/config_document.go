@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -77,11 +78,11 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	return data, true, present, err
 }
 
-// mergeEntry keeps user settings for a launch and env update on the same transport.
+// mergeEntry keeps user settings when updating an entry on the same transport.
 func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
-	launch := []string{"command", "args", "url", "type"}
+	launch := []string{"command", "args", "url", "type", "bearer_token_env_var"}
 	for key := range desired {
-		if key != "env" && !slices.Contains(launch, key) {
+		if key != "env" && key != "headers" && key != "http_headers" && !slices.Contains(launch, key) {
 			return desired
 		}
 	}
@@ -97,16 +98,39 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 		delete(merged, key)
 	}
 	maps.Copy(merged, desired)
-	if supplied, ok := desired["env"].(map[string]string); ok {
-		env, _ := previous["env"].(map[string]any)
-		env = maps.Clone(env)
-		if env == nil {
-			env = make(map[string]any)
+	for _, field := range []string{"env", "headers", "http_headers"} {
+		values, _ := previous[field].(map[string]any)
+		values = maps.Clone(values)
+		if agent == AgentClaude && field == "headers" {
+			for key, value := range values {
+				v, ok := value.(string)
+				if strings.EqualFold(key, "Authorization") && ok && bearerEnvHeader.MatchString(v) {
+					delete(values, key)
+				}
+			}
 		}
-		for key, value := range supplied {
-			env[key] = value
+		if supplied, ok := desired[field].(map[string]string); ok {
+			if values == nil {
+				values = make(map[string]any)
+			}
+			for key, value := range supplied {
+				if field != "env" {
+					for old := range values {
+						if strings.EqualFold(old, key) {
+							delete(values, old)
+						}
+					}
+				}
+				values[key] = value
+			}
+			merged[field] = values
+		} else if agent == AgentClaude && field == "headers" {
+			if len(values) == 0 {
+				delete(merged, field)
+			} else {
+				merged[field] = values
+			}
 		}
-		merged["env"] = env
 	}
 	return merged
 }

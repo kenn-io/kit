@@ -91,6 +91,8 @@ func TestCheckCodex(t *testing.T) {
 		next        string
 		server      *agentmcp.Server
 	}{
+		{"stale bearer", "", agentmcp.CheckOutdated, 0, "The MCP server settings don't match this application's setup", false, "[mcp_servers.example]\nurl='https://example.com'\nbearer_token_env_var='TOKEN'\n", "Reinstall the application's MCP server", &agentmcp.Server{URL: "https://example.com"}},
+		{"bearer with user settings", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "Codex returned the server's tools", false, "[mcp_servers.example]\nurl='https://example.com'\nbearer_token_env_var='TOKEN'\ntool_timeout_sec=20\n[mcp_servers.example.http_headers]\nUser='keep'\n", "", &agentmcp.Server{URL: "https://example.com", BearerTokenEnvVar: "TOKEN"}},
 		{"user env settings", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "Codex returned the server's tools", false, "[mcp_servers.example]\ncommand='example'\nargs=['serve']\nstartup_timeout_sec=30\n[mcp_servers.example.env]\nUSER='keep'\nAPP='current'\n", "", &agentmcp.Server{Command: "example", Args: []string{"serve"}, Env: map[string]string{"APP": "current"}}},
 		{"hand-added flag", "", agentmcp.CheckOutdated, 0, "The MCP server settings don't match this application's setup", false, "[mcp_servers.example]\ncommand='example'\nargs=['serve','--write']\n[mcp_servers.example.env]\nAPP='current'\n", "Reinstall the application's MCP server", &agentmcp.Server{Command: "example", Args: []string{"serve"}, Env: map[string]string{"APP": "current"}}},
 		// Matching config must reach the probe despite extra settings and explicit defaults.

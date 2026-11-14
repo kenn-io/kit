@@ -12,10 +12,10 @@ import (
 
 // InstallOptions registers one caller-owned server name. An existing entry
 // for Claude Code and Codex keeps user settings when the supplied entry contains
-// only launch fields and env and uses the same transport. Supplied env values
-// override matching user values; other env values are kept. Args follow the
-// application; hand-added arguments make Check report outdated.
-// Env keys no longer supplied remain in the entry and must be removed manually.
+// only launch fields, env, headers, and bearer settings and uses the same
+// transport. Supplied env and header values override matching user values;
+// other keys remain until removed manually. The bearer setting follows the
+// application, as do args; hand-added arguments make Check report outdated.
 // Other entries are replaced.
 // ConfigPath overrides the user config path with a file using the same top-level
 // schema. Nested Claude local-scope entries and Copilot bare server maps are not
