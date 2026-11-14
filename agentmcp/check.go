@@ -56,9 +56,9 @@ func Check(ctx context.Context, agent Agent, name string, server Server) (CheckR
 	}
 	var changed, present bool
 	if err == nil && agent == AgentCodex {
-		_, changed, present, err = planDocument(agent, original, name, entry, true)
+		_, changed, present, err = planDocument(agent, original, name, entry, server.PreviousBearerTokenEnvVar, true)
 	} else if err == nil {
-		_, changed, present, err = planConfig(agent, original, name, entry)
+		_, changed, present, err = planConfig(agent, original, name, entry, server.PreviousBearerTokenEnvVar)
 	}
 	var config codexConfig
 	if err == nil && agent == AgentCodex && present {

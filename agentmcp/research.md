@@ -97,8 +97,8 @@ For Codex, it emits the native [`bearer_token_env_var` field](https://github.com
 This field supports Claude and Codex remote servers and rejects stdio,
 conflicting Authorization headers, and other clients.
 The referenced variable must be present in the client's environment.
-Setup removes the bearer setting when the app no longer supplies it. For Claude,
-this removes only an Authorization header in the `Bearer ${NAME}` form.
+When authentication is disabled, `PreviousBearerTokenEnvVar` identifies the
+previously supplied bearer setting to remove. Other credentials are preserved.
 
 ## Optional additions
 

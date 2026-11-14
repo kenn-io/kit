@@ -32,14 +32,13 @@ type Server struct {
 	// BearerTokenEnvVar references a client environment variable for Claude or
 	// Codex remote servers. It cannot accompany an Authorization header.
 	// Names must match [A-Za-z_][A-Za-z0-9_]*.
-	// Setup removes this setting when it is no longer supplied.
 	BearerTokenEnvVar string
+	// PreviousBearerTokenEnvVar identifies the previously supplied variable to
+	// remove when BearerTokenEnvVar is empty. Other credentials are preserved.
+	PreviousBearerTokenEnvVar string
 }
 
-var (
-	bearerEnvName   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	bearerEnvHeader = regexp.MustCompile(`^Bearer \$\{` + strings.Trim(bearerEnvName.String(), "^$") + `\}$`)
-)
+var bearerEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func validateURL(value string) error {
 	u, err := url.Parse(value)

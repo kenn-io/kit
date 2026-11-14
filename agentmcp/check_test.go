@@ -56,6 +56,27 @@ func TestCheckConfigStates(t *testing.T) {
 	}
 }
 
+func TestCheckPreviousBearer(t *testing.T) {
+	for _, agent := range []agentmcp.Agent{agentmcp.AgentClaude, agentmcp.AgentCodex} {
+		t.Run(string(agent), func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+			t.Setenv("CODEX_HOME", t.TempDir())
+			t.Setenv("PATH", t.TempDir())
+			server := agentmcp.Server{URL: "https://example.com", BearerTokenEnvVar: "APP_TOKEN"}
+			_, err := agentmcp.Install(agent, agentmcp.InstallOptions{Name: "example", Server: server})
+			require.NoError(t, err)
+			server.BearerTokenEnvVar = ""
+			result, err := agentmcp.Check(t.Context(), agent, "example", server)
+			require.NoError(t, err)
+			assert.NotEqual(t, agentmcp.CheckOutdated, result.State)
+			server.PreviousBearerTokenEnvVar = "APP_TOKEN"
+			result, err = agentmcp.Check(t.Context(), agent, "example", server)
+			require.NoError(t, err)
+			assert.Equal(t, agentmcp.CheckOutdated, result.State)
+		})
+	}
+}
+
 func TestCheckMissingAgent(t *testing.T) {
 	for _, tc := range []struct {
 		agent agentmcp.Agent

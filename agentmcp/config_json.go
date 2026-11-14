@@ -11,7 +11,7 @@ import (
 	"github.com/tailscale/hujson"
 )
 
-func planJSON(agent Agent, original []byte, name string, entry map[string]any) ([]byte, bool, bool, error) {
+func planJSON(agent Agent, original []byte, name string, entry map[string]any, owned string) ([]byte, bool, bool, error) {
 	input := original
 	var bom []byte
 	if agent == AgentGemini && len(input) >= 3 && bytes.HasPrefix(input, []byte{0xef, 0xbb, 0xbf}) {
@@ -56,7 +56,7 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		decoder.UseNumber()
 		if agent == AgentClaude && decoder.Decode(&fields) == nil && fields != nil {
 			dropEmptyFields(fields)
-			entry = mergeEntry(agent, fields, entry)
+			entry = mergeEntry(agent, fields, entry, owned)
 			previous, err = encodeJSON(fields)
 			if err != nil {
 				return nil, false, false, err

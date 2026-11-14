@@ -5,13 +5,14 @@ import (
 	"errors"
 	"io"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 )
 
-func planDocument(agent Agent, original []byte, name string, entry map[string]any, checkOnly bool) ([]byte, bool, bool, error) {
+func planDocument(agent Agent, original []byte, name string, entry map[string]any, owned string, checkOnly bool) ([]byte, bool, bool, error) {
 	doc := map[string]any{}
 	if len(original) > 0 {
 		if agent == AgentCodex {
@@ -48,7 +49,7 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 			fields = maps.Clone(fields)
 			dropEmptyFields(fields)
 			if agent == AgentCodex {
-				entry = mergeEntry(agent, fields, entry)
+				entry = mergeEntry(agent, fields, entry, owned)
 			}
 			previous = fields
 		}
@@ -78,8 +79,8 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 }
 
 // mergeEntry keeps user settings when updating an entry on the same transport.
-func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
-	launch := []string{"command", "args", "url", "type", "bearer_token_env_var"}
+func mergeEntry(agent Agent, previous, desired map[string]any, owned string) map[string]any {
+	launch := []string{"command", "args", "url", "type"}
 	_, oldURL := previous["url"]
 	_, newURL := desired["url"]
 	oldType, _ := previous["type"].(string)
@@ -88,35 +89,34 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 		return desired
 	}
 	merged := maps.Clone(previous)
-	for _, key := range launch {
-		delete(merged, key)
-	}
+	maps.DeleteFunc(merged, func(k string, v any) bool {
+		return slices.Contains(launch, k) || owned != "" && k == "bearer_token_env_var" && v == owned
+	})
 	maps.Copy(merged, desired)
 	_, bearer := desired["bearer_token_env_var"]
-	for _, field := range []string{"env", "headers", "http_headers"} {
+	for _, field := range []string{"env", "headers", "http_headers", "env_http_headers"} {
 		values := map[string]any{}
 		saved, _ := previous[field].(map[string]any)
 		maps.Copy(values, saved)
 		claudeHeaders := agent == AgentClaude && field == "headers"
-		codexBearer := agent == AgentCodex && field == "http_headers" && bearer
-		for key, value := range values {
-			v, _ := value.(string)
-			if strings.EqualFold(key, "Authorization") && (codexBearer || claudeHeaders && bearerEnvHeader.MatchString(v)) {
-				delete(values, key)
-			}
-		}
-		supplied, ok := desired[field].(map[string]string)
+		codexBearer := agent == AgentCodex && strings.HasSuffix(field, "http_headers") && bearer
+		maps.DeleteFunc(values, func(k string, v any) bool {
+			return strings.EqualFold(k, "Authorization") && (codexBearer || claudeHeaders && owned != "" && v == "Bearer ${"+owned+"}")
+		})
+		supplied, ok := desired[strings.TrimPrefix(field, "env_")].(map[string]string)
 		for key, value := range supplied {
 			for old := range values {
 				if field != "env" && strings.EqualFold(old, key) {
 					delete(values, old)
 				}
 			}
-			values[key] = value
+			if field != "env_http_headers" {
+				values[key] = value
+			}
 		}
 		if len(values) != 0 && (ok || claudeHeaders || codexBearer) {
 			merged[field] = values
-		} else if claudeHeaders || codexBearer {
+		} else if ok || claudeHeaders || codexBearer {
 			delete(merged, field)
 		}
 	}
