@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"maps"
-	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -81,11 +80,6 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 // mergeEntry keeps user settings when updating an entry on the same transport.
 func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 	launch := []string{"command", "args", "url", "type", "bearer_token_env_var"}
-	for key := range desired {
-		if key != "env" && key != "headers" && key != "http_headers" && !slices.Contains(launch, key) {
-			return desired
-		}
-	}
 	_, oldURL := previous["url"]
 	_, newURL := desired["url"]
 	oldType, _ := previous["type"].(string)
