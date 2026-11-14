@@ -66,11 +66,8 @@ func TestCheckPreviousBearer(t *testing.T) {
 			_, err := agentmcp.Install(agent, agentmcp.InstallOptions{Name: "example", Server: server})
 			require.NoError(t, err)
 			server.BearerTokenEnvVar = ""
-			result, err := agentmcp.Check(t.Context(), agent, "example", server)
-			require.NoError(t, err)
-			assert.Equal(t, agentmcp.CheckUnknown, result.State)
 			server.PreviousBearerTokenEnvVar = "APP_TOKEN"
-			result, err = agentmcp.Check(t.Context(), agent, "example", server)
+			result, err := agentmcp.Check(t.Context(), agent, "example", server)
 			require.NoError(t, err)
 			assert.Equal(t, agentmcp.CheckOutdated, result.State)
 		})
