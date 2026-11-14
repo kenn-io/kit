@@ -40,7 +40,7 @@ func TestNewBinaryHelper(t *testing.T) {
 			os.Exit(2)
 		}
 	case "sleep":
-		time.Sleep(20 * time.Second)
+		time.Sleep(20 * time.Second) //nolint:kennlint // sleeptest: a separate helper process must outlive the update's wait for its output; no test state exists to wait on
 	}
 	os.Exit(0)
 }
