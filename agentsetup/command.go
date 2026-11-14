@@ -29,7 +29,11 @@ func NewCommand(setup Options) *cobra.Command {
 		if jsonOutput {
 			err = json.MarshalEncode(jsontext.NewEncoder(cmd.OutOrStdout()), report)
 		} else {
-			err = report.WriteText(cmd.OutOrStdout(), setup.setupCommand()+" --check")
+			checkCommand := ""
+			if !setup.CheckOnly {
+				checkCommand = setup.setupCommand() + " --check"
+			}
+			err = report.WriteText(cmd.OutOrStdout(), checkCommand)
 		}
 		if err != nil {
 			return err

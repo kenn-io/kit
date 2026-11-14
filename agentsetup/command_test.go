@@ -69,10 +69,27 @@ func TestCommandCancellationWithNoItems(t *testing.T) {
 func TestCommandRepairGuidance(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
 	opts := Options{RepairCommand: "app agent-hook install", Items: func(agent string) ([]Item, error) {
 		return []Item{MCP(agent, "example", agentmcp.Server{Command: "example"})}, nil
 	}}
 	out, err := execute(t.Context(), opts, "--agent", "codex", "--check")
 	require.ErrorIs(t, err, ErrNotReady)
-	require.Contains(t, out, "Run `app setup --agent codex --check` afterwards.")
+	require.Contains(t, out, "app agent-hook install")
+}
+
+func TestCommandCheckFooter(t *testing.T) {
+	opts := Options{Items: func(string) ([]Item, error) {
+		return []Item{{Name: "custom", Check: func(context.Context) (Status, error) {
+			return Status{State: StateMissing}, nil
+		}}}, nil
+	}}
+	out, err := execute(t.Context(), opts, "--agent", "codex", "--check")
+	require.ErrorIs(t, err, ErrNotReady)
+	require.Contains(t, out, "Attention needed for 1 step.")
+	require.NotContains(t, out, "afterwards")
+
+	out, err = execute(t.Context(), opts, "--agent", "codex")
+	require.ErrorIs(t, err, ErrNotReady)
+	require.Contains(t, out, "app setup --agent codex --check")
 }
