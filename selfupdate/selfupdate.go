@@ -149,7 +149,11 @@ type InstallOptions struct {
 }
 
 // verifyRunTimeout bounds one run of the new binary before it is installed.
-const verifyRunTimeout = time.Minute
+// verifyWaitDelay bounds the wait for its output after it exits or is killed.
+const (
+	verifyRunTimeout = time.Minute
+	verifyWaitDelay  = 5 * time.Second
+)
 
 // Check checks the latest GitHub release and returns update metadata when an
 // update is available. A nil Info means no update is available.
@@ -423,16 +427,24 @@ func InstallArchive(archivePath, expectedChecksum, dstPath string, opts InstallA
 func runNewBinary(ctx context.Context, path string, args []string) error {
 	ctx, cancel := context.WithTimeout(ctx, verifyRunTimeout)
 	defer cancel()
-	output, err := consolewindow.CommandContext(ctx, path, args...).CombinedOutput()
-	if err != nil {
-		const limit = 4 << 10
-		text := strings.TrimSpace(string(output))
-		if len(text) > limit {
-			text = text[:limit] + "..."
-		}
-		return fmt.Errorf("%w: %s", err, text)
+	cmd := consolewindow.CommandContext(ctx, path, args...)
+	// A process the binary starts can hold the output pipe open after the
+	// binary exits or is killed. Stop waiting for it instead of hanging the
+	// update; Wait then fails with exec.ErrWaitDelay.
+	cmd.WaitDelay = verifyWaitDelay
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
 	}
-	return nil
+	const limit = 4 << 10
+	text := strings.TrimSpace(string(output))
+	if len(text) > limit {
+		text = text[:limit] + "..."
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%w: %w: %s", ctxErr, err, text)
+	}
+	return fmt.Errorf("%w: %s", err, text)
 }
 
 // HashFile computes the SHA-256 hash of a file.

@@ -6,13 +6,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"go.kenn.io/kit/consolewindow"
 )
 
 // TestNewBinaryHelper is not a test of its own. The tests below install this
@@ -23,15 +27,26 @@ func TestNewBinaryHelper(t *testing.T) {
 	if i < 0 || i+1 >= len(os.Args) {
 		return
 	}
-	if os.Args[i+1] == "fail" {
+	switch os.Args[i+1] {
+	case "fail":
 		_, _ = os.Stderr.WriteString("version `GLIBC_9.99' not found\n")
 		os.Exit(1)
+	case "hold":
+		// Start a long-lived process from the original test executable that
+		// inherits this run's output pipe, then exit successfully.
+		child := consolewindow.CommandContext(t.Context(), os.Args[i+2], newBinaryArgs("sleep")...)
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+	case "sleep":
+		time.Sleep(20 * time.Second)
 	}
 	os.Exit(0)
 }
 
-func newBinaryArgs(outcome string) []string {
-	return []string{"-test.run=^TestNewBinaryHelper$", "--", "--new-binary", outcome}
+func newBinaryArgs(outcome string, extra ...string) []string {
+	return append([]string{"-test.run=^TestNewBinaryHelper$", "--", "--new-binary", outcome}, extra...)
 }
 
 // installTestExecutable serves an archive holding this test executable and
@@ -113,6 +128,19 @@ func TestInstallKeepsInstalledBinaryWhenNewBinaryFailsToRun(t *testing.T) {
 		names = append(names, entry.Name())
 	}
 	assert.Equal(t, []string{filepath.Base(dstPath)}, names, "staged binary was not removed")
+}
+
+func TestInstallStopsWaitingForOutputHeldByADescendant(t *testing.T) {
+	t.Parallel()
+	self, err := os.Executable()
+	require.NoError(t, err)
+
+	dstPath, _, err := installTestExecutable(t, newBinaryArgs("hold", self))
+
+	require.ErrorIs(t, err, exec.ErrWaitDelay)
+	got, readErr := os.ReadFile(dstPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, "old-binary", string(got))
 }
 
 func TestInstallReplacesBinaryWhenNewBinaryRuns(t *testing.T) {
