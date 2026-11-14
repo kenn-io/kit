@@ -18,6 +18,15 @@
 // leaving tracking makes no writes. Explicit push defaults stay worktree-local
 // even when branch routing uses repository scope.
 //
+// Isolated checkouts disable custom attribute programs by default. Applications
+// may set TrustedMergeDrivers in creation/import options to retain specific
+// configured merge drivers, for example []string{"mergiraf"}. The application
+// owns the trusted source of that list. Git does not distinguish a global
+// attribute selecting a driver from a repository attribute selecting that same
+// driver at execution time, so the allowance applies to both. Only allow drivers
+// safe to execute on contributor-controlled files. Other driver names, filters,
+// diff helpers, and hooks remain isolated. Existing worktrees are not changed.
+//
 // Removal distinguishes checkout, registration, and branch outcomes, including
 // effects completed before a Git error. Branch cleanup starts only after the
 // checkout and registration are gone. These operations take no repository lock;

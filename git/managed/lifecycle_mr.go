@@ -53,6 +53,15 @@ func (e *ChangeRequestError) Unwrap() error { return e.Cause }
 // ProjectRepoIdentity is the CloneURLIdentity-normalized identity of the
 // project's own repository, used to recognize same-repo merge requests.
 type MergeRequestWorktreeOptions struct {
+	// TrustedMergeDrivers names merge drivers that isolated checkouts may execute.
+	// Names match exactly, including case. An empty list keeps every custom
+	// merge driver disabled. This also permits repository-controlled attributes
+	// to select these drivers: only allow programs safe on untrusted content.
+	// The caller must source this policy from trusted configuration, never the
+	// fetched tree. Filter and diff drivers remain disabled, even by these names.
+	// This affects newly created worktrees only; it does not restore drivers in
+	// an existing isolated worktree. Ordinary trusted checkout is unaffected.
+	TrustedMergeDrivers []string
 	// Mode defaults to creating a new branch. Import never trusts the fetched tree.
 	Mode           CheckoutMode
 	NoCheckout     bool
@@ -110,7 +119,7 @@ type mergeRequestRemoteTarget struct {
 
 // CreateWorktreeFromMergeRequest materializes an untrusted merge request head
 // as a new worktree. It verifies the expected head when supplied, creates the
-// worktree without checkout-time hooks or configured attribute programs,
+// worktree without checkout-time hooks or unapproved attribute programs,
 // persists that isolation for later Git commands, and disables implicit
 // submodule recursion. The existing repository, its configuration, provider
 // metadata, remotes, and explicitly configured setup hook remain trusted.
@@ -194,7 +203,7 @@ func CreateWorktreeFromMergeRequest(
 		return CreateWorktreeResult{}, err
 	}
 
-	isolation, err := prepareUntrustedTreeIsolation(ctx, root)
+	isolation, err := prepareUntrustedTreeIsolation(ctx, root, opts.TrustedMergeDrivers)
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
