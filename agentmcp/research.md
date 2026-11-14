@@ -172,8 +172,8 @@ Check compares only the connection fields represented by `Server`, plus
 their defaults. Check and `Install` share one merge: extra user settings, env
 keys, and headers do not make an entry outdated or get removed. The app owns
 the env and header keys it supplies; a wrong value for one makes an entry
-outdated. Keys the app stops supplying stay until removed. The bearer setting
-and args follow the app, so a hand-added argument makes Check report outdated.
+outdated. Keys the app stops supplying stay until removed. Args follow the
+app, so a hand-added argument makes Check report outdated.
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 `Status`, and, when present, `Issue`, as Claude Code 2.1.301 confirms. Only a

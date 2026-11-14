@@ -90,7 +90,7 @@ func mergeEntry(agent Agent, previous, desired map[string]any, owned string) map
 	}
 	merged := maps.Clone(previous)
 	maps.DeleteFunc(merged, func(k string, v any) bool {
-		return slices.Contains(launch, k) || owned != "" && k == "bearer_token_env_var" && v == owned
+		return slices.Contains(launch, k) || k == "bearer_token_env_var" && v == owned
 	})
 	maps.Copy(merged, desired)
 	_, bearer := desired["bearer_token_env_var"]
@@ -99,9 +99,9 @@ func mergeEntry(agent Agent, previous, desired map[string]any, owned string) map
 		saved, _ := previous[field].(map[string]any)
 		maps.Copy(values, saved)
 		claudeHeaders := agent == AgentClaude && field == "headers"
-		codexBearer := agent == AgentCodex && strings.HasSuffix(field, "http_headers") && bearer
+		codexBearer := strings.HasSuffix(field, "http_headers") && bearer
 		maps.DeleteFunc(values, func(k string, v any) bool {
-			return strings.EqualFold(k, "Authorization") && (codexBearer || claudeHeaders && owned != "" && v == "Bearer ${"+owned+"}")
+			return strings.EqualFold(k, "Authorization") && (codexBearer || claudeHeaders && v == "Bearer ${"+owned+"}")
 		})
 		supplied, ok := desired[strings.TrimPrefix(field, "env_")].(map[string]string)
 		for key, value := range supplied {

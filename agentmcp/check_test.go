@@ -173,8 +173,7 @@ func TestCheckClaude(t *testing.T) {
 			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 			t.Setenv("KIT_MCP_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_MCP_CHECK_REPLY", tc.reply)
-			server := agentmcp.Server{Command: "example"}
-			_, err := agentmcp.Install(agentmcp.AgentClaude, agentmcp.InstallOptions{Name: "example", Server: server})
+			_, err := agentmcp.Install(agentmcp.AgentClaude, agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}})
 			require.NoError(t, err)
 			ctx := t.Context()
 			if tc.expired {
@@ -182,7 +181,7 @@ func TestCheckClaude(t *testing.T) {
 				ctx, cancel = context.WithDeadline(ctx, time.Time{})
 				defer cancel()
 			}
-			result, err := agentmcp.Check(ctx, agentmcp.AgentClaude, "example", server)
+			result, err := agentmcp.Check(ctx, agentmcp.AgentClaude, "example", agentmcp.Server{Command: "example"})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			assert.Equal(t, tc.reason, result.Reason)
