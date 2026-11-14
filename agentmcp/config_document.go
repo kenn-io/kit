@@ -98,46 +98,32 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 		delete(merged, key)
 	}
 	maps.Copy(merged, desired)
+	_, bearer := desired["bearer_token_env_var"]
 	for _, field := range []string{"env", "headers", "http_headers"} {
-		values, _ := previous[field].(map[string]any)
-		values = maps.Clone(values)
-		_, bearer := desired["bearer_token_env_var"]
+		values := map[string]any{}
+		saved, _ := previous[field].(map[string]any)
+		maps.Copy(values, saved)
+		claudeHeaders := agent == AgentClaude && field == "headers"
 		codexBearer := agent == AgentCodex && field == "http_headers" && bearer
-		if agent == AgentClaude && field == "headers" {
-			for key, value := range values {
-				if v, _ := value.(string); strings.EqualFold(key, "Authorization") && bearerEnvHeader.MatchString(v) {
-					delete(values, key)
-				}
+		for key, value := range values {
+			v, _ := value.(string)
+			if strings.EqualFold(key, "Authorization") && (codexBearer || claudeHeaders && bearerEnvHeader.MatchString(v)) {
+				delete(values, key)
 			}
 		}
-		if codexBearer {
-			for key := range values {
-				if strings.EqualFold(key, "Authorization") {
-					delete(values, key)
+		supplied, ok := desired[field].(map[string]string)
+		for key, value := range supplied {
+			for old := range values {
+				if field != "env" && strings.EqualFold(old, key) {
+					delete(values, old)
 				}
 			}
+			values[key] = value
 		}
-		if supplied, ok := desired[field].(map[string]string); ok {
-			if values == nil {
-				values = make(map[string]any)
-			}
-			for key, value := range supplied {
-				if field != "env" {
-					for old := range values {
-						if strings.EqualFold(old, key) {
-							delete(values, old)
-						}
-					}
-				}
-				values[key] = value
-			}
+		if len(values) != 0 && (ok || claudeHeaders || codexBearer) {
 			merged[field] = values
-		} else if (agent == AgentClaude && field == "headers") || codexBearer {
-			if len(values) == 0 {
-				delete(merged, field)
-			} else {
-				merged[field] = values
-			}
+		} else if claudeHeaders || codexBearer {
+			delete(merged, field)
 		}
 	}
 	return merged
