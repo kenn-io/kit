@@ -103,8 +103,7 @@ func mergeEntry(agent Agent, previous, desired map[string]any) map[string]any {
 		values = maps.Clone(values)
 		if agent == AgentClaude && field == "headers" {
 			for key, value := range values {
-				v, ok := value.(string)
-				if strings.EqualFold(key, "Authorization") && ok && bearerEnvHeader.MatchString(v) {
+				if v, _ := value.(string); strings.EqualFold(key, "Authorization") && bearerEnvHeader.MatchString(v) {
 					delete(values, key)
 				}
 			}
