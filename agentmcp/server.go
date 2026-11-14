@@ -33,6 +33,9 @@ type Server struct {
 	// Codex remote servers. It cannot accompany an Authorization header.
 	// Names must match [A-Za-z_][A-Za-z0-9_]*.
 	BearerTokenEnvVar string
+	// PreviousBearerTokenEnvVar identifies the previously supplied variable to
+	// remove when BearerTokenEnvVar is empty. Other credentials are preserved.
+	PreviousBearerTokenEnvVar string
 }
 
 var bearerEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -60,10 +63,12 @@ func (server Server) native(agent Agent) (map[string]any, error) {
 	if transport == TransportSSE && agent == AgentCodex {
 		return nil, errors.New("the Codex profile requires streamable HTTP or stdio")
 	}
-	if server.BearerTokenEnvVar != "" {
-		if !bearerEnvName.MatchString(server.BearerTokenEnvVar) {
+	for _, name := range []string{server.BearerTokenEnvVar, server.PreviousBearerTokenEnvVar} {
+		if name != "" && !bearerEnvName.MatchString(name) {
 			return nil, errors.New("MCP bearer token environment variable must be a valid identifier")
 		}
+	}
+	if server.BearerTokenEnvVar != "" {
 		if transport == TransportStdio {
 			return nil, errors.New("MCP stdio server cannot include a bearer token environment variable")
 		}

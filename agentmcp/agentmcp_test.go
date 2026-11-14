@@ -104,6 +104,7 @@ func TestMarshalConfigInvalid(t *testing.T) {
 		{"empty name", " ", agentmcp.AgentClaude, agentmcp.Server{Command: "example"}},
 		{"stdio bearer", "example", agentmcp.AgentClaude, agentmcp.Server{Command: "example", BearerTokenEnvVar: "TOKEN"}},
 		{"invalid bearer name", "example", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN:-literal-secret"}},
+		{"invalid previous bearer name", "example", agentmcp.AgentCodex, agentmcp.Server{URL: "https://example.com/mcp", PreviousBearerTokenEnvVar: "${APP_TOKEN}"}},
 		{"unsupported bearer", "example", agentmcp.AgentCursor, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}},
 		{"conflicting bearer", "example", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN", Headers: map[string]string{"authorization": "Bearer literal"}}},
 		{"invalid transport", "example", agentmcp.AgentCodex, agentmcp.Server{Transport: "unknown", URL: "https://example.com/mcp"}},
