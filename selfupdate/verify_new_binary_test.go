@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,21 +36,47 @@ func TestNewBinaryHelper(t *testing.T) {
 		os.Exit(1)
 	case "hold":
 		// Start a process from the original test executable that inherits
-		// this run's output pipe and holds it for a duration, then exit
-		// successfully.
-		child := consolewindow.CommandContext(t.Context(), os.Args[i+2], newBinaryArgs("sleep", os.Args[i+3])...)
-		child.Stdout, child.Stderr = os.Stdout, os.Stderr
-		if err := child.Start(); err != nil {
-			os.Exit(2)
-		}
+		// this run's output pipe and holds it open, then exit successfully.
+		startChild(t, os.Args[i+2], nil, "sleep")
 	case "sleep":
-		d, err := time.ParseDuration(os.Args[i+2])
+		time.Sleep(20 * time.Second) //nolint:kennlint // sleeptest: a separate helper process must outlive the update's wait for its output; no test state exists to wait on
+	case "exit-then-cancel":
+		// Start a process that inherits this run's output pipe and cancels
+		// the update once this process has exited successfully.
+		r, w, err := os.Pipe()
 		if err != nil {
 			os.Exit(2)
 		}
-		time.Sleep(d) //nolint:kennlint // sleeptest: a separate helper process holds the update's output pipe for a set time; no test state exists to wait on
+		startChild(t, os.Args[i+2], r, "cancel-after-parent", os.Args[i+3])
+		// Keep the write end open until this process exits.
+		runtime.KeepAlive(w)
+		os.Exit(0)
+	case "cancel-after-parent":
+		// Standard input closes when the parent exits. Then ask the test to
+		// cancel the update and exit, closing the update's output pipe.
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, os.Args[i+2], nil)
+		if err != nil {
+			os.Exit(2)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			os.Exit(2)
+		}
+		_ = resp.Body.Close()
 	}
 	os.Exit(0)
+}
+
+// startChild starts the original test executable as a helper process that
+// inherits this process's output and reads stdin.
+func startChild(t *testing.T, exe string, stdin *os.File, outcome string, extra ...string) {
+	t.Helper()
+	child := consolewindow.CommandContext(t.Context(), exe, newBinaryArgs(outcome, extra...)...)
+	child.Stdin, child.Stdout, child.Stderr = stdin, os.Stdout, os.Stderr
+	if err := child.Start(); err != nil {
+		os.Exit(2)
+	}
 }
 
 func newBinaryArgs(outcome string, extra ...string) []string {
@@ -142,7 +169,7 @@ func TestInstallStopsWaitingForOutputHeldByADescendant(t *testing.T) {
 	self, err := os.Executable()
 	require.NoError(t, err)
 
-	dstPath, _, err := installTestExecutable(t.Context(), t, newBinaryArgs("hold", self, "20s"))
+	dstPath, _, err := installTestExecutable(t.Context(), t, newBinaryArgs("hold", self))
 
 	require.ErrorIs(t, err, exec.ErrWaitDelay)
 	got, readErr := os.ReadFile(dstPath)
@@ -155,14 +182,18 @@ func TestInstallKeepsInstalledBinaryWhenStoppedWhileReadingOutput(t *testing.T) 
 	self, err := os.Executable()
 	require.NoError(t, err)
 	// The new binary exits 0 at once. A process it starts holds the output
-	// pipe for three seconds, so the deadline passes while Install still
-	// reads the output, and the pipe closes before the wait for it ends.
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	// pipe, waits for that exit, and cancels the update through this server
+	// before closing the pipe, so the cancellation lands while Install still
+	// reads the output.
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	canceler := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { cancel() }))
+	t.Cleanup(canceler.Close)
 
-	dstPath, _, err := installTestExecutable(ctx, t, newBinaryArgs("hold", self, "3s"))
+	dstPath, _, err := installTestExecutable(ctx, t, newBinaryArgs("exit-then-cancel", self, canceler.URL))
 
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "new binary failed to run; kept the installed binary")
 	got, readErr := os.ReadFile(dstPath)
 	require.NoError(t, readErr)
 	assert.Equal(t, "old-binary", string(got))
