@@ -26,6 +26,7 @@ import (
 	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/mod/semver"
 
+	"go.kenn.io/kit/consolewindow"
 	"go.kenn.io/kit/internal/renamebusy"
 	"go.kenn.io/kit/pathresolve"
 )
@@ -140,7 +141,21 @@ type InstallOptions struct {
 	ArchiveBinaryName string
 	TempDir           string
 	Progress          func(downloaded, total int64)
+	// VerifyArgs, when set, runs the new binary with these arguments before it
+	// replaces the installed one. If it cannot run, for example because it
+	// needs newer system libraries than the host has, the installed binary
+	// stays in place and Install returns its output.
+	VerifyArgs []string
 }
+
+// verifyRunTimeout bounds one run of the new binary before it is installed.
+// verifyWaitDelay bounds the wait for its output after it exits or is killed.
+// verifyOutputLimit bounds the output kept to explain a failed run.
+const (
+	verifyRunTimeout  = time.Minute
+	verifyWaitDelay   = 5 * time.Second
+	verifyOutputLimit = 4 << 10
+)
 
 // Check checks the latest GitHub release and returns update metadata when an
 // update is available. A nil Info means no update is available.
@@ -325,7 +340,12 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 		archiveBinaryName = executableName(c.BinaryName)
 	}
 
+	var verify func(string) error
+	if len(opts.VerifyArgs) > 0 {
+		verify = func(path string) error { return runNewBinary(ctx, path, opts.VerifyArgs) }
+	}
 	return InstallArchive(archivePath, info.Checksum, dstPath, InstallArchiveOptions{
+		Verify:                 verify,
 		ArchiveBinaryName:      archiveBinaryName,
 		PrecomputedChecksum:    downloadChecksum,
 		TempDir:                opts.TempDir,
@@ -347,6 +367,9 @@ type InstallArchiveOptions struct {
 	SignaturePayload       []byte
 	RequireSignature       bool
 	AllowUnsignedChecksums bool
+	// Verify, when set, receives the staged binary's path next to dstPath. An
+	// error leaves the installed binary in place.
+	Verify func(stagedPath string) error
 }
 
 // InstallArchive verifies archivePath, extracts it, and installs the target
@@ -398,7 +421,62 @@ func InstallArchive(archivePath, expectedChecksum, dstPath string, opts InstallA
 	if err != nil {
 		return err
 	}
-	return InstallBinary(srcPath, dstPath)
+	return installBinary(srcPath, dstPath, opts.Verify)
+}
+
+// runNewBinary runs the staged binary at path with args and returns its output
+// when it fails.
+func runNewBinary(ctx context.Context, path string, args []string) error {
+	ctx, cancel := context.WithTimeout(ctx, verifyRunTimeout)
+	defer cancel()
+	cmd := consolewindow.CommandContext(ctx, path, args...)
+	// A process the binary starts can hold the output pipe open after the
+	// binary exits or is killed. Stop waiting for it instead of hanging the
+	// update; Wait then fails with exec.ErrWaitDelay.
+	cmd.WaitDelay = verifyWaitDelay
+	output := &outputPrefix{}
+	cmd.Stdout, cmd.Stderr = output, output
+	err := cmd.Run()
+	// If the binary exits 0 and the deadline or cancellation comes while Wait
+	// still reads its output, Wait reports success. The update was stopped,
+	// so do not count the run as verified.
+	switch ctxErr := ctx.Err(); {
+	case ctxErr == nil:
+	case err == nil:
+		err = ctxErr
+	case !errors.Is(err, ctxErr):
+		err = fmt.Errorf("%w: %w", ctxErr, err)
+	}
+	if err == nil {
+		return nil
+	}
+	if text := output.String(); text != "" {
+		return fmt.Errorf("%w: %s", err, text)
+	}
+	return err
+}
+
+// outputPrefix keeps the first verifyOutputLimit bytes a process writes and
+// discards the rest, so a binary that prints without end cannot exhaust memory.
+// It accepts every write, so the process never blocks on a full pipe.
+type outputPrefix struct {
+	buf       []byte
+	truncated bool
+}
+
+func (w *outputPrefix) Write(p []byte) (int, error) {
+	n := min(len(p), verifyOutputLimit-len(w.buf))
+	w.buf = append(w.buf, p[:n]...)
+	w.truncated = w.truncated || n < len(p)
+	return len(p), nil
+}
+
+func (w *outputPrefix) String() string {
+	text := strings.TrimSpace(string(w.buf))
+	if w.truncated {
+		text += "..."
+	}
+	return text
 }
 
 // HashFile computes the SHA-256 hash of a file.
@@ -420,6 +498,10 @@ func HashFile(path string) (string, error) {
 // On Windows, each backup, installation, and rollback rename can wait up to
 // two seconds for a sharing violation to clear.
 func InstallBinary(srcPath, dstPath string) error {
+	return installBinary(srcPath, dstPath, nil)
+}
+
+func installBinary(srcPath, dstPath string, verify func(string) error) error {
 	dstDir := filepath.Dir(dstPath)
 	dstBase := filepath.Base(dstPath)
 
@@ -450,6 +532,13 @@ func InstallBinary(srcPath, dstPath string) error {
 	}
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("stage: %w", err)
+	}
+	// Run the staged copy from the install directory, which can execute it
+	// even when the temporary directory cannot.
+	if verify != nil {
+		if err := verify(tmpPath); err != nil {
+			return fmt.Errorf("new binary failed to run; kept the installed binary: %w", err)
+		}
 	}
 
 	movedAside := false

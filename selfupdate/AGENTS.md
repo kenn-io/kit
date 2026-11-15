@@ -27,6 +27,8 @@ executable path.
   them with bare `atomicfile.Replace`.
 - Keep cache-only update metadata from being installable; force a fresh check
   before install.
+- With `VerifyArgs` set, run the staged copy from the destination directory
+  before replacement, and keep the installed binary when it fails to run.
 - Do not add live GitHub calls to tests. Use fake HTTP handlers and explicit
   responses.
 
