@@ -440,17 +440,20 @@ func runNewBinary(ctx context.Context, path string, args []string) error {
 	// If the binary exits 0 and the deadline or cancellation comes while Wait
 	// still reads its output, Wait reports success. The update was stopped,
 	// so do not count the run as verified.
-	ctxErr := ctx.Err()
-	if err == nil && ctxErr == nil {
-		return nil
-	}
-	switch {
+	switch ctxErr := ctx.Err(); {
+	case ctxErr == nil:
 	case err == nil:
 		err = ctxErr
-	case ctxErr != nil:
+	case !errors.Is(err, ctxErr):
 		err = fmt.Errorf("%w: %w", ctxErr, err)
 	}
-	return fmt.Errorf("%w: %s", err, output)
+	if err == nil {
+		return nil
+	}
+	if text := output.String(); text != "" {
+		return fmt.Errorf("%w: %s", err, text)
+	}
+	return err
 }
 
 // outputPrefix keeps the first verifyOutputLimit bytes a process writes and

@@ -199,6 +199,19 @@ func TestInstallKeepsInstalledBinaryWhenStoppedWhileReadingOutput(t *testing.T) 
 	assert.Equal(t, "old-binary", string(got))
 }
 
+func TestNewBinaryRunCanceledBeforeStartReportsCancellationOnce(t *testing.T) {
+	t.Parallel()
+	self, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err = runNewBinary(ctx, self, newBinaryArgs("pass"))
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, context.Canceled.Error(), err.Error())
+}
+
 func TestVerifyOutputKeepsOnlyItsBeginning(t *testing.T) {
 	t.Parallel()
 	output := &outputPrefix{}
