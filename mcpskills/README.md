@@ -36,8 +36,10 @@ retrieval contains one entry. The structured result never repeats the Markdown.
 
 Names are case-sensitive ASCII identifiers matching `[a-z][a-z0-9_-]*`.
 The optional `name` must be a nonempty string when present. Null, padded names,
-unknown fields, repeated fields, malformed input and unknown names return
-JSON-RPC invalid-params (`-32602`). Omitted arguments and `{}` list the catalog.
+unknown fields, repeated fields, malformed input and unknown names return a
+tool result with `isError` set and a message telling the client how to list the
+guides, so the model can correct its call. Omitted arguments and `{}` list the
+catalog.
 Construction rejects duplicate names, empty catalogs, blank text and invalid
 UTF-8. Accepted titles, summaries and Markdown retain their exact bytes.
 
@@ -51,7 +53,6 @@ Append `catalog.Instructions()` before constructing the server; it preserves
 caller control over existing instructions. Register the guide tool outside
 optional sections to keep it always discoverable. Applications own their
 tool names: SDK `AddTool` replaces an existing tool with the same name, so choose
-or reserve a unique name. Applications own their
-catalog filters, deferred loading, authentication, authorization, result bounds
+or reserve a unique name. Applications own their catalog filters, deferred loading, authentication, authorization, result bounds
 and transport. The helper does not bypass that policy or turn guide text into
 an action. See the runnable two-consumer example and in-memory protocol tests.

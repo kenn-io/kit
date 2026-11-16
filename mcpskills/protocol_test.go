@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -68,10 +67,11 @@ func TestTwoConsumersOverMCP(t *testing.T) {
 			assert.Equal(t, config.Guides[0].Markdown, read.Content[0].(*mcp.TextContent).Text)
 			assert.Equal(t, []mcpskills.Entry{config.Guides[0].Entry}, metadata(t, read).Skills)
 			require.NoError(t, outputSchema.Validate(read.StructuredContent))
-			_, err = session.CallTool(t.Context(), &mcp.CallToolParams{Name: name, Arguments: json.RawMessage(`{"name":"missing"}`)})
-			var rpcError *jsonrpc.Error
-			require.ErrorAs(t, err, &rpcError)
-			assert.EqualValues(t, jsonrpc.CodeInvalidParams, rpcError.Code)
+			missing, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: name, Arguments: json.RawMessage(`{"name":"missing"}`)})
+			require.NoError(t, err)
+			assert.True(t, missing.IsError)
+			require.Len(t, missing.Content, 1)
+			assert.Contains(t, missing.Content[0].(*mcp.TextContent).Text, "call "+name+" {} to list available guides")
 		})
 	}
 }

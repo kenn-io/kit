@@ -135,15 +135,17 @@ func (c *Catalog) Register(server *mcp.Server) {
 
 // Handler lists metadata when arguments are absent or {}, or returns the exact
 // named Markdown with one metadata entry. All mutable results belong to the
-// caller. Invalid arguments and unknown names return JSON-RPC invalid-params.
-// Present names must be nonempty exact identifiers; null and unknown keys fail.
+// caller. Present names must be nonempty exact identifiers; null and unknown
+// keys fail. Invalid arguments and unknown names return a result with IsError
+// set, so the client model can read the message and correct its call. A nil
+// request or missing params is a caller bug and returns JSON-RPC invalid-params.
 func (c *Catalog) Handler(_ context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if request == nil || request.Params == nil {
-		return nil, invalidParams("missing call parameters")
+		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "missing call parameters"}
 	}
 	name, err := parseName(request.Params.Arguments)
 	if err != nil {
-		return nil, invalidParams(err.Error())
+		return toolError(err.Error() + "; call " + c.toolName + " {} to list available guides"), nil
 	}
 	if name != "" {
 		for _, guide := range c.guides {
@@ -151,7 +153,7 @@ func (c *Catalog) Handler(_ context.Context, request *mcp.CallToolRequest) (*mcp
 				return result(guide.Markdown, []Entry{guide.Entry}), nil
 			}
 		}
-		return nil, invalidParams("unknown guide; call " + c.toolName + " {} to list available guides")
+		return toolError("unknown guide; call " + c.toolName + " {} to list available guides"), nil
 	}
 	var text strings.Builder
 	for _, guide := range c.guides {
@@ -167,8 +169,11 @@ func result(text string, entries []Entry) *mcp.CallToolResult {
 	}
 }
 
-func invalidParams(message string) error {
-	return &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: message}
+func toolError(message string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: message}},
+		IsError: true,
+	}
 }
 
 func parseName(arguments json.RawMessage) (string, error) {

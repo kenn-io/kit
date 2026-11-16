@@ -66,19 +66,22 @@ func TestInvalidArguments(t *testing.T) {
 			name = "long unknown name"
 		}
 		t.Run(name, func(t *testing.T) {
-			result, err := catalog.Handler(t.Context(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: json.RawMessage(arguments)}})
-			require.Error(t, err)
-			assert.Nil(t, result)
-			var rpcError *jsonrpc.Error
-			require.ErrorAs(t, err, &rpcError)
-			assert.EqualValues(t, jsonrpc.CodeInvalidParams, rpcError.Code)
-			assert.Less(t, len(err.Error()), 256)
+			result := call(t, catalog, arguments)
+			assert.True(t, result.IsError)
+			assert.Nil(t, result.StructuredContent)
+			require.Len(t, result.Content, 1)
+			text := result.Content[0].(*mcp.TextContent).Text
+			assert.Contains(t, text, "call alpha.skills {} to list available guides")
+			assert.Less(t, len(text), 256)
 		})
 	}
-	_, err = catalog.Handler(t.Context(), nil)
-	require.Error(t, err)
-	_, err = catalog.Handler(t.Context(), &mcp.CallToolRequest{})
-	require.Error(t, err)
+	for _, request := range []*mcp.CallToolRequest{nil, {}} {
+		result, err := catalog.Handler(t.Context(), request)
+		assert.Nil(t, result)
+		var rpcError *jsonrpc.Error
+		require.ErrorAs(t, err, &rpcError)
+		assert.EqualValues(t, jsonrpc.CodeInvalidParams, rpcError.Code)
+	}
 }
 
 func TestInvalidConfig(t *testing.T) {
