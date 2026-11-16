@@ -143,23 +143,29 @@ func (c *Catalog) Handler(_ context.Context, request *mcp.CallToolRequest) (*mcp
 	if request == nil || request.Params == nil {
 		return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "missing call parameters"}
 	}
-	name, err := parseName(request.Params.Arguments)
+	return c.respond(request.Params.Arguments), nil
+}
+
+// respond builds the result for raw arguments. Argument problems become tool
+// errors rather than Go errors, so it has no error return.
+func (c *Catalog) respond(arguments json.RawMessage) *mcp.CallToolResult {
+	name, err := parseName(arguments)
 	if err != nil {
-		return toolError(err.Error() + "; call " + c.toolName + " {} to list available guides"), nil
+		return c.toolError(err.Error())
 	}
 	if name != "" {
 		for _, guide := range c.guides {
 			if guide.Name == name {
-				return result(guide.Markdown, []Entry{guide.Entry}), nil
+				return result(guide.Markdown, []Entry{guide.Entry})
 			}
 		}
-		return toolError("unknown guide; call " + c.toolName + " {} to list available guides"), nil
+		return c.toolError("unknown guide")
 	}
 	var text strings.Builder
 	for _, guide := range c.guides {
 		fmt.Fprintf(&text, "- %s: %s. %s\n", guide.Name, guide.Title, guide.Summary)
 	}
-	return result(text.String(), c.Entries()), nil
+	return result(text.String(), c.Entries())
 }
 
 func result(text string, entries []Entry) *mcp.CallToolResult {
@@ -169,7 +175,8 @@ func result(text string, entries []Entry) *mcp.CallToolResult {
 	}
 }
 
-func toolError(message string) *mcp.CallToolResult {
+func (c *Catalog) toolError(problem string) *mcp.CallToolResult {
+	message := problem + "; call " + c.toolName + " {} to list available guides"
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: message}},
 		IsError: true,
