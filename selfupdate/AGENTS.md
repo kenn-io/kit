@@ -27,6 +27,9 @@ executable path.
   them with bare `atomicfile.Replace`.
 - Keep cache-only update metadata from being installable; force a fresh check
   before install.
+- On Unix, hold `syscall.ForkLock` for reading from staging-file creation
+  through close, and release it before verification. A concurrent fork can
+  inherit even a close-on-exec writer and cause `ETXTBSY` after our close.
 - With `VerifyArgs` set, run the staged copy from the destination directory
   before replacement, and keep the installed binary when it fails to run.
 - Do not add live GitHub calls to tests. Use fake HTTP handlers and explicit

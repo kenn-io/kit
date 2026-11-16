@@ -494,6 +494,38 @@ func HashFile(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// writeStagedBinary owns the writable file until it has been synced and closed.
+// stageBinary prevents concurrent forks from inheriting that file on Unix.
+func writeStagedBinary(srcPath, dstDir, dstBase string) (path string, err error) {
+	tmpFile, err := os.CreateTemp(dstDir, "."+dstBase+".*.new")
+	if err != nil {
+		return "", fmt.Errorf("stage: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := copyFileTo(srcPath, tmpFile); err != nil {
+		_ = tmpFile.Close()
+		return "", fmt.Errorf("install: %w", err)
+	}
+	if err := tmpFile.Chmod(0o755); err != nil {
+		_ = tmpFile.Close()
+		return "", fmt.Errorf("chmod: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return "", fmt.Errorf("sync: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return "", fmt.Errorf("stage: %w", err)
+	}
+	return tmpPath, nil
+}
+
 // InstallBinary replaces dstPath with srcPath using a staged sibling file.
 // On Windows, each backup, installation, and rollback rename can wait up to
 // two seconds for a sharing violation to clear.
@@ -505,34 +537,16 @@ func installBinary(srcPath, dstPath string, verify func(string) error) error {
 	dstDir := filepath.Dir(dstPath)
 	dstBase := filepath.Base(dstPath)
 
-	tmpFile, err := os.CreateTemp(dstDir, "."+dstBase+".*.new")
+	tmpPath, err := stageBinary(srcPath, dstDir, dstBase)
 	if err != nil {
-		return fmt.Errorf("stage: %w", err)
+		return err
 	}
-	tmpPath := tmpFile.Name()
-
 	installed := false
 	defer func() {
 		if !installed {
 			_ = os.Remove(tmpPath)
 		}
 	}()
-
-	if err := copyFileTo(srcPath, tmpFile); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("install: %w", err)
-	}
-	if err := tmpFile.Chmod(0o755); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("chmod: %w", err)
-	}
-	if err := tmpFile.Sync(); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("sync: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
 	// Run the staged copy from the install directory, which can execute it
 	// even when the temporary directory cannot.
 	if verify != nil {
