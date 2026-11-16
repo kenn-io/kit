@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+	"github.com/shirou/gopsutil/v4/cpu"
 )
 
 // OrtApi indices require a runtime providing API 23 or newer, tested with 1.23.2.
@@ -20,6 +21,7 @@ type ort struct {
 	createSession                    func(uintptr, unsafe.Pointer, uintptr, *uintptr) uintptr
 	run                              func(uintptr, uintptr, []*byte, []uintptr, uintptr, []*byte, uintptr, *uintptr) uintptr
 	setOptimization                  func(uintptr, int32) uintptr
+	setIntraOp                       func(uintptr, int32) uintptr
 	createTensor                     func(uintptr, []int64, uintptr, int32, *uintptr) uintptr
 	tensorData                       func(uintptr, *unsafe.Pointer) uintptr
 
@@ -57,6 +59,7 @@ func openORT(library, model string) (_ *ort, err error) {
 	purego.RegisterFunc(&o.run, api[9])
 	purego.RegisterFunc(&o.createOptions, api[10])
 	purego.RegisterFunc(&o.setOptimization, api[23])
+	purego.RegisterFunc(&o.setIntraOp, api[24])
 	purego.RegisterFunc(&o.createTensor, api[48])
 	purego.RegisterFunc(&o.tensorData, api[51])
 	purego.RegisterFunc(&o.getAllocator, api[78])
@@ -78,6 +81,14 @@ func openORT(library, model string) (_ *ort, err error) {
 	if err := o.check(o.setOptimization(options, 1)); err != nil {
 		return nil, err
 	}
+	// ORT's default thread count ignores CPU limits.
+	cpuCount, _ := cpu.Counts(true)
+	host := max(runtime.NumCPU(), cpuCount)
+	if n := intraOpThreads(runtime.GOMAXPROCS(0), host); n > 0 {
+		if err := o.check(o.setIntraOp(options, int32(n))); err != nil {
+			return nil, err
+		}
+	}
 	path, err := modelPath(model)
 	if err != nil {
 		return nil, err
@@ -92,6 +103,13 @@ func openORT(library, model string) (_ *ort, err error) {
 		return nil, err
 	}
 	return o, nil
+}
+
+func intraOpThreads(allowed, host int) int {
+	if allowed < host {
+		return allowed
+	}
+	return 0
 }
 
 func (o *ort) check(status uintptr) error {
