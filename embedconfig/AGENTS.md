@@ -26,7 +26,9 @@
 - `Embedder.Parts` fills only operational defaults (batch size, timeout). It
   requires `dims`, fixes cosine and L2 normalization, and leaves
   `Deployment.PinEndpoint` to the application's identity choice.
-- `CanonicalEndpoint` and `Origin` reject an empty hostname, including a
+- `CanonicalEndpoint` and `Origin` delegate to `endpointpolicy` with subject
+  `embed`; preserve their canonical outputs, error text, and wrapped parse errors.
+  They reject an empty hostname, including a
   port with no host. An IPv6 zone is not lowercased; its percent signs are
   encoded as `%25`. Link-local checks use the address without the zone.
 - `vector.Split` remains a rune window helper. Token limits here do not
