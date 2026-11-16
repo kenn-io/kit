@@ -5,3 +5,8 @@
 // private file: they create a new file that is private from the moment it
 // exists and never repair an existing one.
 package safefileio
+
+import "errors"
+
+// ErrWritableParent indicates that other users can rename entries in a parent.
+var ErrWritableParent = errors.New("other users can rename entries in parent")

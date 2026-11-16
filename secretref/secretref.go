@@ -24,6 +24,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"go.kenn.io/kit/safefileio"
@@ -43,16 +44,6 @@ type Ref struct { //nolint:recvcheck // decoders need pointer receivers; values 
 
 // Literal returns a Ref that holds the secret itself.
 func Literal(secret string) Ref { return Ref{Value: secret} }
-
-// Secret is a resolved Ref. Value goes only to the code that uses the
-// secret. Source names where it came from ("inline", "env:NAME", or
-// "file:PATH") and never contains the value. Reason explains why a source
-// produced no value.
-type Secret struct {
-	Value  string
-	Source string
-	Reason string
-}
 
 // IsZero reports whether the reference is unset.
 func (r Ref) IsZero() bool { return r == Ref{} }
@@ -155,9 +146,9 @@ func (r Ref) MarshalTOML() ([]byte, error) {
 // unreadable returns an error. A reference naming more than one source
 // also returns an error.
 //
-// A file must be a regular, private file owned by the current user, as
-// safefileio verifies; a symlink or FIFO is refused without blocking.
-// Trailing newlines are removed.
+// Files follow safefileio.OpenSecretFile's trusted-path policy, are bounded to
+// 64 KiB, and lose trailing CR/LF bytes. Other bytes are preserved. Blank and
+// NUL-containing file and environment secrets are errors; exact-empty literals remain unset.
 func (r Ref) Resolve() (Secret, error) {
 	if err := r.Validate(); err != nil {
 		return Secret{}, err
@@ -167,18 +158,9 @@ func (r Ref) Resolve() (Secret, error) {
 		return Secret{}, nil
 	case r.Env != "":
 		name := strings.TrimSpace(r.Env)
-		source := "env:" + name
-		value := os.Getenv(name)
-		if strings.TrimSpace(value) == "" {
-			return Secret{}, fmt.Errorf("secretref: env %q is unset or empty", name)
-		}
-		return Secret{Value: value, Source: source}, nil
+		return checkedSecret(os.Getenv(name), "env:"+name, "secret is unset or empty")
 	case r.File != "":
-		secret := resolveFile(strings.TrimSpace(r.File))
-		if secret.Reason != "" {
-			return Secret{}, fmt.Errorf("secretref: %s: %s", secret.Source, secret.Reason)
-		}
-		return secret, nil
+		return resolveFile(strings.TrimSpace(r.File))
 	default:
 		if strings.TrimSpace(r.Value) == "" {
 			return Secret{Source: "inline", Reason: "inline value is empty"}, nil
@@ -187,9 +169,22 @@ func (r Ref) Resolve() (Secret, error) {
 	}
 }
 
-func resolveFile(configured string) Secret {
-	unavailable := func(reason string) Secret {
-		return Secret{Source: "file:" + configured, Reason: reason}
+func checkedSecret(value, source, emptyReason string) (Secret, error) {
+	if strings.TrimSpace(value) == "" {
+		return Secret{}, &SourceError{Source: source, Reason: emptyReason}
+	}
+	if strings.ContainsRune(value, 0) {
+		return Secret{}, &SourceError{Source: source, Reason: "secret contains a NUL byte"}
+	}
+	return Secret{Value: value, Source: source}, nil
+}
+
+func resolveFile(configured string) (Secret, error) {
+	unavailable := func(reason string) (Secret, error) {
+		return Secret{}, &SourceError{Source: "file:" + configured, Reason: reason}
+	}
+	if configured == "" {
+		return unavailable("file selector is empty")
 	}
 	path := configured
 	if configured == "~" || strings.HasPrefix(configured, "~/") {
@@ -197,28 +192,54 @@ func resolveFile(configured string) Secret {
 		if err != nil {
 			return unavailable("file home directory is unavailable")
 		}
-		path = filepath.Join(home, strings.TrimPrefix(configured, "~"))
+		// Joining would clean .. before the trusted walker can inspect its
+		// preceding components, and changes the meaning after a symlink.
+		path = home + strings.TrimPrefix(configured, "~")
 	}
-	file, err := safefileio.OpenCurrentUserFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return unavailable("file is missing")
+	if runtime.GOOS != "windows" && !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return unavailable("file working directory is unavailable")
 		}
-		return unavailable("file must be a regular file owned by the current user")
+		path = cwd + string(os.PathSeparator) + path
+	}
+	file, err := safefileio.OpenSecretFile(path)
+	if err != nil {
+		return secretFileOpenError(configured, err)
 	}
 	defer func() { _ = file.Close() }()
-	if err := safefileio.ValidatePrivateCurrentUserFile(file); err != nil {
-		return unavailable("file must be private to its owner (mode 0600)")
-	}
-	data, err := io.ReadAll(file)
+	data, err := readSecret(file)
 	if err != nil {
-		return unavailable("file is unreadable")
+		return unavailable(err.Error())
 	}
 	value := strings.TrimRight(string(data), "\r\n")
-	if strings.TrimSpace(value) == "" {
-		return unavailable("file is empty")
+	return checkedSecret(value, "file:"+configured, "file is empty")
+}
+
+func secretFileOpenError(configured string, err error) (Secret, error) {
+	reason := "file must be a regular file with trusted ownership, trusted permissions and parents"
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		reason = "file is missing"
+	case errors.Is(err, fs.ErrPermission):
+		reason = "file is unreadable"
+	case errors.Is(err, safefileio.ErrWritableParent):
+		reason = "parent directory is writable by group or others"
 	}
-	return Secret{Value: value, Source: "file:" + configured}
+	return Secret{}, &SourceError{Source: "file:" + configured, Reason: reason}
+}
+
+// readSecret enforces the bound, including for growing files.
+// Its errors are public-safe; reader errors must not escape with file names.
+func readSecret(reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, (64<<10)+1))
+	if err != nil {
+		return nil, errors.New("file is unreadable")
+	}
+	if len(data) > 64<<10 {
+		return nil, errors.New("file exceeds 64 KiB")
+	}
+	return data, nil
 }
 
 // quote returns a TOML basic string.

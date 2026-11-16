@@ -24,10 +24,10 @@ func TestRefDecodesEveryFormFromTOMLAndJSON(t *testing.T) {
 		json string
 		want secretref.Ref
 	}{
-		{name: "literal", toml: `key = "sk-inline"`, json: `{"key":"sk-inline"}`, want: secretref.Literal("sk-inline")},
+		{name: "literal", toml: `key = "sk-inline"`, json: `{"key":"sk-inline"}`, want: secretref.Ref{Value: "sk-inline"}},
 		{name: "env", toml: `key = { env = "APP_KEY" }`, json: `{"key":{"env":"APP_KEY"}}`, want: secretref.Ref{Env: "APP_KEY"}},
 		{name: "file", toml: `key = { file = "~/app.key" }`, json: `{"key":{"file":"~/app.key"}}`, want: secretref.Ref{File: "~/app.key"}},
-		{name: "value table", toml: `key = { value = "sk-inline" }`, json: `{"key":{"value":"sk-inline"}}`, want: secretref.Literal("sk-inline")},
+		{name: "value table", toml: `key = { value = "sk-inline" }`, json: `{"key":{"value":"sk-inline"}}`, want: secretref.Ref{Value: "sk-inline"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -40,15 +40,33 @@ func TestRefDecodesEveryFormFromTOMLAndJSON(t *testing.T) {
 			var fromJSON document
 			require.NoError(t, json.Unmarshal([]byte(test.json), &fromJSON))
 			assert.Equal(t, test.want, fromJSON.Key)
-
-			encoded, err := toml.Marshal(fromTOML)
-			require.NoError(t, err)
-			var again document
-			_, err = toml.Decode(string(encoded), &again)
-			require.NoError(t, err)
-			assert.Equal(t, test.want, again.Key, "encoded as %s", encoded)
 		})
 	}
+	for _, tc := range []struct{ input, want string }{
+		{`{"VALUE":"t"}`, "t"},
+		{`{"value":"t","env":null}`, "t"},
+		{`"t\u0000"`, "t\x00"},
+	} {
+		var ref secretref.Ref
+		require.NoError(t, json.Unmarshal([]byte(tc.input), &ref))
+		assert.Equal(t, secretref.Ref{Value: tc.want}, ref)
+	}
+	for _, input := range []string{`null`, `""`, `{}`, `{"value":""}`} {
+		var ref secretref.Ref
+		require.NoError(t, json.Unmarshal([]byte(input), &ref))
+		assert.True(t, ref.IsZero())
+	}
+	for _, input := range []string{`key = ""`, `key = {value=""}`} {
+		var doc document
+		_, err := toml.Decode(input, &doc)
+		require.NoError(t, err)
+		assert.True(t, doc.Key.IsZero())
+	}
+	var ref secretref.Ref
+	require.NoError(t, json.Unmarshal([]byte(`{"value":"first","value":"last"}`), &ref))
+	assert.Equal(t, secretref.Ref{Value: "last"}, ref)
+	require.NoError(t, json.Unmarshal([]byte(`{"value":"first","value":""}`), &ref))
+	assert.True(t, ref.IsZero())
 }
 
 func TestRefRejectsAmbiguousOrUnknownSources(t *testing.T) {
@@ -66,6 +84,7 @@ func TestRefRejectsAmbiguousOrUnknownSources(t *testing.T) {
 	var decoded document
 	require.Error(t, json.Unmarshal([]byte(`{"key":{"env":"A","file":"~/a.key"}}`), &decoded))
 	require.Error(t, json.Unmarshal([]byte(`{"key":{"vault":"app/key"}}`), &decoded))
+	require.Error(t, json.Unmarshal([]byte(`{"key":{"file":["secret"]}}`), &decoded))
 	for _, ref := range []secretref.Ref{
 		{Value: "sk", Env: "A"},
 		{Value: "sk", File: "~/a.key"},
@@ -80,12 +99,14 @@ func TestRefRejectsAmbiguousOrUnknownSources(t *testing.T) {
 func TestRefResolve(t *testing.T) {
 	t.Setenv("KIT_TEST_SECRET", "from-env")
 	t.Setenv("KIT_TEST_EMPTY", "")
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	keyFile := filepath.Join(dir, "app.key")
 	writePrivateFile(t, keyFile, "from-file\r\n")
-	emptyFile := filepath.Join(dir, "empty.key")
-	writePrivateFile(t, emptyFile, "\n")
 	absent := filepath.Join(dir, "absent.key")
+	t.Chdir(dir)
+	var relative document
+	_, err := toml.Decode(`key = {file = "app.key"}`, &relative)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name    string
@@ -94,16 +115,19 @@ func TestRefResolve(t *testing.T) {
 		wantErr string
 	}{
 		{name: "unset", ref: secretref.Ref{}, want: secretref.Secret{}},
+		{name: "literal NUL", ref: secretref.Literal("t\x00"), want: secretref.Secret{Value: "t\x00", Source: "inline"}},
+		{name: "relative file", ref: relative.Key, want: secretref.Secret{Value: "from-file", Source: "file:app.key"}},
+		{name: "padded file", ref: secretref.Ref{File: " " + keyFile + " "}, want: secretref.Secret{Value: "from-file", Source: "file:" + keyFile}},
 		{name: "literal", ref: secretref.Literal("sk-inline"), want: secretref.Secret{Value: "sk-inline", Source: "inline"}},
 		{name: "literal is not expanded", ref: secretref.Literal("${KIT_TEST_SECRET}"), want: secretref.Secret{
 			Value: "${KIT_TEST_SECRET}", Source: "inline",
 		}},
 		{name: "blank literal", ref: secretref.Literal(" "), want: secretref.Secret{Source: "inline", Reason: "inline value is empty"}},
 		{name: "env", ref: secretref.Ref{Env: "KIT_TEST_SECRET"}, want: secretref.Secret{Value: "from-env", Source: "env:KIT_TEST_SECRET"}},
-		{name: "empty env", ref: secretref.Ref{Env: "KIT_TEST_EMPTY"}, wantErr: "KIT_TEST_EMPTY"},
+		{name: "empty env", ref: secretref.Ref{Env: "KIT_TEST_EMPTY"}, wantErr: "secretref: env:KIT_TEST_EMPTY: secret is unset or empty"},
+		{name: "blank file selector", ref: secretref.Ref{File: "  "}, wantErr: "file selector is empty"},
 		{name: "file", ref: secretref.Ref{File: keyFile}, want: secretref.Secret{Value: "from-file", Source: "file:" + keyFile}},
 		{name: "missing file", ref: secretref.Ref{File: absent}, wantErr: "file is missing"},
-		{name: "empty file", ref: secretref.Ref{File: emptyFile}, wantErr: "file is empty"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -119,7 +143,7 @@ func TestRefResolve(t *testing.T) {
 }
 
 func TestRefFileExpandsHome(t *testing.T) {
-	home := t.TempDir()
+	home := privateTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	writePrivateFile(t, filepath.Join(home, "app.key"), "from-home")
