@@ -75,7 +75,7 @@ func TestIsolatedWorktreeTrustedMergeDrivers(t *testing.T) {
 			if test.deferred {
 				lifecycleGit(t, path, "reset", "--hard", "HEAD")
 			}
-			assert.Equal(t, "", worktreeOnlyConfig(t, path, "filter.Trusted.clean"))
+			assert.Empty(t, worktreeOnlyConfig(t, path, "filter.Trusted.clean"))
 			assert.Equal(t, "false", worktreeOnlyConfig(t, path, "filter.Trusted.required"))
 			assert.Equal(t, safeExternalDiffCommand, worktreeOnlyConfig(t, path, "diff.Trusted.command"))
 			assert.Equal(t, safeTextconvCommand, worktreeOnlyConfig(t, path, "diff.Trusted.textconv"))
