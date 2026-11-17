@@ -95,6 +95,7 @@ func TestOKFFixMatrix(t *testing.T) {
 		body, by, description, wantType, wantNote, wantTitle string
 	}{
 		{"autolink", frontmatterRules{{"docs/**", "Guide"}}, "# Connect to <https://example.com>\n", "human:test", "Useful", "Guide", "", "Connect to https://example.com"},
+		{"heading image", frontmatterRules{{"docs/**", "Guide"}}, "# ![img](a.png) Logo\n", "human:test", "Useful", "Guide", "", "Logo"},
 		{"formatted heading", frontmatterRules{{"docs/**", "Guide"}}, "# **Hello** world\n", "human:test", "Useful", "Guide", "", "Hello world"},
 		{"agree", frontmatterRules{{"docs/**", "Guide"}, {"**/*.md", "Guide"}}, "# Hello\n", "human:test", "Useful", "Guide", "", ""},
 		{"ambiguous", frontmatterRules{{"docs/**", "Guide"}, {"**/*.md", "Reference"}}, "# Hello\n", "human:test", "Useful", "", "type rules disagree", ""},
@@ -376,4 +377,20 @@ func TestOKFFixReportsEachGapOnce(t *testing.T) {
 		}
 		assert.Equal(t, 1, count, "%s: %s", field, errout.String())
 	}
+}
+
+func TestOKFFixLegacyDateOnCompletion(t *testing.T) {
+	src := "---\ntitle: Title\nlast_edited: 2025-01-01\n---\n# Title\n"
+	b, err := parseFrontmatter([]byte(src))
+	require.NoError(t, err)
+	changed, _ := b.fixOKF("page.md", nil, "human:first", "")
+	assert.False(t, changed)
+	assert.NotNil(t, b.fields["last_edited"])
+	changed, _ = b.fixOKF("page.md", frontmatterRules{{"**", "Guide"}}, "human:second", "Details")
+	require.True(t, changed)
+	assert.Nil(t, b.fields["last_edited"])
+	assert.Empty(t, b.okfProblems())
+	data, _, err := b.encode()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "last_edited")
 }

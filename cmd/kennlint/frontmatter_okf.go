@@ -113,6 +113,8 @@ func headingTitle(body []byte) string {
 	_ = ast.Walk(h, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if entering {
 			switch v := n.(type) {
+			case *ast.Image:
+				return ast.WalkSkipChildren, nil
 			case *ast.Text:
 				parts = append(parts, v.Value.Value(body))
 				if v.SoftLineBreak() || v.HardLineBreak() {
@@ -208,6 +210,13 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 			}
 			appendField(g, "by", stringNode(by))
 			appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
+			for i := 0; i < len(root.Content); i += 2 {
+				if root.Content[i].Value == "last_edited" {
+					root.Content = append(root.Content[:i], root.Content[i+2:]...)
+					delete(b.fields, "last_edited")
+					break
+				}
+			}
 			changed = true
 		}
 	}
