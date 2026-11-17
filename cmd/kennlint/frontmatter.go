@@ -290,14 +290,9 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if frontmatterInSkillDirectory(container, skillDirs) {
 			continue
 		}
+		// A symlinked SKILL.md is an import and is never checked or rewritten.
 		info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(file)))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return 0, fmt.Errorf("%s: %w", file, err)
-		}
-		if skill && info.Mode()&os.ModeSymlink != 0 {
+		if errors.Is(err, fs.ErrNotExist) || (skill && err == nil && info.Mode()&os.ModeSymlink != 0) {
 			continue
 		}
 		if skill {
@@ -305,8 +300,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			if !slices.ContainsFunc(managedSkills, func(pattern string) bool { return frontmatterGlob(pattern, file) }) {
 				continue
 			}
-		}
-		if !skill {
+		} else {
 			docCount++
 		}
 		targets = append(targets, file)
@@ -458,14 +452,9 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 // Fixer guidance replaces the generic finding for the same field.
 func frontmatterFixProblems(problems []string, notes map[string]string) []string {
 	for i, problem := range problems {
-		key := strings.Fields(problem)[0]
-		if note, ok := notes[key]; ok {
+		if note, ok := notes[strings.Fields(problem)[0]]; ok {
 			problems[i] = note
-			delete(notes, key)
 		}
-	}
-	for _, note := range notes {
-		problems = append(problems, note)
 	}
 	return problems
 }
@@ -520,7 +509,7 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 			}
 			beforeTime, validBefore := parseTimestamp(mappingField(bg, "at"))
 			afterTime, validAfter := parseTimestamp(mappingField(ag, "at"))
-			if validBefore && validAfter && !afterTime.After(beforeTime) && frontmatterMeaningfulProfile(before, after, skill) {
+			if validBefore && validAfter && !afterTime.After(beforeTime) && frontmatterMeaningful(before, after, skill) {
 				stale = append(stale, file)
 			}
 			continue

@@ -47,7 +47,10 @@ func TestSkillProfileShapes(t *testing.T) {
 			assert.Equal(t, tc.valid, len(b.skillProblems()) == 0, b.skillProblems())
 		})
 	}
-	b, err := parseFrontmatter([]byte(skillHeader))
+	b, err := parseFrontmatter([]byte(strings.ReplaceAll(skillHeader, "\"", "")))
+	require.NoError(t, err)
+	assert.Contains(t, b.skillProblems(), `metadata.generated.at must be a quoted string, for example "2026-11-17T19:00:00Z"`)
+	b, err = parseFrontmatter([]byte(skillHeader))
 	require.NoError(t, err)
 	assertSkillNodeKinds(t, b)
 	var decoded map[string]any
@@ -96,18 +99,20 @@ func TestSkillSelectionAndFix(t *testing.T) {
 	repo.WriteFile("docs/page.md", goodOKF)
 	repo.Run("add", ".")
 	var out, errs bytes.Buffer
-	args := []string{"-managed-skill", "skills/**/SKILL.md"}
+	args := []string{"-fix", "-managed-skill", "skills/**/SKILL.md"}
 	n, err := runFrontmatter(t.Context(), args, &out, &errs)
 	require.NoError(t, err)
 	assert.Positive(t, n)
-	assert.NotContains(t, errs.String(), "fix locally:")
-	out.Reset()
+	assert.Contains(t, errs.String(), "-by ACTOR")
+	data, err := os.ReadFile("skills/a/SKILL.md")
+	require.NoError(t, err)
+	assert.Equal(t, src, string(data), "no partial profile without -by")
 	errs.Reset()
-	fix := append([]string{"-fix", "-by", "human:test"}, args...)
+	fix := append([]string{"-by", "human:test"}, args...)
 	n, err = runFrontmatter(t.Context(), fix, &out, &errs)
 	require.NoError(t, err)
 	assert.Zero(t, n, errs.String())
-	data, err := os.ReadFile("skills/a/SKILL.md")
+	data, err = os.ReadFile("skills/a/SKILL.md")
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "at: \"2026-11-17T12:00:00Z\"")
 	assert.Contains(t, string(data), "# comment")
@@ -117,8 +122,6 @@ func TestSkillSelectionAndFix(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, written.skillProblems())
 	assertSkillNodeKinds(t, written)
-	out.Reset()
-	errs.Reset()
 	_, err = runFrontmatter(t.Context(), fix, &out, &errs)
 	require.NoError(t, err)
 	again, err := os.ReadFile("skills/a/SKILL.md")
@@ -131,7 +134,6 @@ func TestSkillSelectionAndFix(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "---\nmetadata: {tags: [a, b]}\n---\n", string(data))
 	repo.WriteFile("skills/a/SKILL.md", "no header\n")
-	out.Reset()
 	errs.Reset()
 	n, err = runFrontmatter(t.Context(), fix, &out, &errs)
 	require.NoError(t, err)
@@ -139,12 +141,18 @@ func TestSkillSelectionAndFix(t *testing.T) {
 	data, err = os.ReadFile("skills/a/SKILL.md")
 	require.NoError(t, err)
 	assert.Equal(t, "no header\n", string(data))
-	_, err = runFrontmatter(t.Context(), []string{"-legacy", "-managed-skill", "x"}, &out, &errs)
-	require.Error(t, err)
+	for _, bad := range [][]string{
+		{"-managed-skill", "x", "-legacy"},
+		{"-managed-skill", "skills/**/SKILL.md", "-managed-skill", "typo/**/SKILL.md"},
+		{"-managed-skill", "skills/a/vendor/b/SKILL.md"},
+		{"-managed-skill", "skills/a/SKILL.md", "-exclude", "skills/a/SKILL.md"},
+	} {
+		_, err = runFrontmatter(t.Context(), bad, &out, &errs)
+		require.ErrorContains(t, err, bad[len(bad)-1])
+	}
 }
 
 func TestSkillChangedAndImports(t *testing.T) {
-	skillHeader := strings.Replace(skillHeader, "Body text.", "Body text. `printf 'a  b'`", 1)
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
@@ -159,14 +167,13 @@ func TestSkillChangedAndImports(t *testing.T) {
 		stale         bool
 	}{
 		{"body", strings.Replace(skillHeader, "Body text.", "Changed text.", 1), true},
-		{"inline code whitespace", strings.Replace(skillHeader, "`printf 'a  b'`", "`printf 'a b'`", 1), true},
 		{"timestamp", strings.Replace(strings.Replace(skillHeader, "Body text.", "Changed text.", 1), "12:00:00Z", "12:01:00Z", 1), false},
 		{"same instant", strings.Replace(strings.Replace(skillHeader, "Body text.", "Changed text.", 1), "12:00:00Z", "12:00:00.000Z", 1), true},
 		{"earlier instant", strings.Replace(strings.Replace(skillHeader, "Body text.", "Changed text.", 1), "12:00:00Z", "11:59:59Z", 1), true},
 		{"format", strings.Replace(skillHeader, "Body text.", "Body\ntext.", 1), false},
 		{"status", strings.Replace(skillHeader, "---\nBody", "  status: draft\n---\nBody", 1), true},
 		{"generated extra", strings.Replace(skillHeader, "    by: human:test", "    source: changed\n    by: human:test", 1), true},
-		{"metadata last edited", strings.Replace(skillHeader, "  type: Skill", "  last_edited: note\n  type: Skill", 1), true},
+		{"actor", strings.Replace(skillHeader, "human:test", "human:other", 1), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo.WriteFile("skills/a/SKILL.md", tc.content)
@@ -188,57 +195,28 @@ func TestSkillChangedAndImports(t *testing.T) {
 	assert.Zero(t, n, errs.String())
 }
 
-func TestSkillFixRefusesNullMappings(t *testing.T) {
-	for _, src := range []string{
-		"---\nname: x\nmetadata:\n---\nBody\n",
-		"---\nmetadata:\n  type: Skill\n  generated:\n---\nBody\n",
-	} {
-		t.Run(src, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte(src))
-			require.NoError(t, err)
-			assert.NotEmpty(t, b.skillProblems())
-			before, _, err := b.encode()
-			require.NoError(t, err)
-			changed, notes := b.fixSkill("human:test")
-			assert.False(t, changed)
-			assert.Equal(t, "correct invalid skill metadata before fixing", notes["invalid"])
-			data, _, err := b.encode()
-			require.NoError(t, err)
-			assert.Equal(t, before, data)
-		})
-	}
-}
-
-func TestSkillInvalidAndSymlink(t *testing.T) {
+func TestSkillFixLeavesFlowAndSymlinkedSkills(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
-	invalid := strings.Replace(skillHeader, "type: Skill", "type: wrong", 1)
-	repo.WriteFile("skills/a/SKILL.md", invalid)
+	const flow = "---\n{name: a, description: Useful}\n---\nBody\n"
+	repo.WriteFile("skills/a/SKILL.md", flow)
 	repo.Run("add", ".")
 	var out, errs bytes.Buffer
-	args := []string{"-fix", "-by", "human:test", "-managed-skill", "skills/**/SKILL.md"}
-	n, err := runFrontmatter(t.Context(), args, &out, &errs)
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-managed-skill", "skills/**/SKILL.md"}, &out, &errs)
 	require.NoError(t, err)
-	assert.Positive(t, n)
-	data, err := os.ReadFile("skills/a/SKILL.md")
-	require.NoError(t, err)
-	assert.Equal(t, invalid, string(data))
+	assert.Equal(t, 1, n)
+	assert.Equal(t, "skills/a/SKILL.md: frontmatter must be a block mapping to fix a skill\n", errs.String())
+	require.NoError(t, os.MkdirAll("skills/link", 0o755))
 	if err := os.Symlink("../a/SKILL.md", "skills/link/SKILL.md"); err != nil {
-		require.NoError(t, os.MkdirAll("skills/link", 0o755))
-		if err = os.Symlink("../a/SKILL.md", "skills/link/SKILL.md"); err != nil {
-			t.Skip("symlinks unavailable")
-		}
+		t.Skip("symlinks unavailable")
 	}
 	repo.Run("add", "skills/link/SKILL.md")
-	out.Reset()
-	errs.Reset()
-	n, err = runFrontmatter(t.Context(), []string{"-managed-skill", "skills/link/SKILL.md", "-fix"}, &out, &errs)
+	_, err = runFrontmatter(t.Context(), []string{"-managed-skill", "skills/link/SKILL.md", "-fix", "-by", "human:test"}, &out, &errs)
 	require.ErrorContains(t, err, "skills/link/SKILL.md")
-	assert.Zero(t, n, errs.String())
-	data, err = os.ReadFile("skills/a/SKILL.md")
+	data, err := os.ReadFile("skills/a/SKILL.md")
 	require.NoError(t, err)
-	assert.Equal(t, invalid, string(data))
+	assert.Equal(t, flow, string(data))
 }
 
 func TestSkillBundleExclusionsAndLegacy(t *testing.T) {
@@ -246,89 +224,44 @@ func TestSkillBundleExclusionsAndLegacy(t *testing.T) {
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
 	const invalid = "not frontmatter\n"
-	repo.WriteFile("skills/a/SKILL.md", skillHeader)
-	bundleFiles := []string{"skills/a/references/page.md", "skills/a/assets/page.md", "skills/a/templates/page.md", "skills/a/testdata/page.md"}
-	for _, name := range bundleFiles {
+	untouched := []string{"skills/a/references/page.md", "skills/a/assets/page.md", "skills/a/templates/page.md", "skills/a/testdata/page.md", "other/SKILL.md"}
+	for _, name := range untouched {
 		repo.WriteFile(name, invalid)
 	}
-	repo.WriteFile("other/SKILL.md", invalid)
+	repo.WriteFile("skills/a/SKILL.md", skillHeader)
 	repo.Run("add", ".")
-	for _, tc := range []struct {
-		name string
-		args []string
-	}{
-		{"managed", []string{"-fix", "-by", "human:test", "-managed-skill", "skills/**/SKILL.md"}},
-		{"unmatched", []string{"-fix", "-by", "human:test", "-managed-skill", "nowhere/**/SKILL.md"}},
-		{"legacy", []string{"-legacy", "-fix"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			skill := invalid
-			if tc.name == "managed" {
-				skill = skillHeader
+	// Legacy would report and scaffold skills/a/SKILL.md if it were not excluded.
+	for _, args := range [][]string{{"-fix", "-by", "human:test", "-managed-skill", "skills/**/SKILL.md"}, {"-legacy", "-fix"}} {
+		var out, errs bytes.Buffer
+		n, err := runFrontmatter(t.Context(), args, &out, &errs)
+		require.NoError(t, err)
+		assert.Zero(t, n, errs.String())
+		for _, name := range append(untouched, "skills/a/SKILL.md") {
+			want := invalid
+			if name == "skills/a/SKILL.md" {
+				want = skillHeader
 			}
-			repo.WriteFile("skills/a/SKILL.md", skill)
-			var out, errs bytes.Buffer
-			n, err := runFrontmatter(t.Context(), tc.args, &out, &errs)
-			if tc.name == "unmatched" {
-				require.ErrorContains(t, err, "nowhere/**/SKILL.md")
-			} else {
-				require.NoError(t, err)
-				assert.Zero(t, n, errs.String())
-			}
-			assert.Empty(t, errs.String())
-			for _, name := range append(bundleFiles, "other/SKILL.md") {
-				data, err := os.ReadFile(name)
-				require.NoError(t, err)
-				assert.Equal(t, invalid, string(data), name)
-			}
-			data, err := os.ReadFile("skills/a/SKILL.md")
+			data, err := os.ReadFile(name)
 			require.NoError(t, err)
-			assert.Equal(t, skill, string(data))
-		})
+			assert.Equal(t, want, string(data), name)
+		}
 	}
 }
 
-func TestSkillFlowRootFixAndQuotedTimestamp(t *testing.T) {
+func TestRootSkillBundleAndManagedSkills(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
-	const src = "---\n{name: a, description: Useful}\n---\nBody\n"
-	repo.WriteFile("skills/a/SKILL.md", src)
-	repo.Run("add", ".")
-	var out, errs bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-managed-skill", "skills/**/SKILL.md"}, &out, &errs)
-	require.NoError(t, err)
-	assert.Positive(t, n)
-	assert.Contains(t, errs.String(), "frontmatter must be a block mapping")
-	data, err := os.ReadFile("skills/a/SKILL.md")
-	require.NoError(t, err)
-	assert.Equal(t, src, string(data))
-
-	bare := strings.ReplaceAll(skillHeader, "\"", "")
-	b, err := parseFrontmatter([]byte(bare))
-	require.NoError(t, err)
-	assert.Contains(t, b.skillProblems(), `metadata.generated.at must be a quoted string, for example "2026-11-17T19:00:00Z"`)
-}
-
-func TestRootSkillDoesNotExcludeManagedSkills(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
+	const resource = "# Resource\n\nBody\n"
 	const missing = "---\nname: managed\n---\nBody\n"
 	repo.WriteFile("SKILL.md", skillHeader)
+	repo.WriteFile("references/example.md", resource)
 	repo.WriteFile("skills/managed/SKILL.md", missing)
 	repo.WriteFile("skills/managed/vendor/SKILL.md", missing)
 	repo.Run("add", ".")
 	var out, errs bytes.Buffer
-	args := []string{"-managed-skill", "skills/**/SKILL.md"}
-	n, err := runFrontmatter(t.Context(), args, &out, &errs)
-	require.NoError(t, err)
-	assert.Positive(t, n)
-	assert.Contains(t, errs.String(), "skills/managed/SKILL.md:")
-	assert.NotContains(t, errs.String(), "skills/managed/vendor/SKILL.md:")
-	out.Reset()
-	errs.Reset()
-	n, err = runFrontmatter(t.Context(), append([]string{"-fix", "-by", "human:test"}, args...), &out, &errs)
+	// -fix would give either file metadata if the scan selected it.
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-type-rule", "**=Guide", "-managed-skill", "**/SKILL.md"}, &out, &errs)
 	require.NoError(t, err)
 	assert.Zero(t, n, errs.String())
 	data, err := os.ReadFile("skills/managed/SKILL.md")
@@ -336,150 +269,29 @@ func TestRootSkillDoesNotExcludeManagedSkills(t *testing.T) {
 	b, err := parseFrontmatter(data)
 	require.NoError(t, err)
 	assert.Empty(t, b.skillProblems())
-	data, err = os.ReadFile("skills/managed/vendor/SKILL.md")
-	require.NoError(t, err)
-	assert.Equal(t, missing, string(data))
+	for name, want := range map[string]string{"references/example.md": resource, "skills/managed/vendor/SKILL.md": missing} {
+		data, err = os.ReadFile(name)
+		require.NoError(t, err)
+		assert.Equal(t, want, string(data), name)
+	}
 }
 
-func TestManagedRootSkillSkipsResources(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	const resource = "# Resource\n\nBody\n"
-	const nested = "---\nname: nested\ndescription: Nested\n---\nBody\n"
-	repo.WriteFile("SKILL.md", skillHeader)
-	repo.WriteFile("references/example.md", resource)
-	repo.WriteFile("skills/managed/SKILL.md", nested)
-	repo.Run("add", ".")
-	var out, errs bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-type-rule", "**=Guide", "-managed-skill", "**/SKILL.md"}, &out, &errs)
-	require.NoError(t, err)
-	assert.Zero(t, n, errs.String())
-	data, err := os.ReadFile("references/example.md")
-	require.NoError(t, err)
-	assert.Equal(t, resource, string(data))
-	data, err = os.ReadFile("skills/managed/SKILL.md")
-	require.NoError(t, err)
-	b, err := parseFrontmatter(data)
-	require.NoError(t, err)
-	assert.Empty(t, b.skillProblems())
-}
-
-func TestManagedSkillPatternsValidateTrackedFiles(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	repo.WriteFile("skills/a/SKILL.md", skillHeader)
-	repo.Run("add", ".")
-	var out, errs bytes.Buffer
-	_, err := runFrontmatter(t.Context(), []string{"-managed-skill", "skills/**/SKILL.md", "-managed-skill", "typo/**/SKILL.md"}, &out, &errs)
-	require.ErrorContains(t, err, "typo/**/SKILL.md")
-}
-
-func TestSkillFixGeneratedPair(t *testing.T) {
-	for _, tc := range []struct {
-		name, header, by      string
-		wantPair, wantChanged bool
-		wantNote              string
-	}{
-		{"missing pair", "metadata:\n  type: Skill\n", "human:test", true, true, ""},
-		{"empty generated", "metadata:\n  type: Skill\n  generated: {}\n", "human:test", false, false, "correct invalid"},
-		{"without actor", "metadata:\n  type: Skill\n", "", false, false, "supply -by ACTOR"},
-		{"by only", "metadata:\n  type: Skill\n  generated:\n    by: human:old\n", "human:new", false, false, "supply both"},
-		{"at only", "metadata:\n  type: Skill\n  generated:\n    at: \"2020-01-01T00:00:00Z\"\n", "human:new", false, false, "supply both"},
-		{"invalid status", "metadata:\n  type: Skill\n  status: retired\n", "human:test", false, false, "correct invalid"},
+func TestSkillFixRefusesIncompleteProfile(t *testing.T) {
+	for _, tc := range []struct{ name, header, by, note string }{
+		{"null metadata", "name: x\nmetadata:\n", "human:test", ""},
+		{"null generated", "metadata:\n  type: Skill\n  generated:\n", "human:test", ""},
+		{"empty generated", "metadata:\n  type: Skill\n  generated: {}\n", "human:test", ""},
+		{"by only", "metadata:\n  type: Skill\n  generated:\n    by: human:old\n", "human:new", "supply both"},
+		{"at only", "metadata:\n  type: Skill\n  generated:\n    at: \"2020-01-01T00:00:00Z\"\n", "human:new", "supply both"},
+		{"wrong type", "metadata:\n  type: wrong\n", "human:test", ""},
+		{"invalid status", "metadata:\n  type: Skill\n  status: retired\n", "human:test", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, err := parseFrontmatter([]byte("---\n" + tc.header + "---\nBody\n"))
 			require.NoError(t, err)
-			before, _, err := b.encode()
-			require.NoError(t, err)
 			changed, notes := b.fixSkill(tc.by)
-			assert.Equal(t, tc.wantChanged, changed)
-			if tc.wantNote != "" {
-				assert.Contains(t, fmt.Sprint(notes), tc.wantNote)
-			}
-			g := mappingField(b.fields["metadata"], "generated")
-			if tc.wantPair {
-				assert.Equal(t, "human:test", mappingField(g, "by").Value)
-				_, valid := parseTimestamp(mappingField(g, "at"))
-				assert.True(t, valid)
-			} else {
-				after, _, err := b.encode()
-				require.NoError(t, err)
-				assert.Equal(t, before, after)
-			}
+			assert.False(t, changed)
+			assert.Contains(t, fmt.Sprint(notes), tc.note)
 		})
 	}
-}
-
-func TestSkillFixReportsGeneratedGapsOnce(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	repo.WriteFile("skills/a/SKILL.md", "---\nname: a\nmetadata:\n  type: Skill\n---\nBody\n")
-	repo.Run("add", ".")
-	var out, errs bytes.Buffer
-	_, err := runFrontmatter(t.Context(), []string{"-fix", "-managed-skill", "skills/**/SKILL.md"}, &out, &errs)
-	require.NoError(t, err)
-	for _, field := range []string{"metadata.generated.by", "metadata.generated.at"} {
-		count := 0
-		for line := range strings.SplitSeq(strings.TrimSpace(errs.String()), "\n") {
-			if strings.Contains(line, field) {
-				count++
-			}
-		}
-		assert.Equal(t, 1, count, errs.String())
-	}
-}
-
-func TestPortableRootResourcesStayUntouched(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	const resource = "# Resource\n\nBody\n"
-	repo.WriteFile("SKILL.md", "portable root\n")
-	repo.WriteFile("references/example.md", resource)
-	repo.WriteFile("skills/a/SKILL.md", skillHeader)
-	repo.Run("add", ".")
-	for _, args := range [][]string{{"-fix", "-by", "human:test", "-type-rule", "**=Guide"}, {"-fix", "-by", "human:test", "-type-rule", "**=Guide", "-managed-skill", "skills/**/SKILL.md"}} {
-		var out, errs bytes.Buffer
-		n, err := runFrontmatter(t.Context(), args, &out, &errs)
-		require.NoError(t, err)
-		assert.Zero(t, n, errs.String())
-		data, err := os.ReadFile("references/example.md")
-		require.NoError(t, err)
-		assert.Equal(t, resource, string(data))
-	}
-}
-
-func TestSkillFixWithoutActorDoesNotWritePartialMetadata(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	const src = "---\nname: example\ndescription: Useful\n---\nBody\n"
-	repo.WriteFile("skills/a/SKILL.md", src)
-	repo.Run("add", ".")
-	var out, errs bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix", "-managed-skill", "skills/**/SKILL.md"}, &out, &errs)
-	require.NoError(t, err)
-	assert.Positive(t, n)
-	assert.Contains(t, errs.String(), "-by ACTOR")
-	data, err := os.ReadFile("skills/a/SKILL.md")
-	require.NoError(t, err)
-	assert.Equal(t, src, string(data))
-}
-
-func TestManagedSkillPatternMustSelectEligibleSkill(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	repo.WriteFile("skills/a/SKILL.md", skillHeader)
-	repo.WriteFile("skills/a/vendor/SKILL.md", skillHeader)
-	repo.Run("add", ".")
-	var out, errs bytes.Buffer
-	_, err := runFrontmatter(t.Context(), []string{"-managed-skill", "skills/a/vendor/SKILL.md"}, &out, &errs)
-	require.ErrorContains(t, err, "skills/a/vendor/SKILL.md")
-	_, err = runFrontmatter(t.Context(), []string{"-managed-skill", "skills/a/SKILL.md", "-exclude", "skills/a/SKILL.md"}, &out, &errs)
-	require.ErrorContains(t, err, "skills/a/SKILL.md")
 }

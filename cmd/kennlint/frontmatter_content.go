@@ -12,20 +12,15 @@ import (
 	"github.com/yuin/goldmark/v2/text"
 )
 
-func frontmatterMeaningfulProfile(a, b *frontmatterBlock, skill bool) bool {
+func frontmatterMeaningful(a, b *frontmatterBlock, skill bool) bool {
 	var x, y map[string]any
 	_ = a.doc.Decode(&x)
 	_ = b.doc.Decode(&y)
-	if skill {
-		if m, ok := x["metadata"].(map[string]any); ok {
-			stripProvenance(m)
+	for _, header := range []map[string]any{x, y} {
+		if skill {
+			header, _ = header["metadata"].(map[string]any)
 		}
-		if m, ok := y["metadata"].(map[string]any); ok {
-			stripProvenance(m)
-		}
-	} else {
-		stripProvenance(x)
-		stripProvenance(y)
+		stripProvenance(header)
 	}
 	return !reflect.DeepEqual(x, y) || canonicalHTML(a.body) != canonicalHTML(b.body)
 }

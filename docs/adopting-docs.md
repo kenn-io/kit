@@ -63,13 +63,12 @@ OKF profile; it is not an alternative standard.
 ## Skills
 
 List Kenn-managed skills with repeatable `-managed-skill 'skills/*/SKILL.md'`
-only when their loaders and sync targets preserve nested YAML mappings. Verify
-those paths before enabling the flag. This profile is a Kenn extension, not
-strict Agent Skills metadata, which allows only string values. Portable,
-third-party, and imported skills stay unlisted and untouched; symlinked skill
-files and all bundle resources, assets, templates, and fixtures are skipped.
-A tracked repository-root `SKILL.md` makes the repository root its bundle,
-whether or not the skill is listed.
+only when their loaders and sync targets preserve nested YAML mappings. This
+profile is a Kenn extension, not strict Agent Skills metadata, which allows
+only string values. Portable, third-party, and imported skills stay unlisted
+and untouched; symlinked skill files and all bundle resources, assets,
+templates, and fixtures are skipped. A tracked repository-root `SKILL.md` makes
+the repository root its bundle, whether or not the skill is listed.
 
 Keep native `name` and `description` fields. The managed profile adds:
 
