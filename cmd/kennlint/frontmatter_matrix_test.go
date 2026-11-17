@@ -223,6 +223,7 @@ func TestOKFCanonicalFormatting(t *testing.T) {
 		{"pre whitespace", `<pre class="sample">a b</pre>`, `<pre class="sample">a  b</pre>`, false},
 		{"attribute whitespace", `<span title="a b">text</span>`, `<span title="a  b">text</span>`, false},
 		{"hard break", "a\nb\n", "a  \nb\n", false},
+		{"prose spacing before hard break", "a  b  \nc\n", "a b  \nc\n", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

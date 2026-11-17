@@ -39,7 +39,7 @@ func canonicalHTML(src []byte) string {
 	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
 	root := parser.New(parser.WithExtensions(extension.NewGFMParser())).Parse(src)
 	_ = ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if t, ok := n.(*ast.Text); ok && entering && !t.HardLineBreak() {
+		if t, ok := n.(*ast.Text); ok && entering {
 			value := t.Value.Value(src)
 			if t.SoftLineBreak() {
 				value += " "
