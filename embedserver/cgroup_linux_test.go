@@ -18,7 +18,7 @@ func TestCPUQuota(t *testing.T) {
 	}{
 		{name: "v2", cgroup: "0::/a/b", root: "/a", path: "b", fs: "cgroup2", quota: "800000 100000", want: 8},
 		{name: "unlimited v2", cgroup: "0::/", root: "/", fs: "cgroup2", quota: "max 100000"},
-		{name: "unlimited v2 without period", cgroup: "0::/", root: "/", fs: "cgroup2", quota: "max"},
+		{name: "unlimited v2 without period", cgroup: "0::/", root: "/", fs: "cgroup2", quota: "max", malformed: true},
 		{name: "fraction", cgroup: "0::/", root: "/", fs: "cgroup2", quota: "150000 100000", want: 2},
 		{name: "v1", cgroup: "3:cpu,cpuacct:/a", root: "/", path: "a", fs: "cgroup", quota: "800000", period: "100000", want: 8},
 		{name: "unlimited v1", cgroup: "3:cpu:/", root: "/", fs: "cgroup", quota: "-1", period: "100000"},

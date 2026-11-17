@@ -111,9 +111,6 @@ func readCPUQuota(dir, kind string) (int, error) {
 		}
 		fields = append(fields, strings.Fields(string(period))...)
 	}
-	if kind == "cgroup2" && len(fields) == 1 && fields[0] == "max" {
-		return 0, nil
-	}
 	if len(fields) != 2 {
 		return 0, fmt.Errorf("invalid CPU quota %q", data)
 	}
