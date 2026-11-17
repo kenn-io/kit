@@ -78,6 +78,9 @@ func stringNode(s string) *yaml.Node {
 
 func (b *frontmatterBlock) okfProblems() []string {
 	var p []string
+	if b.fields["last_edited"] != nil {
+		p = append(p, "last_edited is replaced by generated.at; remove it")
+	}
 	for _, k := range []string{"type", "title", "description"} {
 		if !validString(b.fields[k]) {
 			p = append(p, k+" must be a non-empty string")
@@ -187,20 +190,26 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 	}
 	// Values present here are valid: the checks above return on invalid ones.
 	g := b.fields["generated"]
-	if g == nil && by != "" {
-		g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		appendField(root, "generated", g)
-		b.fields["generated"] = g
-	}
-	if g != nil && mappingField(g, "by") == nil && by != "" {
-		appendField(g, "by", stringNode(by))
-		changed = true
-	}
-	if mappingField(g, "by") == nil {
-		notes = append(notes, "supply -by ACTOR")
-	} else if mappingField(g, "at") == nil {
-		appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
-		changed = true
+	oldBy, oldAt := mappingField(g, "by"), mappingField(g, "at")
+	if (oldBy == nil) != (oldAt == nil) {
+		if oldBy == nil {
+			notes = append(notes, "generated.by is missing; supply both generated.by and generated.at by hand")
+		} else {
+			notes = append(notes, "generated.at is missing; supply both generated.by and generated.at by hand")
+		}
+	} else if oldBy == nil {
+		if by == "" {
+			notes = append(notes, "generated.by: supply -by ACTOR")
+		} else if validString(b.fields["type"]) && validString(b.fields["title"]) && validString(b.fields["description"]) {
+			if g == nil {
+				g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+				appendField(root, "generated", g)
+				b.fields["generated"] = g
+			}
+			appendField(g, "by", stringNode(by))
+			appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
+			changed = true
+		}
 	}
 	return changed, notes
 }

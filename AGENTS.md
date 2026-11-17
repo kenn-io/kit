@@ -48,7 +48,8 @@ provider workflows to this repo unless the package already owns that concern.
 - Never name private downstream projects or other private codebases in public
   artifacts. Describe reusable requirements generically and scrub public
   surfaces before publishing.
-- Follow the [docs profile and lifecycle guide](docs/adopting-docs.md); mark retired docs deprecated and link replacements.
+- Follow the [docs profile and lifecycle guide](docs/adopting-docs.md); mark
+  retired docs deprecated and link replacements.
 
 ## Go Conventions
 

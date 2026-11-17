@@ -35,7 +35,8 @@ Rules must agree where they overlap. Run `kennlint frontmatter -fix` with
 those rules and `-by human:your-login` to fill missing fields. When it adds
 `generated.at`, the fixer stamps the current UTC time. Converting a page records
 the converting actor and time in `generated`; its earlier history remains in
-Git. The fixer takes an H1 title only when it is the first block; supply a missing description with
+Git. The fixer takes an H1 title only when it is the first block; supply a
+missing description with
 `-description 'Text'` for a single selected file. It preserves valid values
 and the Markdown body and reports metadata it cannot determine. Track new
 files before checking them. Remove `last_edited` by hand when converting a page.
@@ -45,9 +46,13 @@ Run the read-only check in CI with `-changed` set to the pull request base SHA
 and a full Git history. A meaningful content or metadata edit must change
 `generated.at` to a later edit time and set `generated.by` to the editor; the
 same actor may edit again. The actor is advisory: the check verifies the
-timestamp, not who made the edit. Formatting-only changes do not require a timestamp
-change. Fix a stale timestamp by hand; `-fix` never bumps an existing
-timestamp. Kit runs the read-only `make lint-frontmatter` or `make lint-frontmatter-changed` check. On failure the Make target prints `fix locally: make fix-frontmatter`; that target runs the fixer with Kit’s rules, and `BY=human:<login>` supplies the actor. Other repositories can use the same check and fix target pattern. CI does not write files.
+timestamp, not who made the edit. Formatting-only changes do not require a
+timestamp change. Fix a stale timestamp by hand; `-fix` never bumps an existing
+timestamp. Kit runs the read-only `make lint-frontmatter` or
+`make lint-frontmatter-changed` check. On failure the Make target prints
+`fix locally: make fix-frontmatter`; that target runs the fixer with Kit’s
+rules, and `BY=human:<login>` supplies the actor. Other repositories can use
+the same check and fix target pattern. CI does not write files.
 
 Repositories migrating after Kit can temporarily pass `-legacy` to retain the
 `last_edited` profile. Remove this bridge as each repository adopts the Kenn

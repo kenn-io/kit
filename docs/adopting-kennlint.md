@@ -4,7 +4,7 @@ title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
 generated:
   by: human:salmonumbrella
-  at: "2026-11-17T21:02:23Z"
+  at: "2026-11-17T21:41:13Z"
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -124,6 +124,8 @@ it after adding rule labels and reasons to their suppressions.
    ```
 
    Follow the [docs profile and autofix guide](adopting-docs.md) for metadata and migration.
+
+   Repositories that have not migrated can temporarily use `-legacy` as a bridge.
 
    Add `frontmatter` to the lint target and a Markdown pre-commit hook.
    On pull requests, also run:

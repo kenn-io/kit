@@ -362,7 +362,7 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 		}
 		changed, notes := b.fixOKF(file, rules, by, description)
 		if !changed {
-			return append(b.okfProblems(), notes...), false, nil
+			return frontmatterFixProblems(b.okfProblems(), notes), false, nil
 		}
 		updated, _, err := b.encode()
 		if err != nil {
@@ -371,7 +371,7 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 		if err := atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink()); err != nil {
 			return nil, false, err
 		}
-		return append(b.okfProblems(), notes...), true, nil
+		return frontmatterFixProblems(b.okfProblems(), notes), true, nil
 	}
 	if !fix {
 		return b.problems(), false, nil
@@ -396,6 +396,36 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 		return nil, false, err
 	}
 	return b.problems(), true, nil
+}
+
+// More specific fixer guidance replaces the generic finding for that field.
+func frontmatterFixProblems(problems, notes []string) []string {
+	for _, note := range notes {
+		field := ""
+		switch {
+		case strings.HasPrefix(note, "type rules"), strings.HasPrefix(note, "add type:"):
+			field = "type "
+		case strings.HasPrefix(note, "add title:"):
+			field = "title "
+		case strings.HasPrefix(note, "supply -description"):
+			field = "description "
+		case strings.HasPrefix(note, "supply -by"), strings.HasPrefix(note, "generated.by:") || strings.HasPrefix(note, "generated.by "):
+			field = "generated.by "
+		case strings.HasPrefix(note, "generated.at "):
+			field = "generated.at "
+		}
+		replaced := false
+		for i, problem := range problems {
+			if field != "" && strings.HasPrefix(problem, field) {
+				problems[i], replaced = note, true
+				break
+			}
+		}
+		if !replaced {
+			problems = append(problems, note)
+		}
+	}
+	return problems
 }
 
 // frontmatterStaleDates returns the files whose content differs from the merge

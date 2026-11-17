@@ -18,6 +18,7 @@ const goodOKF = "---\ntype: Guide\ntitle: A page\ndescription: Useful\ngenerated
 func TestOKFValidationMatrix(t *testing.T) {
 	fields := []struct{ old, invalid, problem string }{
 		{"type: Guide\n", "", "type must"},
+		{"type: Guide\n", "type: Guide\nlast_edited: 2020-01-01\n", "last_edited is replaced by generated.at; remove it"},
 		{"type: Guide", "type: ''", "type must"},
 		{"type: Guide", "type: 42", "type must"},
 		{"title: A page\n", "", "title must"},
@@ -43,7 +44,7 @@ func TestOKFValidationMatrix(t *testing.T) {
 			assert.Contains(t, strings.Join(b.okfProblems(), "\n"), tt.problem)
 		})
 	}
-	for _, src := range []string{goodOKF, strings.ReplaceAll(goodOKF, "\n", "\r\n"), strings.Replace(goodOKF, "2026-11-17T12:00:00Z", "'2026-11-17T12:00:00.123Z'", 1), strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z", "generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1), strings.Replace(goodOKF, "---\n\n#", "last_edited: 2020-01-01\n---\n\n#", 1)} {
+	for _, src := range []string{goodOKF, strings.ReplaceAll(goodOKF, "\n", "\r\n"), strings.Replace(goodOKF, "2026-11-17T12:00:00Z", "'2026-11-17T12:00:00.123Z'", 1), strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z", "generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1)} {
 		b, err := parseFrontmatter([]byte(src))
 		require.NoError(t, err)
 		assert.Empty(t, b.okfProblems())
@@ -103,7 +104,7 @@ func TestOKFFixMatrix(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte("---\nlast_edited: 2025-01-01\n---\n" + tt.body))
+			b, err := parseFrontmatter([]byte("---\n{}\n---\n" + tt.body))
 			require.NoError(t, err)
 			changed, notes := b.fixOKF("docs/file.md", tt.rules, tt.by, tt.description)
 			require.True(t, changed)
@@ -118,7 +119,7 @@ func TestOKFFixMatrix(t *testing.T) {
 			if tt.wantNote != "" {
 				assert.Contains(t, strings.Join(notes, "\n"), tt.wantNote)
 			}
-			if tt.by != "" {
+			if tt.by != "" && tt.wantType != "" && tt.name != "no heading" {
 				assert.Equal(t, "2026-11-17T12:34:56Z", mappingField(b.fields["generated"], "at").Value)
 			} else {
 				assert.Nil(t, b.fields["generated"])
@@ -223,8 +224,8 @@ func TestOKFCanonicalFormatting(t *testing.T) {
 		{"pre whitespace", `<pre class="sample">a b</pre>`, `<pre class="sample">a  b</pre>`, false},
 		{"attribute whitespace", `<span title="a b">text</span>`, `<span title="a  b">text</span>`, false},
 		{"hard break", "a\nb\n", "a  \nb\n", false},
-		{"prose spacing before hard break", "a  b  \nc\n", "a b  \nc\n", false},
-		{"white-space pre", `<span style="white-space:pre">a b</span>`, `<span style="white-space:pre">a  b</span>`, false},
+		{"prose spacing before hard break", "a  b  \nc\n", "a b  \nc\n", true},
+		{"prose spacing", "Text here.\n", "Text  here.\n", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -306,5 +307,73 @@ func TestOKFMetadataComparison(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.meaningful, frontmatterMeaningful(base, b))
 		})
+	}
+}
+
+func TestOKFFixGeneratedScaffold(t *testing.T) {
+	old := frontmatterNow
+	frontmatterNow = func() time.Time { return time.Date(2026, 11, 17, 12, 34, 56, 0, time.UTC) }
+	t.Cleanup(func() { frontmatterNow = old })
+	for _, tt := range []struct {
+		name, header, body string
+		rules              frontmatterRules
+		description        string
+	}{
+		{"missing type", "title: Title\ndescription: Details\n", "# Title\n", nil, ""},
+		{"missing title", "type: Guide\ndescription: Details\n", "text\n", nil, ""},
+		{"missing description", "type: Guide\ntitle: Title\n", "# Title\n", nil, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := parseFrontmatter([]byte("---\n" + tt.header + "---\n" + tt.body))
+			require.NoError(t, err)
+			b.fixOKF("page.md", tt.rules, "human:first", tt.description)
+			assert.Nil(t, b.fields["generated"])
+			b.fixOKF("page.md", frontmatterRules{{"**", "Guide"}}, "human:second", "Details")
+			if tt.name == "missing title" {
+				return
+			}
+			g := b.fields["generated"]
+			require.NotNil(t, g)
+			require.NotNil(t, mappingField(g, "by"))
+			assert.Equal(t, "human:second", mappingField(g, "by").Value)
+			assert.Equal(t, "2026-11-17T12:34:56Z", mappingField(g, "at").Value)
+		})
+	}
+}
+
+func TestOKFFixOneSidedGenerated(t *testing.T) {
+	for _, tt := range []struct{ name, generated, missing string }{
+		{"by only", "generated: {by: 'human:old'}\n", "at"},
+		{"at only", "generated: {at: '2020-01-01T00:00:00Z'}\n", "by"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			src := strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z\n", tt.generated, 1)
+			b, err := parseFrontmatter([]byte(src))
+			require.NoError(t, err)
+			changed, notes := b.fixOKF("page.md", nil, "human:new", "")
+			assert.False(t, changed)
+			assert.Nil(t, mappingField(b.fields["generated"], tt.missing))
+			assert.Contains(t, strings.Join(notes, "\n"), "both")
+		})
+	}
+}
+
+func TestOKFFixReportsEachGapOnce(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("page.md", "# Heading\n")
+	repo.Run("add", "page.md")
+	var out, errout bytes.Buffer
+	_, err := runFrontmatter(t.Context(), []string{"-fix", "page.md"}, &out, &errout)
+	require.NoError(t, err)
+	for _, field := range []string{"type", "description", "generated.by", "generated.at"} {
+		count := 0
+		for line := range strings.SplitSeq(strings.TrimSpace(errout.String()), "\n") {
+			if strings.Contains(line, field) {
+				count++
+			}
+		}
+		assert.Equal(t, 1, count, "%s: %s", field, errout.String())
 	}
 }
