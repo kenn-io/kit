@@ -24,7 +24,7 @@ func TestCPUQuota(t *testing.T) {
 		{name: "v1 preferred", cgroup: "0::/other\n3:cpu:/", root: "/", fs: "cgroup", quota: "800000", period: "100000", want: 8},
 		{name: "missing quota", cgroup: "0::/", root: "/", fs: "cgroup2", missing: true},
 		{name: "unreadable", cgroup: "0::/", root: "/", fs: "cgroup2", directory: true},
-		{name: "boundary", cgroup: "0::/ab", root: "/a", fs: "cgroup2", quota: "800000 100000"},
+		{name: "boundary", cgroup: "0::/ab", root: "/a", path: "../ab", fs: "cgroup2", quota: "800000 100000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
