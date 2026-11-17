@@ -2,7 +2,7 @@
 
 - Keep the pinned assets, tokenizer, and Ollama parity fixture in sync.
 - The ONNX Runtime table indices require a runtime providing API 23 or newer, tested with 1.23.2.
-- Under a CPU limit, intra-op threads follow GOMAXPROCS; otherwise use the ONNX Runtime default.
+- Under a CPU limit, intra-op threads are the smaller of GOMAXPROCS and the process's own cgroup CPU quota; otherwise use the ONNX Runtime default. A mounted quota that cannot be read or parsed fails model load.
 - On shutdown, close HTTP connections, wait for inference, then close the model and remove its runtime record.
 - Hold the kit-embed owner lock from before model load until runtime record removal.
 - Decode requests as leniently as Ollama: replace invalid UTF-8 and lone surrogates with U+FFFD and keep the last duplicate member.

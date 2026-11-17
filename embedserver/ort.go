@@ -82,9 +82,15 @@ func openORT(library, model string) (_ *ort, err error) {
 		return nil, err
 	}
 	// ORT's default thread count ignores CPU limits.
-	cpuCount, _ := cpu.Counts(true)
-	host := max(runtime.NumCPU(), cpuCount)
-	if n := intraOpThreads(runtime.GOMAXPROCS(0), host); n > 0 {
+	quota, err := cgroupCPULimit()
+	if err != nil {
+		return nil, fmt.Errorf("read CPU quota: %w", err)
+	}
+	physical, err := cpu.Counts(false)
+	if err != nil || physical <= 0 {
+		physical = runtime.NumCPU()
+	}
+	if n := intraOpThreads(runtime.GOMAXPROCS(0), quota, physical); n > 0 {
 		if err := o.check(o.setIntraOp(options, int32(n))); err != nil {
 			return nil, err
 		}
@@ -105,8 +111,11 @@ func openORT(library, model string) (_ *ort, err error) {
 	return o, nil
 }
 
-func intraOpThreads(allowed, host int) int {
-	if allowed < host {
+func intraOpThreads(allowed, quota, physical int) int {
+	if quota > 0 {
+		allowed = min(allowed, quota)
+	}
+	if allowed < physical {
 		return allowed
 	}
 	return 0
