@@ -202,15 +202,5 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 		appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
 		changed = true
 	}
-	if mappingField(g, "by") != nil && mappingField(g, "at") != nil {
-		for i := 0; i < len(root.Content); i += 2 {
-			if root.Content[i].Value == "last_edited" {
-				root.Content = append(root.Content[:i], root.Content[i+2:]...)
-				delete(b.fields, "last_edited")
-				changed = true
-				break
-			}
-		}
-	}
 	return changed, notes
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"reflect"
-	"regexp"
 
 	"github.com/yuin/goldmark/v2/ast"
 	"github.com/yuin/goldmark/v2/extension"
@@ -22,7 +21,6 @@ func frontmatterMeaningful(a, b *frontmatterBlock) bool {
 }
 
 func stripProvenance(header map[string]any) {
-	delete(header, "last_edited")
 	if generated, ok := header["generated"].(map[string]any); ok {
 		delete(generated, "by")
 		delete(generated, "at")
@@ -33,18 +31,13 @@ func stripProvenance(header map[string]any) {
 }
 
 // canonicalHTML renders Markdown so that edits which render the same compare
-// equal. Whitespace runs in prose text, including soft line breaks, become one
-// space; code, raw HTML, attributes and hard breaks render untouched.
+// equal. Soft line breaks render as spaces; other content renders unchanged.
 func canonicalHTML(src []byte) string {
 	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
 	root := parser.New(parser.WithExtensions(extension.NewGFMParser())).Parse(src)
 	_ = ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if t, ok := n.(*ast.Text); ok && entering {
-			value := t.Value.Value(src)
-			if t.SoftLineBreak() {
-				value += " "
-			}
-			t.Value = text.NewSingleLineValueFromString(proseSpace.ReplaceAllString(value, " "), text.IdentityDecoder)
+		if t, ok := n.(*ast.Text); ok && entering && t.SoftLineBreak() {
+			t.Value = text.NewSingleLineValueFromString(t.Value.Value(src)+" ", text.IdentityDecoder)
 			t.SetSoftLineBreak(false)
 		}
 		return ast.WalkContinue, nil
@@ -53,5 +46,3 @@ func canonicalHTML(src []byte) string {
 	_ = html.New(html.WithUnsafe(), html.WithExtensions(extension.NewGFMHTMLRenderer())).Render(&rendered, src, root)
 	return rendered.String()
 }
-
-var proseSpace = regexp.MustCompile(`[ \t\n\f]+`)

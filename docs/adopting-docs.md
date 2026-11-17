@@ -4,7 +4,7 @@ title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
 generated:
   by: human:salmonumbrella
-  at: "2026-11-17T20:57:14Z"
+  at: "2026-11-17T21:35:03Z"
 ---
 
 # Adopting the Kenn documentation profile
@@ -38,7 +38,8 @@ the converting actor and time in `generated`; its earlier history remains in
 Git. The fixer takes an H1 title only when it is the first block; supply a missing description with
 `-description 'Text'` for a single selected file. It preserves valid values
 and the Markdown body and reports metadata it cannot determine. Track new
-files before checking them. Correct malformed or invalid metadata manually.
+files before checking them. Remove `last_edited` by hand when converting a page.
+Correct malformed or invalid metadata manually.
 
 Run the read-only check in CI with `-changed` set to the pull request base SHA
 and a full Git history. A meaningful content or metadata edit must change

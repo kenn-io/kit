@@ -223,7 +223,8 @@ func TestOKFCanonicalFormatting(t *testing.T) {
 		{"pre whitespace", `<pre class="sample">a b</pre>`, `<pre class="sample">a  b</pre>`, false},
 		{"attribute whitespace", `<span title="a b">text</span>`, `<span title="a  b">text</span>`, false},
 		{"hard break", "a\nb\n", "a  \nb\n", false},
-		{"prose spacing before hard break", "a  b  \nc\n", "a b  \nc\n", true},
+		{"prose spacing before hard break", "a  b  \nc\n", "a b  \nc\n", false},
+		{"white-space pre", `<span style="white-space:pre">a b</span>`, `<span style="white-space:pre">a  b</span>`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -296,7 +297,6 @@ func TestOKFMetadataComparison(t *testing.T) {
 		{"other generated field", strings.Replace(goodOKF, "  by: human:test\n", "  source: changed\n  by: human:test\n", 1), true},
 		{"actor only", strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:other\n", 1), false},
 		{"timestamp only", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "12:00:00Z", "12:01:00Z", 1), false},
-		{"last edited only", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "type: Guide\n", "last_edited: 2024-01-01\ntype: Guide\n", 1), false},
 		{"title", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "title: A page", "title: Other", 1), true},
 		{"status", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "type: Guide\n", "type: Guide\nstatus: deprecated\n", 1), true},
 	}
@@ -305,22 +305,6 @@ func TestOKFMetadataComparison(t *testing.T) {
 			b, err := parseFrontmatter([]byte(tt.src))
 			require.NoError(t, err)
 			assert.Equal(t, tt.meaningful, frontmatterMeaningful(base, b))
-		})
-	}
-}
-
-func TestOKFFixRemovesLegacyDate(t *testing.T) {
-	for _, tt := range []struct{ name, generated string }{{"already complete", "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z"}, {"add timestamp", "generated:\n  by: human:test"}} {
-		t.Run(tt.name, func(t *testing.T) {
-			src := strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z", tt.generated, 1)
-			src = strings.Replace(src, "type: Guide\n", "type: Guide\nlast_edited: 2025-01-01\n", 1)
-			b, err := parseFrontmatter([]byte(src))
-			require.NoError(t, err)
-			changed, _ := b.fixOKF("page.md", nil, "", "")
-			assert.True(t, changed)
-			assert.Nil(t, b.fields["last_edited"])
-			changed, _ = b.fixOKF("page.md", nil, "", "")
-			assert.False(t, changed)
 		})
 	}
 }
