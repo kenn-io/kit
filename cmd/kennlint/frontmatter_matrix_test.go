@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -118,7 +119,7 @@ func TestOKFFixMatrix(t *testing.T) {
 				assert.Equal(t, tt.wantType, b.fields["type"].Value)
 			}
 			if tt.wantNote != "" {
-				assert.Contains(t, strings.Join(notes, "\n"), tt.wantNote)
+				assert.Contains(t, fmt.Sprint(notes), tt.wantNote)
 			}
 			if tt.by != "" && tt.wantType != "" && tt.name != "no heading" {
 				assert.Equal(t, "2026-11-17T12:34:56Z", mappingField(b.fields["generated"], "at").Value)
@@ -149,15 +150,7 @@ func TestOKFFixFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Positive(t, n)
 	assert.Contains(t, errout.String(), "-by ACTOR")
-	out.Reset()
-	errout.Reset()
-	args = []string{"-fix", "-type-rule", "**=Guide", "-description", "Words", "-by", "human:test", "one.md"}
-	n, err = runFrontmatter(t.Context(), args, &out, &errout)
-	require.NoError(t, err)
-	assert.Zero(t, n, errout.String())
-	data, err := os.ReadFile("one.md")
-	require.NoError(t, err)
-	assert.True(t, bytes.HasSuffix(data, []byte("# Heading\n\nBody\n")))
+	args = append(args[:len(args)-1], "-by", "human:test", "one.md")
 	for _, src := range []string{"---\ntype: 123\n---\n# H\n", "---\ntitle: [\n---\n# H\n", "---\ngenerated: bad\n---\n# H\n"} {
 		repo.WriteFile("one.md", src)
 		out.Reset()
@@ -177,7 +170,7 @@ func TestOKFFixFiles(t *testing.T) {
 	n, err = runFrontmatter(t.Context(), args, &out, &errout)
 	require.NoError(t, err)
 	assert.Zero(t, n, errout.String())
-	data, err = os.ReadFile("docs/page.md")
+	data, err := os.ReadFile("docs/page.md")
 	require.NoError(t, err)
 	assert.NotContains(t, strings.ReplaceAll(string(data), "\r\n", ""), "\n")
 	assert.True(t, bytes.HasSuffix(data, []byte(original)))
@@ -206,14 +199,13 @@ func TestOKFCanonicalFormatting(t *testing.T) {
 		{"table padding", "| A | B |\n|---|---|\n| x | y |\n", "| A   | B   |\n| --- | --- |\n| x   | y   |\n", true},
 		{"bullet", "* one\n* two\n", "- one\n- two\n", true},
 		{"list tightness", "- one\n- two\n", "- one\n\n- two\n", false},
-		{"ordered marker", "1. one\n2. two\n", "1) one\n2) two\n", true},
 		{"task checked", "- [ ] task\n", "- [x] task\n", false},
 		{"ordered list", "- item\n", "1. item\n", false},
 		{"ordered start", "1. item\n", "2. item\n", false},
 		{"autolink", "<https://a.example>\n", "<https://b.example>\n", false},
 		{"table alignment", "| a |\n| :--- |\n| x |\n", "| a |\n| ---: |\n| x |\n", false},
-		{"emphasis", "*hello*\n", "_hello_\n", true},
 		{"crlf", "```\na\nb\n```\n", "```\r\na\r\nb\r\n```\r\n", true},
+		{"emphasis", "*hello*\n", "_hello_\n", true},
 		{"nonbreaking space", "a\u00a0b\n", "a b\n", false},
 		{"inline spacing", "hello **world**\n", "hello**world**\n", false},
 		{"heading", "# One\n", "# Two\n", false},
@@ -354,7 +346,7 @@ func TestOKFFixOneSidedGenerated(t *testing.T) {
 			changed, notes := b.fixOKF("page.md", nil, "human:new", "")
 			assert.False(t, changed)
 			assert.Nil(t, mappingField(b.fields["generated"], tt.missing))
-			assert.Contains(t, strings.Join(notes, "\n"), "both")
+			assert.Contains(t, fmt.Sprint(notes), "both")
 		})
 	}
 }

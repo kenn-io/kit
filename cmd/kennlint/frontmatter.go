@@ -22,15 +22,12 @@ import (
 	gitenv "go.kenn.io/kit/git/env"
 )
 
-type trimmedText struct {
-	value string
-	set   bool
-}
+// trimmedText is a flag whose value, once set, is non-empty after trimming.
+type trimmedText struct{ value string }
 
 func (t *trimmedText) String() string { return t.value }
 func (t *trimmedText) Set(s string) error {
 	t.value = strings.TrimSpace(s)
-	t.set = true
 	if t.value == "" {
 		return errors.New("value must not be empty")
 	}
@@ -270,7 +267,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			}
 		}
 	}
-	if description.set && len(targets) != 1 {
+	if description.value != "" && len(targets) != 1 {
 		return 0, errors.New("-description requires exactly one selected file")
 	}
 	total, fixed := 0, 0
@@ -356,21 +353,20 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 		return []string{err.Error()}, false, nil //nolint:nilerr // Count invalid metadata as a finding so scanning continues.
 	}
 	if !legacy {
-		if !fix {
-			return b.okfProblems(), false, nil
+		var changed bool
+		var notes map[string]string
+		if fix {
+			changed, notes = b.fixOKF(file, rules, by, description)
 		}
-		changed, notes := b.fixOKF(file, rules, by, description)
+		problems := frontmatterFixProblems(b.okfProblems(), notes)
 		if !changed {
-			return frontmatterFixProblems(b.okfProblems(), notes), false, nil
+			return problems, false, nil
 		}
 		updated, _, err := b.encode()
-		if err != nil {
-			return nil, false, err
+		if err == nil {
+			err = atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink())
 		}
-		if err := atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink()); err != nil {
-			return nil, false, err
-		}
-		return frontmatterFixProblems(b.okfProblems(), notes), true, nil
+		return problems, err == nil, err
 	}
 	if !fix {
 		return b.problems(), false, nil
@@ -397,31 +393,11 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 	return b.problems(), true, nil
 }
 
-// More specific fixer guidance replaces the generic finding for that field.
-func frontmatterFixProblems(problems, notes []string) []string {
-	for _, note := range notes {
-		field := ""
-		switch {
-		case strings.HasPrefix(note, "type rules"), strings.HasPrefix(note, "add type:"):
-			field = "type "
-		case strings.HasPrefix(note, "add title:"):
-			field = "title "
-		case strings.HasPrefix(note, "supply -description"):
-			field = "description "
-		case strings.HasPrefix(note, "supply -by"), strings.HasPrefix(note, "generated.by:") || strings.HasPrefix(note, "generated.by "):
-			field = "generated.by "
-		case strings.HasPrefix(note, "generated.at "):
-			field = "generated.at "
-		}
-		replaced := false
-		for i, problem := range problems {
-			if field != "" && strings.HasPrefix(problem, field) {
-				problems[i], replaced = note, true
-				break
-			}
-		}
-		if !replaced {
-			problems = append(problems, note)
+// Fixer guidance replaces the generic finding for the same field.
+func frontmatterFixProblems(problems []string, notes map[string]string) []string {
+	for i, problem := range problems {
+		if note, ok := notes[strings.Fields(problem)[0]]; ok {
+			problems[i] = note
 		}
 	}
 	return problems

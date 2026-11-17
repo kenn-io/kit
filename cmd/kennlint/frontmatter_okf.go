@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,13 +16,7 @@ type (
 	frontmatterRules []frontmatterRule
 )
 
-func (r *frontmatterRules) String() string {
-	var s []string
-	for _, v := range *r {
-		s = append(s, v.glob+"="+v.kind)
-	}
-	return strings.Join(s, ", ")
-}
+func (r *frontmatterRules) String() string { return fmt.Sprint(*r) }
 
 func (r *frontmatterRules) Set(s string) error {
 	glob, kind, ok := strings.Cut(s, "=")
@@ -41,11 +36,6 @@ var frontmatterNow = time.Now
 
 func validString(n *yaml.Node) bool {
 	return n != nil && n.Kind == yaml.ScalarNode && n.Tag == "!!str" && strings.TrimSpace(n.Value) != ""
-}
-
-func validTimestamp(n *yaml.Node) bool {
-	_, ok := parseTimestamp(n)
-	return ok
 }
 
 func parseTimestamp(n *yaml.Node) (time.Time, bool) {
@@ -97,7 +87,7 @@ func (b *frontmatterBlock) okfProblems() []string {
 	if !validString(mappingField(g, "by")) {
 		p = append(p, "generated.by must be a non-empty string")
 	}
-	if !validTimestamp(mappingField(g, "at")) {
+	if _, ok := parseTimestamp(mappingField(g, "at")); !ok {
 		p = append(p, "generated.at must be an RFC 3339 UTC timestamp ending in Z")
 	}
 	return p
@@ -131,23 +121,19 @@ func headingTitle(body []byte) string {
 	return strings.TrimSpace(strings.Join(parts, ""))
 }
 
-func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, description string) (bool, []string) {
-	var notes []string
+// fixOKF fills missing values and returns, by field, what the author must supply.
+func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, description string) (bool, map[string]string) {
+	notes := map[string]string{}
 	for _, key := range []string{"type", "title", "description"} {
 		if n := b.fields[key]; n != nil && !validString(n) {
 			return false, nil
 		}
 	}
-	if g := b.fields["generated"]; g != nil {
-		if g.Kind != yaml.MappingNode {
-			return false, nil
-		}
-		if n := mappingField(g, "by"); n != nil && !validString(n) {
-			return false, nil
-		}
-		if n := mappingField(g, "at"); n != nil && !validTimestamp(n) {
-			return false, nil
-		}
+	g := b.fields["generated"]
+	oldBy, oldAt := mappingField(g, "by"), mappingField(g, "at")
+	_, validAt := parseTimestamp(oldAt)
+	if (g != nil && g.Kind != yaml.MappingNode) || (oldBy != nil && !validString(oldBy)) || (oldAt != nil && !validAt) {
+		return false, nil
 	}
 	changed := false
 	root := b.doc.Content[0]
@@ -173,9 +159,9 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 			}
 		}
 		if ambiguous {
-			notes = append(notes, "type rules disagree: "+strings.Join(matches, ", "))
+			notes["type"] = "type rules disagree: " + strings.Join(matches, ", ")
 		} else if kind == "" {
-			notes = append(notes, "add type: or a matching -type-rule")
+			notes["type"] = "add type: or a matching -type-rule"
 		} else {
 			put("type", kind)
 		}
@@ -183,25 +169,22 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 	if b.fields["title"] == nil {
 		put("title", headingTitle(b.body))
 		if b.fields["title"] == nil {
-			notes = append(notes, "add title: (first block is not an H1)")
+			notes["title"] = "add title: (first block is not an H1)"
 		}
 	}
 	put("description", description)
 	if b.fields["description"] == nil {
-		notes = append(notes, "supply -description TEXT")
+		notes["description"] = "supply -description TEXT"
 	}
-	// Values present here are valid: the checks above return on invalid ones.
-	g := b.fields["generated"]
-	oldBy, oldAt := mappingField(g, "by"), mappingField(g, "at")
 	if (oldBy == nil) != (oldAt == nil) {
-		if oldBy == nil {
-			notes = append(notes, "generated.by is missing; supply both generated.by and generated.at by hand")
-		} else {
-			notes = append(notes, "generated.at is missing; supply both generated.by and generated.at by hand")
+		missing := "generated.by"
+		if oldAt == nil {
+			missing = "generated.at"
 		}
+		notes[missing] = missing + " is missing; supply both generated.by and generated.at by hand"
 	} else if oldBy == nil {
 		if by == "" {
-			notes = append(notes, "generated.by: supply -by ACTOR")
+			notes["generated.by"] = "generated.by: supply -by ACTOR"
 		} else if validString(b.fields["type"]) && validString(b.fields["title"]) && validString(b.fields["description"]) {
 			if g == nil {
 				g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
@@ -210,12 +193,9 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 			}
 			appendField(g, "by", stringNode(by))
 			appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
-			for i := 0; i < len(root.Content); i += 2 {
-				if root.Content[i].Value == "last_edited" {
-					root.Content = append(root.Content[:i], root.Content[i+2:]...)
-					delete(b.fields, "last_edited")
-					break
-				}
+			if i := slices.Index(root.Content, b.fields["last_edited"]); i > 0 {
+				root.Content = slices.Delete(root.Content, i-1, i+1)
+				delete(b.fields, "last_edited")
 			}
 			changed = true
 		}
