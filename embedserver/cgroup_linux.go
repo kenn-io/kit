@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -30,10 +31,8 @@ func cpuQuota(cgroupFile, mountinfoFile string) (int, error) {
 		if fields[0] == "0" && fields[1] == "" {
 			v2 = fields[2]
 		}
-		for _, controller := range strings.Split(fields[1], ",") {
-			if controller == "cpu" {
-				v1 = fields[2]
-			}
+		if slices.Contains(strings.Split(fields[1], ","), "cpu") {
+			v1 = fields[2]
 		}
 	}
 	group, kind := v1, "cgroup"
@@ -63,7 +62,7 @@ func cpuQuota(cgroupFile, mountinfoFile string) (int, error) {
 		if after[0] != kind {
 			continue
 		}
-		if kind == "cgroup" && !containsController(after[2], "cpu") {
+		if kind == "cgroup" && !slices.Contains(strings.Split(after[2], ","), "cpu") {
 			continue
 		}
 		root, mount := unescape.Replace(before[3]), unescape.Replace(before[4])
@@ -74,15 +73,6 @@ func cpuQuota(cgroupFile, mountinfoFile string) (int, error) {
 		return readCPUQuota(filepath.Join(mount, rel), kind)
 	}
 	return 0, nil
-}
-
-func containsController(options, controller string) bool {
-	for _, option := range strings.Split(options, ",") {
-		if option == controller {
-			return true
-		}
-	}
-	return false
 }
 
 func readCPUQuota(dir, kind string) (int, error) {
