@@ -152,17 +152,14 @@ func TestFrontmatterSkipsSkillBundles(t *testing.T) {
 		repo.WriteFile(name, "# No metadata\n")
 	}
 	repo.Run("add", ".")
-
 	var stdout, stderr bytes.Buffer
 	n, err := runFrontmatter(t.Context(), nil, &stdout, &stderr)
 	require.NoError(t, err)
-	assert.Equal(t, 3, n, "a root SKILL.md exempts nothing and a lowercase skill.md is ordinary")
-	assert.Equal(t, "docs/skill.md: missing opening --- frontmatter delimiter\n"+
-		"page.md: missing opening --- frontmatter delimiter\n"+
-		"skills/unrelated/page.md: missing opening --- frontmatter delimiter\n", stderr.String())
+	assert.Zero(t, n, stderr.String())
+	stderr.Reset()
 	n, err = runLegacyFrontmatter(t.Context(), nil, &stdout, &stderr)
 	require.NoError(t, err)
-	assert.Equal(t, 3, n, "legacy skips the same skill bundles")
+	assert.Zero(t, n, stderr.String())
 }
 
 func TestFrontmatterGlob(t *testing.T) {

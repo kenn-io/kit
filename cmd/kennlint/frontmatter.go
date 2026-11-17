@@ -135,6 +135,10 @@ func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
 	return b, nil
 }
 
+func isSkillFile(file string) bool {
+	return path.Base(file) == "SKILL.md"
+}
+
 func frontmatterInSkillDirectory(file string, skillDirs map[string]struct{}) bool {
 	for dir := path.Dir(file); dir != "."; dir = path.Dir(dir) {
 		if _, ok := skillDirs[dir]; ok {
@@ -209,7 +213,7 @@ func frontmatterTracked(ctx context.Context, root string) ([]string, map[string]
 	}
 	skillDirs := make(map[string]struct{})
 	for _, name := range files {
-		if path.Base(name) == "SKILL.md" && path.Dir(name) != "." {
+		if isSkillFile(name) && path.Dir(name) != "." {
 			skillDirs[path.Dir(name)] = struct{}{}
 		}
 	}
@@ -228,14 +232,22 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	flags.Var(&rules, "type-rule", "path rule GLOB=TYPE (repeatable)")
 	fix := flags.Bool("fix", false, "fill missing metadata where possible")
 	excludes := frontmatterExcludes{
-		"**/README.md", "**/AGENTS.md", "**/CLAUDE.md", "**/SKILL.md", "docs/releases/**",
+		"**/README.md", "**/AGENTS.md", "**/CLAUDE.md", "docs/releases/**",
 		"**/CHANGELOG*.md", "**/changelog*.md",
 		".github/**", "**/testdata/**", "vendor/**", "node_modules/**",
 	}
+	var managedSkills frontmatterExcludes
+	flags.Var(&managedSkills, "managed-skill", "managed SKILL.md glob (repeatable)")
 	var customExcludes frontmatterExcludes
 	flags.Var(&customExcludes, "exclude", "additional repository-relative glob to skip; ** matches directories (repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return 0, err
+	}
+	if *legacy && len(managedSkills) > 0 {
+		return 0, errors.New("-managed-skill cannot be used with -legacy")
+	}
+	if *legacy {
+		excludes = append(excludes, "**/SKILL.md")
 	}
 	excludes = append(excludes, customExcludes...)
 	rootBytes, err := frontmatterGit(ctx, "", "rev-parse", "--show-toplevel")
@@ -260,14 +272,51 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	hasHead := len(bytes.TrimSpace(head)) != 0
 
 	var targets []string
+	var eligibleSkills []string
+	docCount := 0
+	rootSkill := slices.Contains(files, "SKILL.md")
 	for _, file := range files {
-		if frontmatterSelected(file, selected, excludes) && !frontmatterInSkillDirectory(file, skillDirs) {
-			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(file))); !errors.Is(err, fs.ErrNotExist) {
-				targets = append(targets, file)
+		if !frontmatterSelected(file, selected, excludes) {
+			continue
+		}
+		skill := isSkillFile(file)
+		if rootSkill && !skill {
+			continue
+		}
+		container := file
+		if skill {
+			container = path.Dir(file)
+		}
+		if frontmatterInSkillDirectory(container, skillDirs) {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(file)))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", file, err)
+		}
+		if skill && info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if skill {
+			eligibleSkills = append(eligibleSkills, file)
+			if !slices.ContainsFunc(managedSkills, func(pattern string) bool { return frontmatterGlob(pattern, file) }) {
+				continue
 			}
 		}
+		if !skill {
+			docCount++
+		}
+		targets = append(targets, file)
 	}
-	if description.value != "" && len(targets) != 1 {
+	for _, pattern := range managedSkills {
+		if !slices.ContainsFunc(eligibleSkills, func(file string) bool { return frontmatterGlob(pattern, file) }) {
+			return 0, fmt.Errorf("-managed-skill pattern %q matches no tracked SKILL.md selected for checking", pattern)
+		}
+	}
+	if description.value != "" && docCount != 1 {
 		return 0, errors.New("-description requires exactly one selected file")
 	}
 	total, fixed := 0, 0
@@ -299,6 +348,9 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 		for _, file := range stale {
 			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to you"
+			if isSkillFile(file) {
+				message = "content changed without a later metadata.generated.at; set metadata.generated.at to the edit time and metadata.generated.by to you"
+			}
 			if *legacy {
 				message = "content changed without changing last_edited"
 			}
@@ -343,7 +395,8 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 		return nil, false, err
 	}
 	b, err := parseFrontmatter(src)
-	if fix && errors.Is(err, errFrontmatterMissing) {
+	skill := isSkillFile(file)
+	if !skill && fix && errors.Is(err, errFrontmatterMissing) {
 		b, err = parseFrontmatter(frontmatterScaffold(src))
 		if err == nil {
 			b.doc.Content[0].Style = 0
@@ -355,10 +408,19 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 	if !legacy {
 		var changed bool
 		var notes map[string]string
-		if fix {
-			changed, notes = b.fixOKF(file, rules, by, description)
+		var problems []string
+		if skill {
+			if fix {
+				changed, notes = b.fixSkill(by)
+			}
+			problems = b.skillProblems()
+		} else {
+			if fix {
+				changed, notes = b.fixOKF(file, rules, by, description)
+			}
+			problems = b.okfProblems()
 		}
-		problems := frontmatterFixProblems(b.okfProblems(), notes)
+		problems = frontmatterFixProblems(problems, notes)
 		if !changed {
 			return problems, false, nil
 		}
@@ -396,9 +458,14 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 // Fixer guidance replaces the generic finding for the same field.
 func frontmatterFixProblems(problems []string, notes map[string]string) []string {
 	for i, problem := range problems {
-		if note, ok := notes[strings.Fields(problem)[0]]; ok {
+		key := strings.Fields(problem)[0]
+		if note, ok := notes[key]; ok {
 			problems[i] = note
+			delete(notes, key)
 		}
+	}
+	for _, note := range notes {
+		problems = append(problems, note)
 	}
 	return problems
 }
@@ -446,10 +513,14 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 			continue // Missing or invalid metadata is reported, or was adopted in this change.
 		}
 		if !legacy {
-			b, a := mappingField(before.fields["generated"], "at"), mappingField(after.fields["generated"], "at")
-			beforeTime, validBefore := parseTimestamp(b)
-			afterTime, validAfter := parseTimestamp(a)
-			if validBefore && validAfter && !afterTime.After(beforeTime) && frontmatterMeaningful(before, after) {
+			bg, ag := before.fields["generated"], after.fields["generated"]
+			skill := isSkillFile(file)
+			if skill {
+				bg, ag = mappingField(before.fields["metadata"], "generated"), mappingField(after.fields["metadata"], "generated")
+			}
+			beforeTime, validBefore := parseTimestamp(mappingField(bg, "at"))
+			afterTime, validAfter := parseTimestamp(mappingField(ag, "at"))
+			if validBefore && validAfter && !afterTime.After(beforeTime) && frontmatterMeaningfulProfile(before, after, skill) {
 				stale = append(stale, file)
 			}
 			continue

@@ -4,7 +4,7 @@ title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
 generated:
   by: human:salmonumbrella
-  at: "2026-11-17T21:41:13Z"
+  at: "2026-11-17T21:42:54Z"
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -140,6 +140,8 @@ it after adding rule labels and reasons to their suppressions.
    later time, including edits within the same day; `-fix` never bumps it. New files only need valid metadata.
    Deletions are skipped. Findings print as `path: problem` on stderr and return a
    nonzero exit status; success prints a short summary.
+
+Use `-managed-skill 'skills/*/SKILL.md'` for [compatible managed skills](adopting-docs.md#skills).
 
 ## Overlay semantics
 

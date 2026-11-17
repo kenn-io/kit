@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -76,21 +77,80 @@ func (b *frontmatterBlock) okfProblems() []string {
 			p = append(p, k+" must be a non-empty string")
 		}
 	}
-	if status := b.fields["status"]; status != nil &&
-		(!validString(status) || (status.Value != "stable" && status.Value != "draft" && status.Value != "deprecated")) {
+	if status := b.fields["status"]; status != nil && !validStatus(status) {
 		p = append(p, "status must be one of stable, draft, or deprecated")
 	}
-	g := b.fields["generated"]
-	if g != nil && g.Kind != yaml.MappingNode {
-		return append(p, "generated must be a mapping")
+	p = append(p, generatedProblems(b.fields["generated"], "generated", docGeneratedProfile)...)
+
+	return p
+}
+
+func validStatus(n *yaml.Node) bool {
+	return validString(n) && (n.Value == "stable" || n.Value == "draft" || n.Value == "deprecated")
+}
+
+type generatedProfile struct {
+	blockMapping    bool
+	quotedTimestamp bool
+}
+
+var (
+	docGeneratedProfile   = generatedProfile{}
+	skillGeneratedProfile = generatedProfile{blockMapping: true, quotedTimestamp: true}
+)
+
+func generatedProblems(g *yaml.Node, path string, profile generatedProfile) []string {
+	if g != nil && (g.Kind != yaml.MappingNode || (profile.blockMapping && g.Style&yaml.FlowStyle != 0)) {
+		kind := "mapping"
+		if profile.blockMapping {
+			kind = "block mapping"
+		}
+		return []string{path + " must be a " + kind}
 	}
+	var p []string
 	if !validString(mappingField(g, "by")) {
-		p = append(p, "generated.by must be a non-empty string")
+		p = append(p, path+".by must be a non-empty string")
 	}
-	if _, ok := parseTimestamp(mappingField(g, "at")); !ok {
-		p = append(p, "generated.at must be an RFC 3339 UTC timestamp ending in Z")
+	at := mappingField(g, "at")
+	_, validAt := parseTimestamp(at)
+	if profile.quotedTimestamp && at != nil && at.Tag != "!!str" && validAt {
+		p = append(p, path+`.at must be a quoted string, for example "2026-11-17T19:00:00Z"`)
+	} else if !validAt || (profile.quotedTimestamp && at.Tag != "!!str") {
+		p = append(p, path+".at must be an RFC 3339 UTC timestamp ending in Z")
 	}
 	return p
+}
+
+func fillGenerated(parent *yaml.Node, by, path string, complete bool, profile generatedProfile) (bool, map[string]string) {
+	g := mappingField(parent, "generated")
+	oldBy, oldAt := mappingField(g, "by"), mappingField(g, "at")
+	if (oldBy == nil) != (oldAt == nil) {
+		missing := "at"
+		if oldBy == nil {
+			missing = "by"
+		}
+		return false, map[string]string{path + "." + missing: path + "." + missing + " is missing; supply both " + path + ".by and " + path + ".at by hand"}
+	}
+	if oldBy != nil {
+		return false, nil
+	}
+	if by == "" {
+		return false, map[string]string{path + ".by": path + ".by: supply -by ACTOR"}
+	}
+	if !complete {
+		return false, nil
+	}
+	if g == nil {
+		g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		appendField(parent, "generated", g)
+	}
+	appendField(g, "by", stringNode(by))
+	n := stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339))
+	if profile.quotedTimestamp {
+		n.Style = yaml.DoubleQuotedStyle
+	}
+	appendField(g, "at", n)
+	return true, nil
 }
 
 func headingTitle(body []byte) string {
@@ -176,28 +236,15 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 	if b.fields["description"] == nil {
 		notes["description"] = "supply -description TEXT"
 	}
-	if (oldBy == nil) != (oldAt == nil) {
-		missing := "generated.by"
-		if oldAt == nil {
-			missing = "generated.at"
-		}
-		notes[missing] = missing + " is missing; supply both generated.by and generated.at by hand"
-	} else if oldBy == nil {
-		if by == "" {
-			notes["generated.by"] = "generated.by: supply -by ACTOR"
-		} else if validString(b.fields["type"]) && validString(b.fields["title"]) && validString(b.fields["description"]) {
-			if g == nil {
-				g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-				appendField(root, "generated", g)
-				b.fields["generated"] = g
-			}
-			appendField(g, "by", stringNode(by))
-			appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
-			if i := slices.Index(root.Content, b.fields["last_edited"]); i > 0 {
-				root.Content = slices.Delete(root.Content, i-1, i+1)
-				delete(b.fields, "last_edited")
-			}
-			changed = true
+	complete := validString(b.fields["type"]) && validString(b.fields["title"]) && validString(b.fields["description"])
+	generatedChanged, generatedNotes := fillGenerated(root, by, "generated", complete, docGeneratedProfile)
+	changed = changed || generatedChanged
+	maps.Copy(notes, generatedNotes)
+	b.fields["generated"] = mappingField(root, "generated")
+	if generatedChanged {
+		if i := slices.Index(root.Content, b.fields["last_edited"]); i > 0 {
+			root.Content = slices.Delete(root.Content, i-1, i+1)
+			delete(b.fields, "last_edited")
 		}
 	}
 	return changed, notes

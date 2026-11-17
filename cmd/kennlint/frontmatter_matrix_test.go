@@ -285,21 +285,32 @@ func TestOKFChangedMatrix(t *testing.T) {
 func TestOKFMetadataComparison(t *testing.T) {
 	base, err := parseFrontmatter([]byte(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1)))
 	require.NoError(t, err)
+	skillBase, err := parseFrontmatter([]byte(strings.Replace(skillHeader, "    by: human:test", "    source: original\n    by: human:test", 1)))
+	require.NoError(t, err)
 	cases := []struct {
 		name, src  string
 		meaningful bool
+		skill      bool
 	}{
-		{"other generated field", strings.Replace(goodOKF, "  by: human:test\n", "  source: changed\n  by: human:test\n", 1), true},
-		{"actor only", strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:other\n", 1), false},
-		{"timestamp only", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "12:00:00Z", "12:01:00Z", 1), false},
-		{"title", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "title: A page", "title: Other", 1), true},
-		{"status", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "type: Guide\n", "type: Guide\nstatus: deprecated\n", 1), true},
+		{"other generated field", strings.Replace(goodOKF, "  by: human:test\n", "  source: changed\n  by: human:test\n", 1), true, false},
+		{"actor only", strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:other\n", 1), false, false},
+		{"timestamp only", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "12:00:00Z", "12:01:00Z", 1), false, false},
+		{"title", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "title: A page", "title: Other", 1), true, false},
+		{"status", strings.Replace(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1), "type: Guide\n", "type: Guide\nstatus: deprecated\n", 1), true, false},
+		{"skill generated extra", strings.Replace(skillHeader, "    by: human:test", "    source: changed\n    by: human:test", 1), true, true},
+		{"skill actor only", strings.Replace(skillHeader, "    by: human:test", "    source: original\n    by: human:other", 1), false, true},
+		{"skill timestamp only", strings.Replace(strings.Replace(skillHeader, "    by: human:test", "    source: original\n    by: human:test", 1), "12:00:00Z", "12:01:00Z", 1), false, true},
+		{"skill metadata field", strings.Replace(strings.Replace(skillHeader, "    by: human:test", "    source: original\n    by: human:test", 1), "  type: Skill", "  last_edited: note\n  type: Skill", 1), true, true},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			b, err := parseFrontmatter([]byte(tt.src))
 			require.NoError(t, err)
-			assert.Equal(t, tt.meaningful, frontmatterMeaningful(base, b))
+			original := base
+			if tt.skill {
+				original = skillBase
+			}
+			assert.Equal(t, tt.meaningful, frontmatterMeaningfulProfile(original, b, tt.skill))
 		})
 	}
 }

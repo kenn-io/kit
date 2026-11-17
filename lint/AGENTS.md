@@ -19,8 +19,9 @@
   workflow downloads with `kennlint workflow-retries`. Its `frontmatter`
   command checks git-tracked Markdown metadata against the Kenn OKF profile,
   or the temporary legacy profile. Fixes preserve bodies, never rewrite invalid
-  values, and never bump valid timestamps. Meaningful edits require a changed
-  timestamp against the merge base; formatting-only edits do not.
+  values, never rewrite an unlisted `SKILL.md`, and never bump valid timestamps.
+  Meaningful edits require a changed timestamp against the merge base;
+  formatting-only edits do not.
 
 See `docs/adopting-kennlint.md` for the consumer workflow.
 
