@@ -66,6 +66,7 @@ func TestFrontmatterValidation(t *testing.T) {
 		{"scalar", "---\npage\n---\n", "must be a YAML mapping"},
 		{"invalid YAML", "---\ntitle: [\n---\n", "invalid frontmatter YAML"},
 		{"duplicate key", strings.ReplaceAll(goodFrontmatter, "title: A page", "title: A page\ntitle: Another"), "already defined"},
+		{"nested duplicate", "---\ngenerated: {by: a, by: b}\n---\n", "already defined"},
 		{"second document", "---\ntitle: Page\n...\nother: value\n---\n", "single YAML mapping"},
 	}
 	for _, tt := range tests {
@@ -86,75 +87,103 @@ func TestFrontmatterValidation(t *testing.T) {
 }
 
 func TestFrontmatterSelection(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	for _, name := range []string{
-		"README.md", "AGENTS.md", "CLAUDE.md", ".github/PULL_REQUEST_TEMPLATE.md", "testdata/page.md", "pkg/testdata/deep/page.md",
-		"vendor/page.md", "node_modules/pkg/page.md", "generated/page.md", "docs/README.md", "docs/AGENTS.md", "docs/CLAUDE.md",
-		"docs/releases/v0.37.1.md", "CHANGELOG.md", "CHANGELOG-2026.md", "docs/CHANGELOG.md", "docs/changelog-2026.md", "docs/page with spaces.md",
-	} {
-		repo.WriteFile(name, "# Missing metadata\n")
-		repo.Run("add", "-f", "--", name)
+	for _, legacy := range []bool{false, true} {
+		name := "okf"
+		if legacy {
+			name = "legacy"
+		}
+		t.Run(name, func(t *testing.T) {
+			profileArgs := func(args []string) []string {
+				if legacy {
+					return append([]string{"-legacy"}, args...)
+				}
+				return args
+			}
+			isolateFrontmatterGit(t)
+			repo := gittest.NewRepoWithCommit(t)
+			t.Chdir(repo.Root)
+			for _, name := range []string{
+				"README.md", "AGENTS.md", "CLAUDE.md", ".github/PULL_REQUEST_TEMPLATE.md", "testdata/page.md", "pkg/testdata/deep/page.md",
+				"vendor/page.md", "node_modules/pkg/page.md", "generated/page.md", "docs/README.md", "docs/AGENTS.md", "docs/CLAUDE.md",
+				"docs/releases/v0.37.1.md", "CHANGELOG.md", "CHANGELOG-2026.md", "docs/CHANGELOG.md", "docs/changelog-2026.md", "docs/page with spaces.md",
+			} {
+				repo.WriteFile(name, "# Missing metadata\n")
+				repo.Run("add", "-f", "--", name)
+			}
+			repo.WriteFile("untracked.md", "# Untracked\n")
+			repo.WriteFile(".gitignore", "ignored.md\n")
+			repo.WriteFile("ignored.md", "# Ignored\n")
+			var stdout, stderr bytes.Buffer
+			n, err := runFrontmatter(t.Context(), profileArgs([]string{"-exclude", "generated/**"}), &stdout, &stderr)
+			require.NoError(t, err)
+			assert.Equal(t, 1, n)
+			assert.Empty(t, stdout.String())
+			assert.Equal(t, "docs/page with spaces.md: missing opening --- frontmatter delimiter\n", stderr.String())
+
+			stderr.Reset()
+			n, err = runFrontmatter(t.Context(), profileArgs([]string{"docs/README.md"}), &stdout, &stderr)
+			require.NoError(t, err)
+			assert.Zero(t, n, "nested README.md is excluded even when selected explicitly")
+			assert.Empty(t, stderr.String())
+
+			t.Chdir(filepath.Join(repo.Root, "docs"))
+			stderr.Reset()
+			n, err = runFrontmatter(t.Context(), profileArgs([]string{"README.md"}), &stdout, &stderr)
+			require.NoError(t, err)
+			assert.Zero(t, n)
+			assert.Empty(t, stderr.String())
+
+			t.Chdir(repo.Root)
+			for _, name := range []string{"README.md", "AGENTS.md", "CLAUDE.md", "docs/README.md", "docs/AGENTS.md", "docs/CLAUDE.md", "CHANGELOG.md", "docs/CHANGELOG.md", "docs/changelog-2026.md"} {
+				stdout.Reset()
+				stderr.Reset()
+				n, err = runFrontmatter(t.Context(), profileArgs([]string{name}), &stdout, &stderr)
+				require.NoError(t, err)
+				assert.Zero(t, n, "%s is excluded even when selected explicitly", name)
+				assert.Empty(t, stderr.String())
+			}
+
+			_, err = runFrontmatter(t.Context(), profileArgs([]string{"-exclude", "["}), &stdout, &stderr)
+			require.ErrorContains(t, err, "invalid exclude")
+			_, err = runFrontmatter(t.Context(), profileArgs([]string{t.TempDir()}), &stdout, &stderr)
+			assert.ErrorContains(t, err, "outside the repository")
+		})
 	}
-	repo.WriteFile("untracked.md", "# Untracked\n")
-	repo.WriteFile(".gitignore", "ignored.md\n")
-	repo.WriteFile("ignored.md", "# Ignored\n")
-	var stdout, stderr bytes.Buffer
-	n, err := runLegacyFrontmatter(t.Context(), []string{"-exclude", "generated/**"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Equal(t, 1, n)
-	assert.Empty(t, stdout.String())
-	assert.Equal(t, "docs/page with spaces.md: missing opening --- frontmatter delimiter\n", stderr.String())
-
-	stderr.Reset()
-	n, err = runLegacyFrontmatter(t.Context(), []string{"docs/README.md"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Zero(t, n, "nested README.md is excluded even when selected explicitly")
-	assert.Empty(t, stderr.String())
-
-	t.Chdir(filepath.Join(repo.Root, "docs"))
-	stderr.Reset()
-	n, err = runLegacyFrontmatter(t.Context(), []string{"README.md"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Zero(t, n)
-	assert.Empty(t, stderr.String())
-
-	t.Chdir(repo.Root)
-	for _, name := range []string{"README.md", "AGENTS.md", "CLAUDE.md", "docs/README.md", "docs/AGENTS.md", "docs/CLAUDE.md", "CHANGELOG.md", "docs/CHANGELOG.md", "docs/changelog-2026.md"} {
-		stdout.Reset()
-		stderr.Reset()
-		n, err = runLegacyFrontmatter(t.Context(), []string{name}, &stdout, &stderr)
-		require.NoError(t, err)
-		assert.Zero(t, n, "%s is excluded even when selected explicitly", name)
-		assert.Empty(t, stderr.String())
-	}
-
-	_, err = runLegacyFrontmatter(t.Context(), []string{"-exclude", "["}, &stdout, &stderr)
-	require.ErrorContains(t, err, "invalid exclude")
-	_, err = runLegacyFrontmatter(t.Context(), []string{t.TempDir()}, &stdout, &stderr)
-	assert.ErrorContains(t, err, "outside the repository")
 }
 
 func TestFrontmatterSkipsSkillBundles(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	for _, name := range []string{
-		"SKILL.md", "page.md", "docs/skill.md", "skills/unrelated/page.md",
-		"skills/example-skill/SKILL.md", "skills/example-skill/references/api.md",
-	} {
-		repo.WriteFile(name, "# No metadata\n")
-	}
-	repo.Run("add", ".")
+	for _, legacy := range []bool{false, true} {
+		name := "okf"
+		if legacy {
+			name = "legacy"
+		}
+		t.Run(name, func(t *testing.T) {
+			profileArgs := func(args []string) []string {
+				if legacy {
+					return append([]string{"-legacy"}, args...)
+				}
+				return args
+			}
+			isolateFrontmatterGit(t)
+			repo := gittest.NewRepoWithCommit(t)
+			t.Chdir(repo.Root)
+			for _, name := range []string{
+				"SKILL.md", "page.md", "docs/skill.md", "skills/unrelated/page.md",
+				"skills/example-skill/SKILL.md", "skills/example-skill/references/api.md",
+			} {
+				repo.WriteFile(name, "# No metadata\n")
+			}
+			repo.Run("add", ".")
 
-	var stdout, stderr bytes.Buffer
-	n, err := runLegacyFrontmatter(t.Context(), nil, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Equal(t, 3, n, "a root SKILL.md exempts nothing and a lowercase skill.md is ordinary")
-	assert.Equal(t, "docs/skill.md: missing opening --- frontmatter delimiter\n"+
-		"page.md: missing opening --- frontmatter delimiter\n"+
-		"skills/unrelated/page.md: missing opening --- frontmatter delimiter\n", stderr.String())
+			var stdout, stderr bytes.Buffer
+			n, err := runFrontmatter(t.Context(), profileArgs(nil), &stdout, &stderr)
+			require.NoError(t, err)
+			assert.Equal(t, 3, n, "a root SKILL.md exempts nothing and a lowercase skill.md is ordinary")
+			assert.Equal(t, "docs/skill.md: missing opening --- frontmatter delimiter\n"+
+				"page.md: missing opening --- frontmatter delimiter\n"+
+				"skills/unrelated/page.md: missing opening --- frontmatter delimiter\n", stderr.String())
+		})
+	}
 }
 
 func TestFrontmatterGlob(t *testing.T) {
