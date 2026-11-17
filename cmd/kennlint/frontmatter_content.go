@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"reflect"
-	"strings"
+	"regexp"
 
+	"github.com/yuin/goldmark/v2/ast"
 	"github.com/yuin/goldmark/v2/extension"
 	"github.com/yuin/goldmark/v2/parser"
 	"github.com/yuin/goldmark/v2/renderer/html"
+	"github.com/yuin/goldmark/v2/text"
 )
 
 func frontmatterMeaningful(a, b *frontmatterBlock) bool {
@@ -30,76 +32,26 @@ func stripProvenance(header map[string]any) {
 	}
 }
 
+// canonicalHTML renders Markdown so that edits which render the same compare
+// equal. Whitespace runs in prose text, including soft line breaks, become one
+// space; code, raw HTML, attributes and hard breaks render untouched.
 func canonicalHTML(src []byte) string {
 	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
 	root := parser.New(parser.WithExtensions(extension.NewGFMParser())).Parse(src)
+	_ = ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if t, ok := n.(*ast.Text); ok && entering && !t.HardLineBreak() {
+			value := t.Value.Value(src)
+			if t.SoftLineBreak() {
+				value += " "
+			}
+			t.Value = text.NewSingleLineValueFromString(proseSpace.ReplaceAllString(value, " "), text.IdentityDecoder)
+			t.SetSoftLineBreak(false)
+		}
+		return ast.WalkContinue, nil
+	})
 	var rendered bytes.Buffer
 	_ = html.New(html.WithUnsafe(), html.WithExtensions(extension.NewGFMHTMLRenderer())).Render(&rendered, src, root)
-	s := rendered.String()
-	var out strings.Builder
-	codeDepth, preDepth := 0, 0
-	space := false
-	for i := 0; i < len(s); {
-		if s[i] == '<' {
-			end, quote := i+1, byte(0)
-			for end < len(s) {
-				c := s[end]
-				if quote != 0 {
-					if c == quote {
-						quote = 0
-					}
-				} else if c == '\'' || c == '"' {
-					quote = c
-				} else if c == '>' {
-					break
-				}
-				end++
-			}
-			if end < len(s) {
-				tag := s[i : end+1]
-				name := strings.TrimSpace(tag[1 : len(tag)-1])
-				closing := strings.HasPrefix(name, "/")
-				name = strings.TrimPrefix(name, "/")
-				name, _, _ = strings.Cut(name, " ")
-				name, _, _ = strings.Cut(name, "\n")
-				name, _, _ = strings.Cut(name, "\t")
-				if !strings.HasSuffix(strings.TrimSpace(tag[:len(tag)-1]), "/") {
-					switch strings.ToLower(name) {
-					case "code":
-						if closing {
-							if codeDepth > 0 {
-								codeDepth--
-							}
-						} else {
-							codeDepth++
-						}
-					case "pre":
-						if closing {
-							if preDepth > 0 {
-								preDepth--
-							}
-						} else {
-							preDepth++
-						}
-					}
-				}
-				out.WriteString(tag)
-				space = false
-				i = end + 1
-				continue
-			}
-		}
-		c := s[i]
-		if codeDepth == 0 && preDepth == 0 && (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f') {
-			if !space {
-				out.WriteByte(' ')
-				space = true
-			}
-		} else {
-			out.WriteByte(c)
-			space = false
-		}
-		i++
-	}
-	return out.String()
+	return rendered.String()
 }
+
+var proseSpace = regexp.MustCompile(`[ \t\n\f]+`)

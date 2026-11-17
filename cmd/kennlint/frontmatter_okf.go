@@ -185,29 +185,24 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 	if b.fields["description"] == nil {
 		notes = append(notes, "supply -description TEXT")
 	}
+	// Values present here are valid: the checks above return on invalid ones.
 	g := b.fields["generated"]
-	if g == nil && strings.TrimSpace(by) != "" {
+	if g == nil && by != "" {
 		g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		appendField(root, "generated", g)
 		b.fields["generated"] = g
+	}
+	if g != nil && mappingField(g, "by") == nil && by != "" {
+		appendField(g, "by", stringNode(by))
 		changed = true
 	}
-	if g == nil {
+	if mappingField(g, "by") == nil {
 		notes = append(notes, "supply -by ACTOR")
-	} else if g.Kind == yaml.MappingNode {
-		if mappingField(g, "by") == nil && strings.TrimSpace(by) != "" {
-			appendField(g, "by", stringNode(by))
-			changed = true
-		}
-		if mappingField(g, "by") == nil {
-			notes = append(notes, "supply -by ACTOR")
-		}
-		if validString(mappingField(g, "by")) && mappingField(g, "at") == nil {
-			appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
-			changed = true
-		}
+	} else if mappingField(g, "at") == nil {
+		appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
+		changed = true
 	}
-	if validString(mappingField(g, "by")) && validTimestamp(mappingField(g, "at")) {
+	if mappingField(g, "by") != nil && mappingField(g, "at") != nil {
 		for i := 0; i < len(root.Content); i += 2 {
 			if root.Content[i].Value == "last_edited" {
 				root.Content = append(root.Content[:i], root.Content[i+2:]...)

@@ -15,6 +15,8 @@ import (
 	gittest "go.kenn.io/kit/git/test"
 )
 
+const goodOKF = "---\ntype: Guide\ntitle: A page\ndescription: Useful\ngenerated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z\n---\n\n# A page\n\nText here.\n"
+
 func TestOKFValidationMatrix(t *testing.T) {
 	fields := []struct{ old, invalid, problem string }{
 		{"type: Guide\n", "", "type must"},
@@ -176,6 +178,7 @@ func TestOKFCanonicalFormatting(t *testing.T) {
 		{"link", "[x](a)\n", "[x](b)\n", false},
 		{"code indentation", "```\na\n```\n", "```\n a\n```\n", false},
 		{"code span", "`a b`\n", "`a  b`\n", false},
+		{"code span rewrap", "`one two`\n", "`one\ntwo`\n", true},
 		{"html", "<b>x</b>\n", "<i>x</i>\n", false},
 		{"hard break", "a\nb\n", "a  \nb\n", false},
 	}
@@ -205,6 +208,7 @@ func TestOKFChangedMatrix(t *testing.T) {
 		{"same instant different spelling", strings.Replace(strings.Replace(src, "[link]", "[changed]", 1), "12:00:00Z", "12:00:00.000Z", 1), true},
 		{"same day same actor", strings.Replace(strings.Replace(src, "[link]", "[changed]", 1), "12:00:00Z", "12:01:00Z", 1), false},
 		{"title", strings.Replace(src, "title: A page", "title: Other", 1), true},
+		{"status", strings.Replace(src, "type: Guide\n", "type: Guide\nstatus: deprecated\n", 1), true},
 		{"link", strings.Replace(src, "(a)", "(b)", 1), true},
 		{"code indent", strings.Replace(src, "\ncode\n", "\n code\n", 1), true},
 		{"inline code whitespace", strings.Replace(src, "`a b`", "`a  b`", 1), true},
@@ -345,20 +349,4 @@ func TestOKFTrimInputsAndScaffoldCRLF(t *testing.T) {
 	var rules frontmatterRules
 	require.Error(t, rules.Set("   = Guide"))
 	require.Error(t, rules.Set("docs/**=  "))
-}
-
-func TestOKFChangedCodeSpanRewrap(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	original := strings.Replace(goodOKF, "Text here.", "`one two`", 1)
-	repo.WriteFile("page.md", original)
-	repo.Run("add", "page.md")
-	repo.Run("commit", "-m", "base")
-	repo.Run("branch", "base")
-	repo.WriteFile("page.md", strings.Replace(original, "`one two`", "`one\ntwo`", 1))
-	var out, errout bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &out, &errout)
-	require.NoError(t, err)
-	assert.Zero(t, n, errout.String())
 }
