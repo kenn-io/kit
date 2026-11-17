@@ -24,7 +24,7 @@ import (
 const (
 	// DefaultEndpoint is PostHog's US ingest endpoint.
 	DefaultEndpoint = "https://us.i.posthog.com"
-	// GenericEnabledEnv is the unprefixed telemetry opt-out variable.
+	// GenericEnabledEnv is the unprefixed telemetry opt-in and opt-out variable.
 	// See EnabledFromEnv for accepted values and vetoes.
 	GenericEnabledEnv = "TELEMETRY_ENABLED"
 
@@ -217,12 +217,11 @@ func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 
 // EnabledFromEnv reports whether telemetry is enabled for envPrefix.
 // See Eligible for the full reporting decision, including the release version.
-// Reporting defaults to on. An explicit 0, false, no, or off in TELEMETRY_ENABLED
-// or PREFIX_TELEMETRY_ENABLED turns it off. Values are trimmed and case-insensitive.
-// Process disable and any present CI turn reporting off. A present DO_NOT_TRACK
-// turns reporting off unless its trimmed, case-insensitive value is 0 or false.
-// NewReporter samples the environment once, while DisableProcess also stops
-// reporting after construction.
+// Reporting requires stored consent sampled at process start or an affirmative
+// TELEMETRY_ENABLED value (1, true, yes, or on). A 0, false, no, or off in
+// either variable vetoes reporting. Values are trimmed and case-insensitive.
+// Process disable, any present CI, and DO_NOT_TRACK except 0 or false also veto.
+// Environment vetoes are live; DisableProcess also stops existing reporters.
 func EnabledFromEnv(envPrefix string) bool {
 	if ProcessDisabled() {
 		return false
@@ -246,7 +245,11 @@ func EnabledFromEnv(envPrefix string) bool {
 			return false
 		}
 	}
-	return true
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(GenericEnabledEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return startupConsent == ConsentGranted
 }
 
 // Eligible reports whether the admission gate allows envPrefix and version at
@@ -673,6 +676,7 @@ func (t postHogDisableTransport) rewriteBatch(body io.Reader) ([]byte, error) {
 }
 
 func (r *Reporter) addDefaultProperties(props map[string]any) {
+	props["telemetry_consent"] = true
 	props["$process_person_profile"] = false
 	props["$geoip_disable"] = true
 	props["application"] = r.application

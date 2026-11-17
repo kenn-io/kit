@@ -43,6 +43,7 @@ func (c *heartbeatClient) count() int {
 func TestRunHeartbeatHonorsReporterOptOut(t *testing.T) {
 	for _, optOut := range []bool{false, true} {
 		t.Run(strconv.FormatBool(optOut), func(t *testing.T) {
+			t.Setenv(GenericEnabledEnv, "1")
 			if optOut {
 				t.Setenv(GenericEnabledEnv, "0")
 			}

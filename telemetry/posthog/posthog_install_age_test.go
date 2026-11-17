@@ -153,6 +153,7 @@ func TestPostHogReporterZeroInstalledAtOmitsInstallAge(t *testing.T) {
 
 	require.Len(client.messages, 1)
 	assert.Equal(t, phsdk.Properties{
+		"telemetry_consent":       true,
 		"$process_person_profile": false,
 		"$geoip_disable":          true,
 		"application":             "kata",

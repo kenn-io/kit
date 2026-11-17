@@ -28,6 +28,7 @@ type Install struct {
 	InstalledAt time.Time `json:"installed_at"`
 }
 
+// Callers must check admission before creating a telemetry install ID.
 // LoadOrCreateInstall returns the install stored in dir, creating
 // InstallFileName as a private file on first use. A file that does not parse
 // is replaced with a new install. Every call holds a lock file beside it, so

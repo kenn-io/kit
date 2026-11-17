@@ -86,12 +86,12 @@ func TestEligible(t *testing.T) {
 		enabled                 bool
 	}
 	tests := []admissionCase{
-		{name: "absent", version: "v1.2.3", absent: true, enabled: true},
-		{name: "empty", version: "v1.2.3", enabled: true},
-		{name: "unknown", version: "v1.2.3", generic: "enabled", prefixed: "2", enabled: true},
-		{name: "tracking zero", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: "0", enabled: true},
-		{name: "tracking false", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
-		{name: "tracking padded zero", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: " 0 ", enabled: true},
+		{name: "absent", version: "v1.2.3", absent: true},
+		{name: "empty", version: "v1.2.3"},
+		{name: "unknown", version: "v1.2.3", generic: "enabled", prefixed: "2"},
+		{name: "tracking zero", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: "0", enabled: true},
+		{name: "tracking false", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
+		{name: "tracking padded zero", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: " 0 ", enabled: true},
 		{name: "tracking set", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: "1"},
 		{name: "tracking empty", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK"},
 		{name: "tracking other", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: "off"},
@@ -99,19 +99,19 @@ func TestEligible(t *testing.T) {
 		{name: "ci empty", version: "v1.2.3", generic: "1", veto: "CI"},
 		{name: "ci false", version: "v1.2.3", generic: "1", veto: "CI", value: "false"},
 		{name: "process disable", version: "v1.2.3", generic: "1", processDisabled: true},
-		{name: "release without v", absent: true, version: "1.2.3", enabled: true},
-		{name: "development", absent: true, version: "dev"},
-		{name: "fork", absent: true, version: "v1.2.3-fork.1"},
-		{name: "empty version", absent: true},
-		{name: "partial version", absent: true, version: "v1.2"},
-		{name: "build metadata", absent: true, version: "v1.2.3+build.1"},
-		{name: "leading space", absent: true, version: " v1.2.3"},
-		{name: "trailing newline", absent: true, version: "v1.2.3\n"},
+		{name: "release without v", generic: "1", version: "1.2.3", enabled: true},
+		{name: "development", generic: "1", version: "dev"},
+		{name: "fork", generic: "1", version: "v1.2.3-fork.1"},
+		{name: "empty version", generic: "1"},
+		{name: "partial version", generic: "1", version: "v1.2"},
+		{name: "build metadata", generic: "1", version: "v1.2.3+build.1"},
+		{name: "leading space", generic: "1", version: " v1.2.3"},
+		{name: "trailing newline", generic: "1", version: "v1.2.3\n"},
 	}
 	for _, value := range []string{"1", "true", "yes", "on", " TRUE ", " YeS ", " ON ", " 1 "} {
 		tests = append(tests,
 			admissionCase{name: "generic " + value, version: "v1.2.3", generic: value, enabled: true},
-			admissionCase{name: "prefixed " + value, version: "v1.2.3", prefixed: value, enabled: true})
+			admissionCase{name: "prefixed " + value, version: "v1.2.3", prefixed: value})
 	}
 	for _, value := range []string{"0", "false", "no", "off", " FALSE ", "Off"} {
 		tests = append(tests,
@@ -685,11 +685,11 @@ func TestReporterSerializedPayloadMatchesDocumentedFields(t *testing.T) {
 				APIKey: "phc_test", Endpoint: server.URL + "/ingest", Application: "test", EnvPrefix: "TEST",
 				DistinctID: "synthetic-install", Version: "v1.2.3", Commit: "abc123", Source: "cli",
 				InstalledAt: now.Add(-48 * time.Hour),
-			}, WithAllowedEvent("screen_view", AllowProperty("screen", AllowStringValues("home")), AllowProperty("count", AllowNumber), AllowProperty("$os", AllowStringValues("redacted")), AllowProperty("$os_version", AllowStringValues("redacted")), AllowProperty("$os_distro", AllowStringValues("redacted")), AllowProperty("$go_version", AllowStringValues("redacted"))),
+			}, WithAllowedEvent("screen_view", AllowProperty("screen", AllowStringValues("home")), AllowProperty("count", AllowNumber), AllowProperty("telemetry_consent", AllowBool), AllowProperty("$os", AllowStringValues("redacted")), AllowProperty("$os_version", AllowStringValues("redacted")), AllowProperty("$os_distro", AllowStringValues("redacted")), AllowProperty("$go_version", AllowStringValues("redacted"))),
 				postHogOptionFunc(func(config *postHogReporterConfig) { config.now = func() time.Time { return now } }))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = reporter.Close() })
-			require.NoError(t, reporter.Capture("screen_view", map[string]any{"screen": "home", "count": int64(9007199254740993), "$os": "redacted", "$os_version": "redacted", "$os_distro": "redacted", "$go_version": "redacted"}))
+			require.NoError(t, reporter.Capture("screen_view", map[string]any{"screen": "home", "count": int64(9007199254740993), "telemetry_consent": false, "$os": "redacted", "$os_version": "redacted", "$os_distro": "redacted", "$go_version": "redacted"}))
 			require.NoError(t, reporter.Close())
 			require.Len(t, bodies, len(tc.paths))
 			for _, path := range tc.paths {
@@ -710,11 +710,11 @@ func TestReporterSerializedPayloadMatchesDocumentedFields(t *testing.T) {
 				assert.NotEmpty(t, event["uuid"])
 				var properties map[string]json.RawMessage
 				require.NoError(t, json.Unmarshal(event["properties"], &properties))
-				assert.ElementsMatch(t, []string{"application", "source", "version", "commit", "distribution", "goos", "goarch", "install_age_hours", "$lib", "$lib_version", "$process_person_profile", "$geoip_disable", "screen", "count"}, slices.Collect(maps.Keys(properties)))
+				assert.ElementsMatch(t, []string{"telemetry_consent", "application", "source", "version", "commit", "distribution", "goos", "goarch", "install_age_hours", "$lib", "$lib_version", "$process_person_profile", "$geoip_disable", "screen", "count"}, slices.Collect(maps.Keys(properties)))
 				for key, want := range map[string]string{
 					"application": `"test"`, "source": `"cli"`, "version": `"v1.2.3"`, "commit": `"abc123"`, "distribution": `"homebrew"`,
 					"goos": `"` + runtime.GOOS + `"`, "goarch": `"` + runtime.GOARCH + `"`,
-					"install_age_hours": "48", "$lib": `"posthog-go"`, "$process_person_profile": "false", "$geoip_disable": "true",
+					"telemetry_consent": "true", "install_age_hours": "48", "$lib": `"posthog-go"`, "$process_person_profile": "false", "$geoip_disable": "true",
 					"screen": `"home"`, "count": "9007199254740993",
 				} {
 					assert.Equal(t, want, string(properties[key]), key)
