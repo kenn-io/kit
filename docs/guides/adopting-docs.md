@@ -4,7 +4,7 @@ title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
 generated:
   by: human:salmonumbrella
-  at: "2026-11-17T22:09:49Z"
+  at: "2026-11-17T22:20:21Z"
 ---
 
 # Adopting the Kenn documentation profile
@@ -25,8 +25,8 @@ cannot infer retirement from a filename or age. The fixer never sets or changes
 status.
 
 `README.md`, `AGENTS.md`, and `CLAUDE.md` files never take frontmatter at any
-depth. The check also excludes unlisted `SKILL.md` files, release notes,
-changelogs, `.github`, `testdata`, `vendor`, and `node_modules`.
+depth. The check also excludes `index.md`, `log.md`, unlisted `SKILL.md` files,
+release notes, changelogs, `.github`, `testdata`, `vendor`, and `node_modules`.
 It also skips all Markdown inside skill bundles. Add `-exclude GLOB` for other
 exceptions. Globs use `**` for any number of directories. Path arguments limit
 the check to tracked files; put flags before paths.
@@ -90,3 +90,27 @@ layout, such as indentation and folded scalars, may change.
 Under `-changed`, meaningful skill edits, including status changes, require
 updating `metadata.generated.at` to a later edit time and
 `metadata.generated.by` to the editor.
+
+## Layout and indexes
+
+Keep the root README as the project overview and link it to `docs/index.md`.
+Move a nested landing-page README to `index.md`. Organize pages in `tutorials/`
+(learn), `guides/` (do), `reference/` (look up), and `explanation/`
+(understand), creating sections only where content exists. No folder needs an
+index, and no new `log.md` is required. Indexes and logs have no concept header.
+
+A folder can opt into its own recursive list by adding these whole-line markers
+to its `index.md`:
+
+```markdown
+<!-- BEGIN kennlint index -->
+<!-- END kennlint index -->
+```
+
+Each entry is `- [Title](relative/path.md) - description`; only tracked files
+are listed. Run `make fix-frontmatter` in Kit to regenerate it; the read-only
+check reports stale lists and the Make target prints the local fix command. Unmarked indexes are left alone. Skills, skill bundle
+files, deprecated pages, README and AGENTS files, and release notes are never
+listed. Retain deprecated pages as linked pointers to preserve public URLs. Repeat
+the original headings in each pointer so old fragment links land on a heading
+that links to the new section.

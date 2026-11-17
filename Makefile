@@ -7,7 +7,7 @@ CUSTOM_GCL := $(CUSTOM_GCL_DIR)/custom-gcl
 # one Go build cache instead of each compiling its own copy of every package.
 # Read `go env` first so flags saved with `go env -w GOFLAGS=...` survive the
 # export. GOFLAGS=-trimpath=false opts out. Debuggers need a source mapping:
-# docs/development.md#debugging-trimmed-builds.
+# docs/guides/development.md#debugging-trimmed-builds.
 ifeq ($(origin GOFLAGS),undefined)
 GOFLAGS := $(shell go env GOFLAGS)
 endif
@@ -53,14 +53,14 @@ test-embedserver:
 lint-workflow-retries:
 	go run ./cmd/kennlint workflow-retries
 
-FRONTMATTER_FIX_FLAGS = -type-rule 'docs/architecture/**=Explanation' -type-rule 'docs/research/**=Explanation'
+FRONTMATTER_FIX_FLAGS = -type-rule 'docs/guides/**=Guide' -type-rule 'docs/explanation/**=Explanation'
 
 lint-frontmatter:
-	@go run ./cmd/kennlint frontmatter || { echo "fix locally: make fix-frontmatter (set stale generated.at by hand; BY=human:<login> records generated.by)"; exit 1; }
+	@go run ./cmd/kennlint frontmatter || { echo "fix locally: make fix-frontmatter (regenerates stale managed indexes; set stale generated.at by hand; BY=human:<login> records generated.by)"; exit 1; }
 
 FRONTMATTER_BASE ?= origin/main
 lint-frontmatter-changed:
-	@go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE) || { echo "fix locally: make fix-frontmatter (set stale generated.at by hand; BY=human:<login> records generated.by)"; exit 1; }
+	@go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE) || { echo "fix locally: make fix-frontmatter (regenerates stale managed indexes; set stale generated.at by hand; BY=human:<login> records generated.by)"; exit 1; }
 
 fix-frontmatter:
 	go run ./cmd/kennlint frontmatter -fix $(FRONTMATTER_FIX_FLAGS) $(if $(BY),-by $(BY))

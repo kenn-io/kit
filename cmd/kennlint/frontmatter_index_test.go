@@ -1,0 +1,302 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/yuin/goldmark/v2/parser"
+	"github.com/yuin/goldmark/v2/renderer/html"
+	gittest "go.kenn.io/kit/git/test"
+)
+
+func TestRefreshIndex(t *testing.T) {
+	tests := []struct {
+		name, src, want string
+		pages           []indexPage
+		bad             bool
+	}{
+		{"empty", "before\n" + indexBegin + "\nold\n" + indexEnd + "\nafter\n", "before\n" + indexBegin + "\n" + indexEnd + "\nafter\n", nil, false},
+		{"sorted escaped CRLF", "top\r\n" + indexBegin + "\r\n" + indexEnd + "\r\nend", "top\r\n" + indexBegin + "\r\n- [A\\[b\\]\\\\c](a%20b/x.md) - two words\r\n- [Z](z.md) - last\r\n" + indexEnd + "\r\nend", []indexPage{{"z.md", "Z", "last"}, {"a b/x.md", `A[b]\c`, "two\n words"}}, false},
+		{"multiline title", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [First second third](page.md) - description\n" + indexEnd + "\n", []indexPage{{"page.md", "First\n\nsecond\tthird", "description"}}, false},
+		{"punctuation title and colon path", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Use \\*bold\\* \\[safely\\]\\!](./guide:setup.md) - description\n" + indexEnd + "\n", []indexPage{{"guide:setup.md", "Use *bold* [safely]!", "description"}}, false},
+		{"GFM punctuation", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Tilde \\~\\~text\\~\\~](page.md) - Emoji \\:smile\\:\n" + indexEnd + "\n", []indexPage{{"page.md", "Tilde ~~text~~", "Emoji :smile:"}}, false},
+		{"unmarked", "untouched\n", "untouched\n", nil, false},
+		{"missing end", indexBegin + "\n", "", nil, true},
+		{"end first", indexEnd + "\n" + indexBegin + "\n", "", nil, true},
+		{"duplicate", indexBegin + "\n" + indexEnd + "\n" + indexBegin + "\n" + indexEnd + "\n", "", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && tt.name == "punctuation title and colon path" {
+				t.Skip("colon is not valid in Windows filenames")
+			}
+			root := t.TempDir()
+			index := filepath.Join(root, "index.md")
+			require.NoError(t, os.WriteFile(index, []byte(tt.src), 0o600))
+			files := []string{"index.md"}
+			for _, page := range tt.pages {
+				filename := filepath.Join(root, filepath.FromSlash(page.path))
+				require.NoError(t, os.MkdirAll(filepath.Dir(filename), 0o700))
+				header := "---\ntitle: " + strconv.Quote(page.title) + "\ndescription: " + strconv.Quote(page.description) + "\n---\n"
+				require.NoError(t, os.WriteFile(filename, []byte(header), 0o600))
+				files = append(files, page.path)
+			}
+			got, changed, err := refreshTrackedIndex(root, "index.md", files, nil, nil)
+			if tt.bad {
+				require.Error(t, err)
+				assert.Equal(t, tt.src, string(got))
+				assert.False(t, changed)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, string(got))
+			assert.Equal(t, tt.want != tt.src, changed)
+			require.NoError(t, os.WriteFile(index, got, 0o600))
+			again, changed, err := refreshTrackedIndex(root, "index.md", files, nil, nil)
+			require.NoError(t, err)
+			assert.False(t, changed)
+			assert.Equal(t, got, again)
+		})
+	}
+}
+
+func TestManagedIndexFlow(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("docs/index.md", "# Index\n"+indexBegin+"\n"+indexEnd+"\nTail\n")
+	repo.WriteFile("docs/a.md", goodFrontmatter)
+	repo.WriteFile("docs/log.md", "no header\n")
+	repo.WriteFile("docs/README.md", goodFrontmatter)
+	repo.WriteFile("docs/testdata/hidden.md", goodFrontmatter)
+	repo.WriteFile("docs/skill/SKILL.md", goodFrontmatter)
+	repo.WriteFile("docs/skill/resource.md", goodFrontmatter)
+	repo.WriteFile("docs/old.md", strings.Replace(goodFrontmatter, "title: A page", "status: deprecated\ntitle: Old", 1))
+	repo.WriteFile("docs/untracked.md", goodFrontmatter)
+	repo.Run("add", "docs/index.md", "docs/a.md", "docs/log.md", "docs/README.md", "docs/testdata/hidden.md", "docs/skill/SKILL.md", "docs/skill/resource.md", "docs/old.md")
+	read := func() string {
+		b, err := os.ReadFile(filepath.Join(repo.Root, "docs/index.md"))
+		require.NoError(t, err)
+		return string(b)
+	}
+	run := func(args ...string) (int, string) {
+		var out, stderr bytes.Buffer
+		n, err := runFrontmatter(t.Context(), args, &out, &stderr)
+		require.NoError(t, err)
+		return n, stderr.String()
+	}
+	before := read()
+	n, diagnostic := run("docs/index.md")
+	assert.Equal(t, 1, n)
+	assert.Contains(t, diagnostic, "managed index is stale")
+	assert.NotContains(t, diagnostic, "fix locally:")
+	assert.Equal(t, before, read())
+	n, diagnostic = run("-fix", "docs/index.md")
+	require.Zero(t, n, diagnostic)
+	assert.Contains(t, read(), "- [A page](a.md) - A useful page.")
+	for _, name := range []string{"log.md", "README.md", "hidden.md", "SKILL.md", "resource.md", "old.md", "untracked.md"} {
+		assert.NotContains(t, read(), name)
+	}
+	saved := read()
+	n, diagnostic = run("-fix", "docs/index.md")
+	require.Zero(t, n, diagnostic)
+	assert.Equal(t, saved, read())
+	repo.Run("mv", "docs/a.md", "docs/renamed.md")
+	repo.WriteFile("docs/renamed.md", strings.Replace(goodFrontmatter, "A page", "Renamed", 1))
+	n, diagnostic = run("-fix", "docs/index.md")
+	require.Zero(t, n, diagnostic)
+	assert.Contains(t, read(), "[Renamed](renamed.md)")
+	assert.NotContains(t, read(), "a.md)")
+	repo.Run("rm", "-f", "docs/renamed.md")
+	n, diagnostic = run("-fix", "docs/index.md")
+	require.Zero(t, n, diagnostic)
+	assert.NotContains(t, read(), "renamed.md")
+	repo.WriteFile("docs/index.md", "arbitrary content\n")
+	n, diagnostic = run("-fix", "docs/index.md")
+	require.Zero(t, n, diagnostic)
+	assert.Equal(t, "arbitrary content\n", read())
+	n, diagnostic = run("docs/log.md")
+	assert.Zero(t, n, diagnostic)
+	n, diagnostic = run("-legacy", "docs/log.md")
+	assert.Positive(t, n)
+	assert.Contains(t, diagnostic, "missing opening")
+}
+
+func TestManagedIndexInvalidPage(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	original := indexBegin + "\nold\n" + indexEnd + "\n"
+	repo.WriteFile("docs/index.md", original)
+	repo.WriteFile("docs/bad.md", "---\ntitle: Bad\n---\n")
+	repo.Run("add", "docs/index.md", "docs/bad.md")
+	var out, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "docs/index.md"}, &out, &stderr)
+	require.NoError(t, err)
+	assert.Positive(t, n)
+	assert.Contains(t, stderr.String(), "valid title and description")
+	got, err := os.ReadFile("docs/index.md")
+	require.NoError(t, err)
+	assert.Equal(t, original, string(got))
+}
+
+func TestManagedIndexDescriptionRendersAsText(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "index.md"), []byte(indexBegin+"\n"+indexEnd+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.md"), []byte("---\ntitle: First\ndescription: '<count> *literal* [x](y) <!--'\n---\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "b.md"), []byte("---\ntitle: Second\ndescription: Visible\n---\n"), 0o600))
+	got, _, err := refreshTrackedIndex(root, "index.md", []string{"index.md", "a.md", "b.md"}, nil, nil)
+	require.NoError(t, err)
+	var rendered bytes.Buffer
+	require.NoError(t, html.New().Render(&rendered, got, parser.New().Parse(got)))
+	assert.Contains(t, rendered.String(), `&lt;count&gt; *literal* [x](y) &lt;!--`)
+	assert.Contains(t, rendered.String(), `<a href="b.md">Second</a> - Visible`)
+	assert.NotContains(t, rendered.String(), "<em>")
+	assert.NotContains(t, rendered.String(), `href="y"`)
+}
+
+func TestRootSkillSkipsManagedIndexes(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("SKILL.md", skillHeader)
+	repo.WriteFile("references/example.md", goodOKF)
+	const original = indexBegin + "\nold\n" + indexEnd + "\n"
+	repo.WriteFile("index.md", original)
+	repo.WriteFile("references/index.md", original)
+	repo.WriteFile("skills/managed/SKILL.md", strings.Replace(skillHeader, "type: Skill", "type: Wrong", 1))
+	repo.Run("add", ".")
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-managed-skill", "skills/**/SKILL.md"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Positive(t, n) // The managed nested skill still gets validated.
+	assert.Contains(t, errs.String(), "skills/managed/SKILL.md:")
+	for _, file := range []string{"index.md", "references/index.md"} {
+		got, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, original, string(got))
+	}
+	// A tracked root skill defines the bundle even when deleted from the worktree.
+	require.NoError(t, os.Remove("SKILL.md"))
+	out.Reset()
+	errs.Reset()
+	n, err = runFrontmatter(t.Context(), []string{"-fix", "index.md"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Zero(t, n, errs.String())
+	got, err := os.ReadFile("index.md")
+	require.NoError(t, err)
+	assert.Equal(t, original, string(got))
+}
+
+func TestManagedIndexSelectedPageChanges(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("docs/index.md", indexBegin+"\n"+indexEnd+"\n")
+	repo.WriteFile("other/index.md", indexBegin+"\n"+indexEnd+"\n")
+	repo.WriteFile("docs/a.md", goodOKF)
+	repo.Run("add", ".")
+	read := func(name string) string {
+		data, err := os.ReadFile(name)
+		require.NoError(t, err)
+		return string(data)
+	}
+	checkAndFix := func(selected string) {
+		var out, errs bytes.Buffer
+		before := read("docs/index.md")
+		n, err := runFrontmatter(t.Context(), []string{selected}, &out, &errs)
+		require.NoError(t, err)
+		assert.Equal(t, 1, n, errs.String())
+		assert.Contains(t, errs.String(), "docs/index.md: managed index is stale")
+		assert.Equal(t, before, read("docs/index.md"))
+		out.Reset()
+		errs.Reset()
+		n, err = runFrontmatter(t.Context(), []string{"-fix", selected}, &out, &errs)
+		require.NoError(t, err)
+		require.Zero(t, n, errs.String())
+		assert.Equal(t, indexBegin+"\n"+indexEnd+"\n", read("other/index.md"))
+	}
+	checkAndFix("docs/a.md")
+	assert.Contains(t, read("docs/index.md"), "[A page](a.md)")
+	repo.WriteFile("docs/a.md", strings.Replace(goodOKF, "A page", "Edited", 1))
+	checkAndFix("docs/a.md")
+	assert.Contains(t, read("docs/index.md"), "[Edited](a.md)")
+	repo.WriteFile("docs/b.md", strings.Replace(goodOKF, "A page", "Added", 1))
+	repo.Run("add", "docs/b.md")
+	checkAndFix("docs/b.md")
+	assert.Contains(t, read("docs/index.md"), "[Added](b.md)")
+	repo.Run("mv", "docs/b.md", "docs/c.md")
+	checkAndFix("docs/c.md")
+	assert.NotContains(t, read("docs/index.md"), "(b.md)")
+	assert.Contains(t, read("docs/index.md"), "(c.md)")
+	repo.Run("rm", "-f", "docs/c.md")
+	checkAndFix("docs/c.md")
+	assert.NotContains(t, read("docs/index.md"), "(c.md)")
+}
+
+func TestManagedIndexInvalidPageReportedOnce(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	const original = indexBegin + "\nold\n" + indexEnd + "\n"
+	repo.WriteFile("docs/index.md", original)
+	repo.WriteFile("docs/bad.md", strings.Replace(goodOKF, "title: A page", "title: ''", 1))
+	repo.Run("add", ".")
+	for _, args := range [][]string{nil, {"-fix"}} {
+		var out, errs bytes.Buffer
+		n, err := runFrontmatter(t.Context(), args, &out, &errs)
+		require.NoError(t, err)
+		assert.Equal(t, 1, n, errs.String())
+		assert.Contains(t, errs.String(), "docs/bad.md: title must be a non-empty string")
+		assert.NotContains(t, errs.String(), "index page requires")
+		got, err := os.ReadFile("docs/index.md")
+		require.NoError(t, err)
+		assert.Equal(t, original, string(got))
+	}
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"docs/index.md"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Contains(t, errs.String(), "index page requires a valid title and description")
+}
+
+func TestEscapeIndexTextPreservesOrdinaryPunctuation(t *testing.T) {
+	assert.Equal(t, `I/O kenn-io, 1.2 (ok)\!`, escapeIndexText("I/O kenn-io, 1.2 (ok)!"))
+}
+
+func TestDocumentationReadmeSectionLinks(t *testing.T) {
+	data, err := os.ReadFile("../../docs/README.md")
+	require.NoError(t, err)
+	sections := strings.Split(string(data), "\n## ")
+	require.Len(t, sections, 7)
+	for _, section := range sections[1:] {
+		heading, body, ok := strings.Cut(section, "\n")
+		require.True(t, ok)
+		t.Run(heading, func(t *testing.T) {
+			_, link, ok := strings.Cut(body, "](")
+			require.True(t, ok)
+			link, _, ok = strings.Cut(link, ")")
+			require.True(t, ok)
+			target, fragment, _ := strings.Cut(link, "#")
+			require.False(t, target == "index.md" && fragment == "", "index links must point to a section")
+			page, err := os.ReadFile(filepath.Join("../../docs", filepath.FromSlash(target)))
+			require.NoError(t, err)
+			if fragment != "" {
+				found := false
+				for line := range strings.SplitSeq(string(page), "\n") {
+					if strings.HasPrefix(line, "## ") && strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(line, "## ")), " ", "-") == fragment {
+						found = true
+					}
+				}
+				assert.True(t, found, "%s fragment %s", target, fragment)
+			}
+		})
+	}
+}

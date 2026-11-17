@@ -23,10 +23,11 @@
   Meaningful edits require a changed timestamp against the merge base;
   formatting-only edits do not.
 
-See `docs/adopting-kennlint.md` for the consumer workflow.
+See `docs/guides/adopting-kennlint.md` for the consumer workflow.
 
 ## Invariants
 
+- Managed index regeneration rewrites only the marked block.
 - Every analyzer is type-aware through `go/analysis` and proves its behavior
   with `analysistest` fixtures under `testdata/`, including negative cases.
   Do not replace an analyzer with text matching.

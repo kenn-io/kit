@@ -35,7 +35,7 @@ const usage = `usage:
   kennlint run [analysis flags] [packages]   run the kit analyzers (go vet style)
   kennlint workflow-retries [path ...]       report downloads missing retries in workflow YAML (default: .github)
   kennlint sql [path ...]                    report CHECK constraints and enum types in .sql files (default: .)
-  kennlint frontmatter [flags] [path ...]    check tracked Markdown metadata
+  kennlint frontmatter [flags] [path ...]    check tracked Markdown metadata and managed indexes
   kennlint config [flags]                    render .golangci.yml from the canonical config and an overlay
   kennlint profile [flags] [packages]        time each analyzer, split between packages and dependencies
   kennlint analyzers                         list the analyzers and their documentation

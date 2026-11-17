@@ -246,8 +246,11 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	if *legacy && len(managedSkills) > 0 {
 		return 0, errors.New("-managed-skill cannot be used with -legacy")
 	}
+	indexExcludes := append(slices.Clone(excludes), customExcludes...)
 	if *legacy {
 		excludes = append(excludes, "**/SKILL.md")
+	} else {
+		excludes = append(excludes, "**/index.md", "**/log.md")
 	}
 	excludes = append(excludes, customExcludes...)
 	rootBytes, err := frontmatterGit(ctx, "", "rev-parse", "--show-toplevel")
@@ -321,6 +324,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 	}
 	var checked []string
+	reported := make(map[string]bool)
 	for _, file := range targets {
 		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, hasHead, *legacy, rules, by.value, description.value)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -334,6 +338,37 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			fixed++
 		}
 		report(file, problems)
+		reported[file] = len(problems) > 0
+	}
+	for _, file := range files {
+		if rootSkill {
+			break
+		}
+		if path.Base(file) != "index.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, indexExcludes) || !frontmatterIndexSelected(file, selected) {
+			continue
+		}
+		updated, stale, err := refreshTrackedIndex(root, file, files, skillDirs, excludes)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			pageErr, ok := errors.AsType[*indexPageError](err)
+			if !ok || !reported[pageErr.file] {
+				report(file, []string{err.Error()})
+			}
+			continue
+		}
+		if !stale {
+			continue
+		}
+		if *fix {
+			if err := atomicfile.WriteFile(filepath.Join(root, filepath.FromSlash(file)), updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink()); err != nil {
+				return total, err
+			}
+			fixed++
+		} else {
+			report(file, []string{"managed index is stale"})
+		}
 	}
 	if *changed != "" {
 		stale, err := frontmatterStaleDates(ctx, root, *changed, checked, *legacy)
@@ -371,6 +406,18 @@ func frontmatterPaths(root string, args []string) ([]string, error) {
 		selected = append(selected, filepath.ToSlash(rel))
 	}
 	return selected, nil
+}
+
+// A selected path can change any managed index above it, including when the
+// selected file was removed. Selecting a directory also selects indexes below it.
+func frontmatterIndexSelected(file string, selected []string) bool {
+	if len(selected) == 0 {
+		return true
+	}
+	dir := path.Dir(file)
+	return slices.ContainsFunc(selected, func(p string) bool {
+		return p == "." || dir == "." || p == dir || strings.HasPrefix(p, dir+"/") || strings.HasPrefix(file, p+"/")
+	})
 }
 
 func frontmatterSelected(file string, selected []string, excludes []string) bool {

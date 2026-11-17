@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://pkg.go.dev/go.kenn.io/kit">API Reference</a> ·
-  <a href="docs/README.md">Documentation</a> ·
+  <a href="docs/index.md">Documentation</a> ·
   <a href="AGENTS.md">Agent Guide</a>
 </p>
 
@@ -62,28 +62,7 @@ its own Go documentation and package-level agent guidance.
 ## Documentation
 
 - [API reference](https://pkg.go.dev/go.kenn.io/kit) on pkg.go.dev
-
-### Development
-
-- [Developing kit](docs/development.md)
-
-### Adoption
-
-- [Task-based command discovery](clisearch/README.md)
-- [Local embedding server installation](docs/kennembed.md)
-- [Adopting packed content storage](docs/adopting-packstore.md)
-- [Adopting the shared Go lint policy (kennlint)](docs/adopting-kennlint.md)
-- [Daily screen reports](telemetry/posthog/daily.md)
-- [Confirmed milestone delivery](telemetry/posthog/delivery.md)
-- [PostHog event fields](telemetry/posthog/fields.md)
-
-### Architecture
-
-- [Streaming pack I/O](docs/architecture/streaming-pack-io.md)
-
-### Formats
-
-- [Backup repository and pack format](backup/FORMAT.md)
+- [Documentation index](docs/index.md)
 
 ## Agent guide
 
