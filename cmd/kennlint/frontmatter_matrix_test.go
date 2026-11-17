@@ -94,15 +94,17 @@ func TestOKFFixMatrix(t *testing.T) {
 		name                                                 string
 		rules                                                frontmatterRules
 		body, by, description, wantType, wantNote, wantTitle string
+		wantGenerated                                        bool
 	}{
-		{"autolink", frontmatterRules{{"docs/**", "Guide"}}, "# Connect to <https://example.com>\n", "human:test", "Useful", "Guide", "", "Connect to https://example.com"},
-		{"heading image", frontmatterRules{{"docs/**", "Guide"}}, "# ![img](a.png) Logo\n", "human:test", "Useful", "Guide", "", "Logo"},
-		{"formatted heading", frontmatterRules{{"docs/**", "Guide"}}, "# **Hello** world\n", "human:test", "Useful", "Guide", "", "Hello world"},
-		{"agree", frontmatterRules{{"docs/**", "Guide"}, {"**/*.md", "Guide"}}, "# Hello\n", "human:test", "Useful", "Guide", "", ""},
-		{"ambiguous", frontmatterRules{{"docs/**", "Guide"}, {"**/*.md", "Reference"}}, "# Hello\n", "human:test", "Useful", "", "type rules disagree", ""},
-		{"no rule", nil, "# Hello\n", "human:test", "Useful", "", "add type:", ""},
-		{"no heading", frontmatterRules{{"docs/**", "Guide"}}, "intro\n\n# Hello\n", "human:test", "Useful", "Guide", "first block", ""},
-		{"no actor", frontmatterRules{{"docs/**", "Guide"}}, "# Hello\n", "", "Useful", "Guide", "-by ACTOR", ""},
+		{"autolink", frontmatterRules{{"docs/**", "Guide"}}, "# Connect to <https://example.com>\n", "human:test", "Useful", "Guide", "", "Connect to https://example.com", true},
+		{"heading image", frontmatterRules{{"docs/**", "Guide"}}, "# ![img](a.png) Logo\n", "human:test", "Useful", "Guide", "", "Logo", true},
+		{"formatted heading", frontmatterRules{{"docs/**", "Guide"}}, "# **Hello** world\n", "human:test", "Useful", "Guide", "", "Hello world", true},
+		{"agree", frontmatterRules{{"docs/**", "Guide"}, {"**/*.md", "Guide"}}, "# Hello\n", "human:test", "Useful", "Guide", "", "", true},
+		{"ambiguous", frontmatterRules{{"docs/**", "Guide"}, {"**/*.md", "Reference"}}, "# Hello\n", "human:test", "Useful", "", "type rules disagree", "", false},
+		{"no rule", nil, "# Hello\n", "human:test", "Useful", "", "add type:", "", false},
+		{"no heading", frontmatterRules{{"docs/**", "Guide"}}, "intro\n\n# Hello\n", "human:test", "Useful", "Guide", "first block", "", false},
+		{"no actor", frontmatterRules{{"docs/**", "Guide"}}, "# Hello\n", "", "Useful", "Guide", "-by ACTOR", "", false},
+		{"missing description", frontmatterRules{{"docs/**", "Guide"}}, "# Hello\n", "human:first", "", "Guide", "supply -description", "", false},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -121,7 +123,7 @@ func TestOKFFixMatrix(t *testing.T) {
 			if tt.wantNote != "" {
 				assert.Contains(t, fmt.Sprint(notes), tt.wantNote)
 			}
-			if tt.by != "" && tt.wantType != "" && tt.name != "no heading" {
+			if tt.wantGenerated {
 				assert.Equal(t, "2026-11-17T12:34:56Z", mappingField(b.fields["generated"], "at").Value)
 			} else {
 				assert.Nil(t, b.fields["generated"])
@@ -131,6 +133,16 @@ func TestOKFFixMatrix(t *testing.T) {
 			assert.True(t, bytes.HasSuffix(data, []byte(tt.body)))
 			changed, _ = b.fixOKF("docs/file.md", tt.rules, tt.by, tt.description)
 			assert.False(t, changed)
+			if tt.description == "" && tt.by != "" {
+				changed, _ = b.fixOKF("docs/file.md", tt.rules, "human:second", "Details")
+				require.True(t, changed)
+				g := b.fields["generated"]
+				require.NotNil(t, g)
+				require.NotNil(t, mappingField(g, "by"))
+				require.NotNil(t, mappingField(g, "at"))
+				assert.Equal(t, "human:second", mappingField(g, "by").Value)
+				assert.Equal(t, "2026-11-17T12:34:56Z", mappingField(g, "at").Value)
+			}
 		})
 	}
 }
@@ -150,7 +162,7 @@ func TestOKFFixFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Positive(t, n)
 	assert.Contains(t, errout.String(), "-by ACTOR")
-	args = append(args[:len(args)-1], "-by", "human:test", "one.md")
+	args = []string{"-fix", "-type-rule", "**=Guide", "-description", "Words", "-by", "human:test", "one.md"}
 	for _, src := range []string{"---\ntype: 123\n---\n# H\n", "---\ntitle: [\n---\n# H\n", "---\ngenerated: bad\n---\n# H\n"} {
 		repo.WriteFile("one.md", src)
 		out.Reset()
@@ -244,7 +256,7 @@ func TestOKFChangedMatrix(t *testing.T) {
 		{"body", strings.Replace(src, "Text here.", "Changed text.", 1), true},
 		{"backwards timestamp", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "11:59:59Z", 1), true},
 		{"same instant different spelling", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "12:00:00.000Z", 1), true},
-		{"same day same actor", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "12:01:00Z", 1), false},
+		{"later generated.at", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "12:01:00Z", 1), false},
 		{"crlf", strings.ReplaceAll(src, "\n", "\r\n"), false},
 	}
 	for _, tt := range cases {
@@ -269,18 +281,6 @@ func TestOKFChangedMatrix(t *testing.T) {
 	assert.Zero(t, n, errout.String())
 }
 
-func TestOKFFixPreservesValidMetadata(t *testing.T) {
-	b, err := parseFrontmatter([]byte(goodOKF))
-	require.NoError(t, err)
-	changed, notes := b.fixOKF("docs/page.md", frontmatterRules{{"docs/**", "Reference"}}, "human:other", "Other description")
-	assert.False(t, changed)
-	assert.Empty(t, notes)
-	assert.Equal(t, "Guide", b.fields["type"].Value)
-	assert.Equal(t, "Useful", b.fields["description"].Value)
-	assert.Equal(t, "human:test", mappingField(b.fields["generated"], "by").Value)
-	assert.Equal(t, "2026-11-17T12:00:00Z", mappingField(b.fields["generated"], "at").Value)
-}
-
 func TestOKFMetadataComparison(t *testing.T) {
 	base, err := parseFrontmatter([]byte(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1)))
 	require.NoError(t, err)
@@ -303,50 +303,33 @@ func TestOKFMetadataComparison(t *testing.T) {
 	}
 }
 
-func TestOKFFixGeneratedScaffold(t *testing.T) {
-	old := frontmatterNow
-	frontmatterNow = func() time.Time { return time.Date(2026, 11, 17, 12, 34, 56, 0, time.UTC) }
-	t.Cleanup(func() { frontmatterNow = old })
+func TestOKFFixLeavesExistingValuesAlone(t *testing.T) {
 	for _, tt := range []struct {
-		name, header, body string
-		rules              frontmatterRules
-		description        string
+		name, src, missing string
+		wantNote           bool
 	}{
-		{"missing type", "title: Title\ndescription: Details\n", "# Title\n", nil, ""},
-		{"missing title", "type: Guide\ndescription: Details\n", "text\n", nil, ""},
-		{"missing description", "type: Guide\ntitle: Title\n", "# Title\n", nil, ""},
+		{"invalid type", "---\ntype: 123\n---\n# H\n", "", false},
+		{"invalid generated", "---\ngenerated: bad\n---\n# H\n", "", false},
+		{"valid", goodOKF, "", false},
+		{"by only", strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z\n", "generated: {by: 'human:old'}\n", 1), "at", true},
+		{"at only", strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z\n", "generated: {at: '2020-01-01T00:00:00Z'}\n", 1), "by", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte("---\n" + tt.header + "---\n" + tt.body))
+			b, err := parseFrontmatter([]byte(tt.src))
 			require.NoError(t, err)
-			b.fixOKF("page.md", tt.rules, "human:first", tt.description)
-			assert.Nil(t, b.fields["generated"])
-			b.fixOKF("page.md", frontmatterRules{{"**", "Guide"}}, "human:second", "Details")
-			if tt.name == "missing title" {
-				return
-			}
-			g := b.fields["generated"]
-			require.NotNil(t, g)
-			require.NotNil(t, mappingField(g, "by"))
-			assert.Equal(t, "human:second", mappingField(g, "by").Value)
-			assert.Equal(t, "2026-11-17T12:34:56Z", mappingField(g, "at").Value)
-		})
-	}
-}
-
-func TestOKFFixOneSidedGenerated(t *testing.T) {
-	for _, tt := range []struct{ name, generated, missing string }{
-		{"by only", "generated: {by: 'human:old'}\n", "at"},
-		{"at only", "generated: {at: '2020-01-01T00:00:00Z'}\n", "by"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			src := strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z\n", tt.generated, 1)
-			b, err := parseFrontmatter([]byte(src))
+			before, _, err := b.encode()
 			require.NoError(t, err)
-			changed, notes := b.fixOKF("page.md", nil, "human:new", "")
+			changed, notes := b.fixOKF("docs/page.md", frontmatterRules{{"docs/**", "Reference"}}, "human:other", "Other description")
 			assert.False(t, changed)
-			assert.Nil(t, mappingField(b.fields["generated"], tt.missing))
-			assert.Contains(t, fmt.Sprint(notes), "both")
+			if tt.wantNote {
+				assert.Contains(t, fmt.Sprint(notes), "both")
+				assert.Nil(t, mappingField(b.fields["generated"], tt.missing))
+			} else {
+				assert.Empty(t, notes)
+			}
+			after, _, err := b.encode()
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
 		})
 	}
 }
