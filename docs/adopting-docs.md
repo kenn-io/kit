@@ -4,7 +4,7 @@ title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
 generated:
   by: human:salmonumbrella
-  at: "2026-11-17T21:46:23Z"
+  at: "2026-11-17T21:53:46Z"
 ---
 
 # Adopting the Kenn documentation profile
@@ -24,8 +24,9 @@ its replacement when one exists. The check validates values when present; it
 cannot infer retirement from a filename or age. The fixer never sets or changes
 status.
 
-The check excludes README, AGENTS, CLAUDE and SKILL files at every depth,
-release notes, changelogs, `.github`, `testdata`, `vendor`, and `node_modules`.
+`README.md`, `AGENTS.md`, and `CLAUDE.md` files never take frontmatter at any
+depth. The check also excludes `SKILL.md` files, release notes, changelogs,
+`.github`, `testdata`, `vendor`, and `node_modules`.
 It also skips all Markdown inside skill bundles. Add `-exclude GLOB` for other
 exceptions. Globs use `**` for any number of directories. Path arguments limit
 the check to tracked files; put flags before paths.

@@ -158,8 +158,7 @@ func frontmatterDate(n *yaml.Node) bool {
 func (b *frontmatterBlock) problems() []string {
 	var problems []string
 	for _, key := range []string{"title", "description"} {
-		n := b.fields[key]
-		if n == nil || n.Kind != yaml.ScalarNode || n.Tag != "!!str" || strings.TrimSpace(n.Value) == "" {
+		if !validString(b.fields[key]) {
 			problems = append(problems, key+" must be a non-empty string")
 		}
 	}
