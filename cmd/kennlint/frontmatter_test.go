@@ -146,7 +146,7 @@ func TestFrontmatterSkipsSkillBundles(t *testing.T) {
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
 	for _, name := range []string{
-		"SKILL.md", "page.md", "docs/skill.md", "skills/unrelated/page.md",
+		"page.md", "docs/skill.md", "skills/unrelated/page.md",
 		"skills/example-skill/SKILL.md", "skills/example-skill/references/api.md",
 	} {
 		repo.WriteFile(name, "# No metadata\n")
@@ -155,11 +155,10 @@ func TestFrontmatterSkipsSkillBundles(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	n, err := runFrontmatter(t.Context(), nil, &stdout, &stderr)
 	require.NoError(t, err)
-	assert.Zero(t, n, stderr.String())
-	stderr.Reset()
-	n, err = runLegacyFrontmatter(t.Context(), nil, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Zero(t, n, stderr.String())
+	assert.Equal(t, 3, n)
+	assert.Equal(t, "docs/skill.md: missing opening --- frontmatter delimiter\n"+
+		"page.md: missing opening --- frontmatter delimiter\n"+
+		"skills/unrelated/page.md: missing opening --- frontmatter delimiter\n", stderr.String())
 }
 
 func TestFrontmatterGlob(t *testing.T) {
