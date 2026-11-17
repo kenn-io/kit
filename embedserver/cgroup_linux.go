@@ -23,7 +23,7 @@ func cpuQuota(cgroupFile, mountinfoFile string) (int, error) {
 		return 0, err
 	}
 	var v1, v2 string
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		fields := strings.SplitN(line, ":", 3)
 		if len(fields) != 3 || fields[2] == "" {
 			return 0, fmt.Errorf("malformed cgroup line %q", line)
@@ -50,7 +50,7 @@ func cpuQuota(cgroupFile, mountinfoFile string) (int, error) {
 		return 0, err
 	}
 	unescape := strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		parts := strings.SplitN(line, " - ", 2)
 		if len(parts) != 2 {
 			return 0, fmt.Errorf("malformed mountinfo line %q", line)
