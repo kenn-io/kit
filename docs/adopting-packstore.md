@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: "Adopting packed content storage"
 description: "Integrate packed content storage and maintain its publication and recovery guarantees."
-last_edited: 2026-11-10
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Adopting packed content storage

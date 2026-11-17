@@ -1,7 +1,10 @@
 ---
+type: Reference
 title: "Backup Repository Format"
 description: "On-disk layout and interoperability rules for backup repositories."
-last_edited: 2026-11-11
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Backup Repository Format

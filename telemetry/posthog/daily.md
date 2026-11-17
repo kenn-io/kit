@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: "Daily screen reports"
 description: "Define and send daily screen reports through PostHog."
-last_edited: 2026-10-21
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Daily screen reports

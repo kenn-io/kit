@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +16,10 @@ import (
 
 	gittest "go.kenn.io/kit/git/test"
 )
+
+func runLegacyFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
+	return runFrontmatter(ctx, append([]string{"-legacy"}, args...), stdout, stderr)
+}
 
 const goodFrontmatter = "---\ntitle: A page\ndescription: A useful page.\nlast_edited: 2026-11-01\n---\n\n# Body\n"
 
@@ -95,21 +101,21 @@ func TestFrontmatterSelection(t *testing.T) {
 	repo.WriteFile(".gitignore", "ignored.md\n")
 	repo.WriteFile("ignored.md", "# Ignored\n")
 	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-exclude", "generated/**"}, &stdout, &stderr)
+	n, err := runLegacyFrontmatter(t.Context(), []string{"-exclude", "generated/**"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Empty(t, stdout.String())
 	assert.Equal(t, "docs/page with spaces.md: missing opening --- frontmatter delimiter\n", stderr.String())
 
 	stderr.Reset()
-	n, err = runFrontmatter(t.Context(), []string{"docs/README.md"}, &stdout, &stderr)
+	n, err = runLegacyFrontmatter(t.Context(), []string{"docs/README.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n, "nested README.md is excluded even when selected explicitly")
 	assert.Empty(t, stderr.String())
 
 	t.Chdir(filepath.Join(repo.Root, "docs"))
 	stderr.Reset()
-	n, err = runFrontmatter(t.Context(), []string{"README.md"}, &stdout, &stderr)
+	n, err = runLegacyFrontmatter(t.Context(), []string{"README.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 	assert.Empty(t, stderr.String())
@@ -118,15 +124,15 @@ func TestFrontmatterSelection(t *testing.T) {
 	for _, name := range []string{"README.md", "AGENTS.md", "CLAUDE.md", "docs/README.md", "docs/AGENTS.md", "docs/CLAUDE.md", "CHANGELOG.md", "docs/CHANGELOG.md", "docs/changelog-2026.md"} {
 		stdout.Reset()
 		stderr.Reset()
-		n, err = runFrontmatter(t.Context(), []string{name}, &stdout, &stderr)
+		n, err = runLegacyFrontmatter(t.Context(), []string{name}, &stdout, &stderr)
 		require.NoError(t, err)
 		assert.Zero(t, n, "%s is excluded even when selected explicitly", name)
 		assert.Empty(t, stderr.String())
 	}
 
-	_, err = runFrontmatter(t.Context(), []string{"-exclude", "["}, &stdout, &stderr)
+	_, err = runLegacyFrontmatter(t.Context(), []string{"-exclude", "["}, &stdout, &stderr)
 	require.ErrorContains(t, err, "invalid exclude")
-	_, err = runFrontmatter(t.Context(), []string{t.TempDir()}, &stdout, &stderr)
+	_, err = runLegacyFrontmatter(t.Context(), []string{t.TempDir()}, &stdout, &stderr)
 	assert.ErrorContains(t, err, "outside the repository")
 }
 
@@ -143,7 +149,7 @@ func TestFrontmatterSkipsSkillBundles(t *testing.T) {
 	repo.Run("add", ".")
 
 	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), nil, &stdout, &stderr)
+	n, err := runLegacyFrontmatter(t.Context(), nil, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, 3, n, "a root SKILL.md exempts nothing and a lowercase skill.md is ordinary")
 	assert.Equal(t, "docs/skill.md: missing opening --- frontmatter delimiter\n"+
@@ -195,7 +201,7 @@ func TestFrontmatterSkipsInstructionFilesAtEveryDepth(t *testing.T) {
 		repo.WriteFile(name, "# Edited without metadata\n")
 	}
 	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix", "-changed", "base"}, &stdout, &stderr)
+	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix", "-changed", "base"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, 2, n, "only the ordinary nested document is checked")
 	assert.Equal(t, "pkg/notes.md: title must be a non-empty string\npkg/notes.md: description must be a non-empty string\n", stderr.String())
@@ -220,7 +226,7 @@ func TestFrontmatterChanged(t *testing.T) {
 	repo.CommitFile("page.md", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2026-11-02"), "advance base")
 	repo.Checkout("topic")
 	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
+	n, err := runLegacyFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Equal(t, "page.md: content changed without changing last_edited\n", stderr.String())
@@ -229,7 +235,7 @@ func TestFrontmatterChanged(t *testing.T) {
 	repo.WriteFile("new.md", goodFrontmatter)
 	repo.Run("add", "new.md")
 	stderr.Reset()
-	n, err = runFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
+	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 	assert.Empty(t, stderr.String())
@@ -237,34 +243,34 @@ func TestFrontmatterChanged(t *testing.T) {
 
 	// Uncommitted and metadata-only edits count, too.
 	repo.WriteFile("page.md", strings.ReplaceAll(goodFrontmatter, "A page", "New title"))
-	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	repo.WriteFile("page.md", goodFrontmatter)
-	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 
 	// Unix reads the executable bit from the file; Windows reads it from the index.
 	require.NoError(t, os.Chmod("page.md", 0o755))
 	repo.Run("update-index", "--chmod=+x", "page.md")
-	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n, "a mode-only change is not a content edit")
 	require.NoError(t, os.Chmod("page.md", 0o644))
 	repo.Run("update-index", "--chmod=-x", "page.md")
 
-	_, err = runFrontmatter(t.Context(), []string{"-changed", "missing-ref"}, &stdout, &stderr)
+	_, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "missing-ref"}, &stdout, &stderr)
 	require.ErrorContains(t, err, "merge-base")
 
 	repo.Config("core.autocrlf", "true")
 	repo.WriteFile("page.md", strings.ReplaceAll(goodFrontmatter, "\n", "\r\n"))
-	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n, "checkout line endings must not count as content changes")
 
 	require.NoError(t, os.Remove("page.md"))
-	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n, "deleted files need no metadata")
 }
@@ -276,7 +282,7 @@ func TestFrontmatterFixBeforeFirstCommit(t *testing.T) {
 	repo.WriteFile("page.md", "---\ntitle: A page\ndescription: A useful page.\n---\nBody\n")
 	repo.Run("add", "page.md")
 	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
+	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 	src, err := os.ReadFile("page.md")
@@ -309,7 +315,7 @@ func TestFrontmatterFix(t *testing.T) {
 		repo.Run("add", "--", name)
 	}
 	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
+	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, 4, n) // Two text fields, an invalid date, and a timestamp.
 	assert.Contains(t, stderr.String(), "missing.md: title must be a non-empty string")
@@ -329,7 +335,7 @@ func TestFrontmatterFix(t *testing.T) {
 		assert.Zero(t, b.fields["last_edited"].Style)
 		assert.Equal(t, tt.body, string(b.body))
 		// A second fix must leave the entire file byte-for-byte unchanged.
-		_, err = runFrontmatter(t.Context(), []string{"-fix", tt.name}, &stdout, &stderr)
+		_, err = runLegacyFrontmatter(t.Context(), []string{"-fix", tt.name}, &stdout, &stderr)
 		require.NoError(t, err)
 		again, err := os.ReadFile(tt.name)
 		require.NoError(t, err)
@@ -353,7 +359,7 @@ func TestFrontmatterFixWritesThroughSymlink(t *testing.T) {
 	repo.Run("add", "target.md", "alias.md")
 
 	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
+	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 	assert.Empty(t, stderr.String())
@@ -379,7 +385,7 @@ func TestFrontmatterFixChangedComparesFinalGitContent(t *testing.T) {
 	repo.WriteFile("document.md", strings.ReplaceAll(quoted, "\n", "\r\n"))
 
 	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix", "-changed", "base", "document.md"}, &stdout, &stderr)
+	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix", "-changed", "base", "document.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 	assert.Empty(t, stderr.String())

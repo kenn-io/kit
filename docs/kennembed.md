@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: "Installing the local embedding server"
 description: "Install and operate the local embedding server and its model assets."
-last_edited: 2026-11-16
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Installing the local embedding server

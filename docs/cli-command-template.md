@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: "CLI command design template"
 description: "Worksheet and review checklist for designing a CLI command or command family."
-last_edited: 2026-11-08
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # CLI command design template

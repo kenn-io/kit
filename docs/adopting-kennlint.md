@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
-last_edited: 2026-11-05
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -120,33 +123,7 @@ it after adding rule labels and reasons to their suppressions.
    go run go.kenn.io/kit/cmd/kennlint@<kit version> frontmatter
    ```
 
-   The command checks git-tracked Markdown for frontmatter. Ordinary documents
-   need a YAML mapping with non-empty string `title` and `description` values
-   and a bare `last_edited: YYYY-MM-DD` date. Quoted dates, datetimes and
-   invalid dates fail.
-
-   Defaults exclude `README.md`, `AGENTS.md`, `CLAUDE.md`, and `SKILL.md` at
-   every depth, plus `.github/**`, `**/testdata/**`, `vendor/**`,
-   `node_modules/**`, `docs/releases/**`, and `CHANGELOG*.md` and
-   `changelog*.md` files. Markdown inside a skill bundle (any directory with
-   a `SKILL.md`) needs no frontmatter.
-
-   Add repeatable repository-relative `-exclude <glob>` flags for other
-   exceptions; `**` matches zero or more directory components. Path arguments
-   limit checks to tracked files under those paths, with the same excludes.
-   Put flags before paths.
-
-   For a backfill, run:
-
-   ```sh
-   go run go.kenn.io/kit/cmd/kennlint@<kit version> frontmatter -fix
-   ```
-
-   This unquotes valid dates and adds missing `last_edited` values using
-   each file's last commit date, or today's UTC date for files without a
-   commit. It preserves Markdown bodies and reports missing titles and
-   descriptions for you to fill in. Files must be tracked, including newly
-   staged files. Invalid dates and datetimes need manual corrections.
+   Follow the [docs profile and autofix guide](adopting-docs.md) for metadata and migration.
 
    Add `frontmatter` to the lint target and a Markdown pre-commit hook.
    On pull requests, also run:

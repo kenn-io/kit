@@ -22,6 +22,21 @@ import (
 	gitenv "go.kenn.io/kit/git/env"
 )
 
+type trimmedText struct {
+	value string
+	set   bool
+}
+
+func (t *trimmedText) String() string { return t.value }
+func (t *trimmedText) Set(s string) error {
+	t.value = strings.TrimSpace(s)
+	t.set = true
+	if t.value == "" {
+		return errors.New("value must not be empty")
+	}
+	return nil
+}
+
 type frontmatterExcludes []string
 
 func (e *frontmatterExcludes) String() string { return strings.Join(*e, ", ") }
@@ -110,8 +125,8 @@ func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
 	if len(b.doc.Content) != 1 || b.doc.Content[0].Kind != yaml.MappingNode {
 		return nil, errors.New("frontmatter must be a YAML mapping")
 	}
-	// Decode as nodes to reject duplicate keys without coercing dates to time.Time.
-	var fields map[string]yaml.Node
+	// Decode the whole mapping to reject duplicate keys at every depth.
+	var fields map[string]any
 	if err := b.doc.Decode(&fields); err != nil {
 		return nil, fmt.Errorf("invalid frontmatter YAML: %w", err)
 	}
@@ -168,6 +183,10 @@ func (b *frontmatterBlock) fix(date string) ([]byte, bool, error) {
 	default:
 		return nil, false, nil
 	}
+	return b.encode()
+}
+
+func (b *frontmatterBlock) encode() ([]byte, bool, error) {
 	var header bytes.Buffer
 	enc := yaml.NewEncoder(&header)
 	enc.SetIndent(2)
@@ -204,8 +223,14 @@ func frontmatterTracked(ctx context.Context, root string) ([]string, map[string]
 func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
 	flags := flag.NewFlagSet("kennlint frontmatter", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	changed := flags.String("changed", "", "require a last_edited change since the merge base with this ref")
-	fix := flags.Bool("fix", false, "unquote dates and add missing last_edited using the last commit date (or today)")
+	changed := flags.String("changed", "", "require metadata to change for meaningful edits since this ref")
+	legacy := flags.Bool("legacy", false, "use the temporary last_edited profile")
+	var by, description trimmedText
+	flags.Var(&by, "by", "actor for missing generated.by")
+	flags.Var(&description, "description", "description for one selected file")
+	var rules frontmatterRules
+	flags.Var(&rules, "type-rule", "path rule GLOB=TYPE (repeatable)")
+	fix := flags.Bool("fix", false, "fill missing metadata where possible")
 	excludes := frontmatterExcludes{
 		"**/README.md", "**/AGENTS.md", "**/CLAUDE.md", "**/SKILL.md", "docs/releases/**",
 		"**/CHANGELOG*.md", "**/changelog*.md",
@@ -238,6 +263,17 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	hasHead := len(bytes.TrimSpace(head)) != 0
 
+	var targets []string
+	for _, file := range files {
+		if frontmatterSelected(file, selected, excludes) && !frontmatterInSkillDirectory(file, skillDirs) {
+			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(file))); !errors.Is(err, fs.ErrNotExist) {
+				targets = append(targets, file)
+			}
+		}
+	}
+	if description.set && len(targets) != 1 {
+		return 0, errors.New("-description requires exactly one selected file")
+	}
 	total, fixed := 0, 0
 	report := func(file string, problems []string) {
 		for _, problem := range problems {
@@ -246,11 +282,8 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 	}
 	var checked []string
-	for _, file := range files {
-		if !frontmatterSelected(file, selected, excludes) || frontmatterInSkillDirectory(file, skillDirs) {
-			continue
-		}
-		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, hasHead)
+	for _, file := range targets {
+		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, hasHead, *legacy, rules, by.value, description.value)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // A tracked file deleted in the working tree needs no metadata.
 		}
@@ -264,12 +297,16 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		report(file, problems)
 	}
 	if *changed != "" {
-		stale, err := frontmatterStaleDates(ctx, root, *changed, checked)
+		stale, err := frontmatterStaleDates(ctx, root, *changed, checked, *legacy)
 		if err != nil {
 			return total, err
 		}
 		for _, file := range stale {
-			report(file, []string{"content changed without changing last_edited"})
+			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to you"
+			if *legacy {
+				message = "content changed without changing last_edited"
+			}
+			report(file, []string{message})
 		}
 	}
 	if total == 0 {
@@ -303,7 +340,7 @@ func frontmatterSelected(file string, selected []string, excludes []string) bool
 	})
 }
 
-func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead bool) ([]string, bool, error) {
+func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, legacy bool, rules frontmatterRules, by, description string) ([]string, bool, error) {
 	full := filepath.Join(root, filepath.FromSlash(file))
 	src, err := os.ReadFile(full)
 	if err != nil {
@@ -311,13 +348,30 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead b
 	}
 	b, err := parseFrontmatter(src)
 	if fix && errors.Is(err, errFrontmatterMissing) {
-		b, err = parseFrontmatter(append([]byte("---\n{}\n---\n"), src...))
+		b, err = parseFrontmatter(frontmatterScaffold(src))
 		if err == nil {
 			b.doc.Content[0].Style = 0
 		}
 	}
 	if err != nil {
 		return []string{err.Error()}, false, nil //nolint:nilerr // Count invalid metadata as a finding so scanning continues.
+	}
+	if !legacy {
+		if !fix {
+			return b.okfProblems(), false, nil
+		}
+		changed, notes := b.fixOKF(file, rules, by, description)
+		if !changed {
+			return append(b.okfProblems(), notes...), false, nil
+		}
+		updated, _, err := b.encode()
+		if err != nil {
+			return nil, false, err
+		}
+		if err := atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink()); err != nil {
+			return nil, false, err
+		}
+		return append(b.okfProblems(), notes...), true, nil
 	}
 	if !fix {
 		return b.problems(), false, nil
@@ -345,10 +399,10 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead b
 }
 
 // frontmatterStaleDates returns the files whose content differs from the merge
-// base with ref while last_edited still matches. It runs after -fix so a fix
+// base with ref while the profile timestamp still matches. It runs after -fix so a fix
 // that restores the base content does not count as an edit, and it lets Git
 // apply attributes and line-ending rules so CRLF checkouts are not edits.
-func frontmatterStaleDates(ctx context.Context, root, ref string, files []string) ([]string, error) {
+func frontmatterStaleDates(ctx context.Context, root, ref string, files []string, legacy bool) ([]string, error) {
 	baseBytes, err := frontmatterGit(ctx, root, "merge-base", "HEAD", ref)
 	if err != nil {
 		return nil, err
@@ -386,9 +440,26 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 		if errBefore != nil || errAfter != nil {
 			continue // Missing or invalid metadata is reported, or was adopted in this change.
 		}
+		if !legacy {
+			b, a := mappingField(before.fields["generated"], "at"), mappingField(after.fields["generated"], "at")
+			beforeTime, validBefore := parseTimestamp(b)
+			afterTime, validAfter := parseTimestamp(a)
+			if validBefore && validAfter && !afterTime.After(beforeTime) && frontmatterMeaningful(before, after) {
+				stale = append(stale, file)
+			}
+			continue
+		}
 		if b, a := before.fields["last_edited"], after.fields["last_edited"]; b != nil && a != nil && b.Value == a.Value {
 			stale = append(stale, file)
 		}
 	}
 	return stale, nil
+}
+
+func frontmatterScaffold(src []byte) []byte {
+	newline := "\n"
+	if i := bytes.IndexByte(src, '\n'); i > 0 && src[i-1] == '\r' {
+		newline = "\r\n"
+	}
+	return append([]byte("---"+newline+"{}"+newline+"---"+newline), src...)
 }

@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: "Confirmed milestone delivery"
 description: "Track confirmed milestone delivery through PostHog."
-last_edited: 2026-10-18
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Confirmed milestone delivery

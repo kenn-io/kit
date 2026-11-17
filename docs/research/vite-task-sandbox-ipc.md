@@ -1,7 +1,10 @@
 ---
+type: Explanation
 title: "Vite Task's sandbox-compatible IPC changes"
 description: "Research on sandbox-compatible IPC behavior in Vite Task."
-last_edited: 2026-08-24
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Vite Task's sandbox-compatible IPC changes

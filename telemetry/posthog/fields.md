@@ -1,7 +1,10 @@
 ---
+type: Reference
 title: "PostHog event fields"
 description: "Shared PostHog event fields and their meanings."
-last_edited: 2026-10-26
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # PostHog event fields

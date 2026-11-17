@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: "Developing kit"
 description: "Development tooling, build conventions, and debugging guidance for kit."
-last_edited: 2026-10-30
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Developing kit

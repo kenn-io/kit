@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: Secret sources
 description: Configure literal, environment, and private-file secrets with secretref.
-last_edited: 2026-11-11
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Secret sources

@@ -10,6 +10,8 @@ verification records belong in kata and pull request discussion.
 
 ## Adoption
 
+- [Documentation profile](adopting-docs.md)
+
 - [Secret sources](secrets.md)
 
 - [Task-based command discovery](../clisearch/README.md)

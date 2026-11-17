@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: "Shared CLI design guidance"
 description: "Help, output, result hints, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank."
-last_edited: 2026-11-09
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Shared CLI design guidance

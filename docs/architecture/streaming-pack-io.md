@@ -1,7 +1,10 @@
 ---
+type: Explanation
 title: "Streaming pack I/O"
 description: "Architecture and memory bounds for streaming pack reads and writes."
-last_edited: 2026-10-07
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Streaming pack I/O

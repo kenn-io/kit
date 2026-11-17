@@ -1,7 +1,10 @@
 ---
+type: Explanation
 title: "MCP registration research"
 description: "Research on MCP server registration formats and discovery across agent tools."
-last_edited: 2026-11-13
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # MCP registration research

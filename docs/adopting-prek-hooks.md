@@ -1,7 +1,10 @@
 ---
+type: Guide
 title: "Adopting prek Git hooks"
 description: "Give a repository commit and push hooks that run the same checks as CI, and tell contributors how to use them."
-last_edited: 2026-11-12
+generated:
+  by: human:salmonumbrella
+  at: "2026-11-17T20:55:53Z"
 ---
 
 # Adopting prek Git hooks
