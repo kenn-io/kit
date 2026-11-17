@@ -1,7 +1,7 @@
 ---
 title: "Installing the local embedding server"
 description: "Install and operate the local embedding server and its model assets."
-last_edited: 2026-11-10
+last_edited: 2026-11-16
 ---
 
 # Installing the local embedding server
@@ -30,6 +30,6 @@ Inspection checks the install lock with a shared reader that coexists with other
 
 ## Publishing bundles
 
-`internal/embedassets.BundleTag` pins the server independently of ordinary kit updates. The current pin is [v0.48.2-face.6](https://github.com/kenn-io/kit/releases/tag/v0.48.2-face.6), which includes face inference and all six platform archives with `SHA256SUMS`. For future updates, dispatch `kennembed.yml` with the reviewed release tag and update `BundleTag` after all archives and checksums are attached. The following ordinary kit release carries that pin for consumers.
+`internal/embedassets.BundleTag` pins the server independently of ordinary kit updates. The current pin is [v0.48.2-face.7](https://github.com/kenn-io/kit/releases/tag/v0.48.2-face.7), which sizes inference threads for CPU limits and includes face inference and all six platform archives with `SHA256SUMS`. For future updates, dispatch `kennembed.yml` with the reviewed release tag and update `BundleTag` after all archives and checksums are attached. The following ordinary kit release carries that pin for consumers.
 
 The workflow builds the selected tag's exact source, checks its embedded source revision, and exercises its native executable. It packages Linux, macOS, and Windows for amd64 and arm64 with runtime libraries and distribution notices. Pull requests build and exercise their checked-out candidate as workflow artifacts. No bundle workflow is required for unrelated kit releases.
