@@ -14,10 +14,10 @@ func TestNativeThreadLimit(t *testing.T) {
 	if dir == "" || library == "" {
 		t.Skip("set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY for native test")
 	}
-	host, err := cpu.Counts(true)
+	host, err := cpu.Counts(false)
 	require.NoError(t, err)
 	if host < 8 {
-		t.Skip("requires at least 8 host CPUs")
+		t.Skip("requires at least 8 physical cores")
 	}
 	previous := runtime.GOMAXPROCS(2)
 	defer runtime.GOMAXPROCS(previous)
