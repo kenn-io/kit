@@ -175,7 +175,7 @@ func TestOKFCanonicalFormatting(t *testing.T) {
 		{"heading", "# One\n", "# Two\n", false},
 		{"link", "[x](a)\n", "[x](b)\n", false},
 		{"code indentation", "```\na\n```\n", "```\n a\n```\n", false},
-		{"code span", "`a b`\n", "`a  b`\n", true},
+		{"code span", "`a b`\n", "`a  b`\n", false},
 		{"html", "<b>x</b>\n", "<i>x</i>\n", false},
 		{"hard break", "a\nb\n", "a  \nb\n", false},
 	}
@@ -190,7 +190,7 @@ func TestOKFChangedMatrix(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
-	src := strings.Replace(goodOKF, "Text here.", "[link](a)\n\n```\ncode\n```", 1)
+	src := strings.Replace(goodOKF, "Text here.", "[link](a)\n\n`a b`\n\n<pre class=\"sample\">a b</pre>\n\n<span title=\"a b\">text</span>\n\n```\ncode\n```", 1)
 	repo.WriteFile("page.md", src)
 	repo.WriteFile("old.md", goodFrontmatter)
 	repo.Run("add", "page.md", "old.md")
@@ -207,6 +207,9 @@ func TestOKFChangedMatrix(t *testing.T) {
 		{"title", strings.Replace(src, "title: A page", "title: Other", 1), true},
 		{"link", strings.Replace(src, "(a)", "(b)", 1), true},
 		{"code indent", strings.Replace(src, "\ncode\n", "\n code\n", 1), true},
+		{"inline code whitespace", strings.Replace(src, "`a b`", "`a  b`", 1), true},
+		{"pre whitespace", strings.Replace(src, ">a b</pre>", ">a  b</pre>", 1), true},
+		{"attribute whitespace", strings.Replace(src, `title="a b"`, `title="a  b"`, 1), true},
 		{"crlf", strings.ReplaceAll(src, "\n", "\r\n"), false},
 	}
 	for _, tt := range cases {

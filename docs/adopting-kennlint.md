@@ -4,7 +4,7 @@ title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
 generated:
   by: human:salmonumbrella
-  at: "2026-11-17T20:55:53Z"
+  at: "2026-11-17T21:02:23Z"
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -134,9 +134,8 @@ it after adding rule labels and reasons to their suppressions.
 
    Set `FRONTMATTER_BASE` to the actual pull request base commit (for GitHub
    Actions, `github.event.pull_request.base.sha`) and use a checkout with full
-   history. Existing files whose content differs from the merge base must
-   change their `last_edited` value, including edits within the same day;
-   `-fix` never bumps an existing date. New files only need valid metadata.
+   history. A meaningful edit to an existing file must set `generated.at` to a
+   later time, including edits within the same day; `-fix` never bumps it. New files only need valid metadata.
    Deletions are skipped. Findings print as `path: problem` on stderr and return a
    nonzero exit status; success prints a short summary.
 
