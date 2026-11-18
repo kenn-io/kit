@@ -24,6 +24,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("CONSENT_CHILD") != "1" {
+		startupConsent = ConsentUnanswered
+	}
 	for _, env := range []string{"CI", "DO_NOT_TRACK", GenericEnabledEnv, "KATA_TELEMETRY_ENABLED", "TEST_TELEMETRY_ENABLED"} {
 		if err := os.Unsetenv(env); err != nil {
 			panic(err)
