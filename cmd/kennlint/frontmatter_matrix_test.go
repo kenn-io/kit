@@ -228,7 +228,6 @@ func TestOKFCanonicalFormatting(t *testing.T) {
 		{"html", "<b>x</b>\n", "<i>x</i>\n", false},
 		{"pre whitespace", `<pre class="sample">a b</pre>`, `<pre class="sample">a  b</pre>`, false},
 		{"attribute whitespace", `<span title="a b">text</span>`, `<span title="a  b">text</span>`, false},
-		{"nested inline HTML whitespace", `<span style="white-space:pre">**a b**</span>`, `<span style="white-space:pre">**a  b**</span>`, false},
 		{"hard break", "a\nb\n", "a  \nb\n", false},
 		{"prose spacing before hard break", "a  b  \nc\n", "a b  \nc\n", true},
 		{"prose spacing", "Text here.\n", "Text  here.\n", true},
@@ -244,9 +243,7 @@ func TestOKFChangedMatrix(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
-	src := strings.Replace(goodOKF, "Text here.", `Text here.
-
-<span style="white-space:pre">a b</span>`, 1)
+	src := strings.Replace(goodOKF, "Text here.", `Text here. <span style="white-space:pre">**a b**</span>`, 1)
 	repo.WriteFile("page.md", src)
 	repo.WriteFile("old.md", goodFrontmatter)
 	repo.Run("add", "page.md", "old.md")
@@ -257,7 +254,7 @@ func TestOKFChangedMatrix(t *testing.T) {
 		stale         bool
 	}{
 		{"body", strings.Replace(src, "Text here.", "Changed text.", 1), true},
-		{"inline HTML whitespace", strings.Replace(src, ">a b</span>", ">a  b</span>", 1), true},
+		{"inline HTML whitespace", strings.Replace(src, "a b**", "a  b**", 1), true},
 		{"backwards timestamp", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "11:59:59Z", 1), true},
 		{"same instant different spelling", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "12:00:00.000Z", 1), true},
 		{"later generated.at", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "12:01:00Z", 1), false},
