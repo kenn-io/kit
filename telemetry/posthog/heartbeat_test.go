@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -40,11 +39,20 @@ func (c *heartbeatClient) count() int {
 	return len(c.events)
 }
 
-func TestRunHeartbeatHonorsReporterOptOut(t *testing.T) {
-	for _, optOut := range []bool{false, true} {
-		t.Run(strconv.FormatBool(optOut), func(t *testing.T) {
-			if optOut {
-				t.Setenv(GenericEnabledEnv, "0")
+func TestRunHeartbeatWithConsent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		granted bool
+		want    int
+	}{{"unanswered", false, 0}, {"granted", true, 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv(GenericEnabledEnv, "")
+			t.Setenv("KATA_TELEMETRY_ENABLED", "")
+			if tc.granted {
+				require.NoError(t, RecordConsent(true))
 			}
 			synctest.Test(t, func(t *testing.T) {
 				client := &recordingPostHogClient{}
@@ -60,11 +68,9 @@ func TestRunHeartbeatHonorsReporterOptOut(t *testing.T) {
 				defer cancel()
 				go RunHeartbeat(ctx, reporter, nil)
 				synctest.Wait()
-				if !optOut {
-					require.Len(t, client.messages, 1)
+				require.Len(t, client.messages, tc.want)
+				if tc.granted {
 					assert.Equal(t, EventDaemonActive, client.messages[0].Event)
-				} else {
-					assert.Empty(t, client.messages)
 				}
 				cancel()
 				synctest.Wait()
