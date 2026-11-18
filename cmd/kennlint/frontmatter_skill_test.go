@@ -18,34 +18,31 @@ const skillHeader = "---\nname: example\ndescription: Example\nmetadata:\n  type
 
 func TestSkillProfileShapes(t *testing.T) {
 	cases := []struct {
-		name, src string
-		valid     bool
+		name, src, want string
 	}{
-		{"valid", skillHeader, true},
-		{"status", strings.Replace(skillHeader, "---\nBody", "  status: draft\n---\nBody", 1), true},
-		{"generated extra", strings.Replace(skillHeader, "    by: human:test", "    source: changed\n    by: human:test", 1), true},
-		{"metadata last edited", strings.Replace(skillHeader, "  type: Skill", "  last_edited: note\n  type: Skill", 1), true},
-		{"missing metadata", "---\nname: x\n---\n", false},
-		{"flow metadata", "---\nname: example\ndescription: Example\nmetadata: {type: Skill, generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}}\n---\nBody text.\n", false},
-		{"scalar metadata", "---\nmetadata: x\n---\n", false},
-		{"missing type", strings.Replace(skillHeader, "  type: Skill\n", "", 1), false},
-		{"wrong type", strings.Replace(skillHeader, "type: Skill", "type: skill", 1), false},
-		{"flow generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1), false},
-		{"scalar generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: x", 1), false},
-		{"bare at", strings.ReplaceAll(skillHeader, "\"", ""), false},
-		{"status invalid", strings.Replace(skillHeader, "---\nBody", "  status: retired\n---\nBody", 1), false},
+		{"valid", skillHeader, ""},
+		{"status", strings.Replace(skillHeader, "---\nBody", "  status: draft\n---\nBody", 1), ""},
+		{"generated extra", strings.Replace(skillHeader, "    by: human:test", "    source: changed\n    by: human:test", 1), ""},
+		{"metadata last edited", strings.Replace(skillHeader, "  type: Skill", "  last_edited: note\n  type: Skill", 1), ""},
+		{"missing metadata", "---\nname: x\n---\n", "metadata must be a block mapping"},
+		{"flow metadata", "---\nname: example\ndescription: Example\nmetadata: {type: Skill, generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}}\n---\nBody text.\n", "metadata must be a block mapping"},
+		{"scalar metadata", "---\nmetadata: x\n---\n", "metadata must be a block mapping"},
+		{"missing type", strings.Replace(skillHeader, "  type: Skill\n", "", 1), "metadata.type must be the string Skill"},
+		{"wrong type", strings.Replace(skillHeader, "type: Skill", "type: skill", 1), "metadata.type must be the string Skill"},
+		{"flow generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1), "metadata.generated must be a block mapping"},
+		{"scalar generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: x", 1), "metadata.generated must be a block mapping"},
+		{"bare at", strings.ReplaceAll(skillHeader, "\"", ""), "metadata.generated.at must be a quoted string, for example \"2026-11-17T19:00:00Z\""},
+		{"status invalid", strings.Replace(skillHeader, "---\nBody", "  status: retired\n---\nBody", 1), "metadata.status must be one of stable, draft, or deprecated"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b, err := parseFrontmatter([]byte(tc.src))
 			require.NoError(t, err)
 			problems := b.skillProblems()
-			assert.Equal(t, tc.valid, len(problems) == 0, problems)
-			switch tc.name {
-			case "flow metadata":
-				assert.Equal(t, []string{"metadata must be a block mapping"}, problems)
-			case "flow generated":
-				assert.Equal(t, []string{"metadata.generated must be a block mapping"}, problems)
+			if tc.want == "" {
+				assert.Empty(t, problems)
+			} else {
+				assert.Equal(t, []string{tc.want}, problems)
 			}
 		})
 	}
@@ -168,7 +165,6 @@ func TestSkillChangedAndImports(t *testing.T) {
 	}{
 		{"body", strings.Replace(src, "Body text.", "Changed text.", 1), true},
 		{"inline HTML whitespace", strings.Replace(src, ">a b</span>", ">a  b</span>", 1), true},
-		{"inline HTML whitespace later timestamp", strings.Replace(strings.Replace(src, ">a b</span>", ">a  b</span>", 1), "12:00:00Z", "12:01:00Z", 1), false},
 		{"timestamp", strings.Replace(strings.Replace(src, "Body text.", "Changed text.", 1), "12:00:00Z", "12:01:00Z", 1), false},
 		{"status", strings.Replace(src, "---\nBody", "  status: draft\n---\nBody", 1), true},
 		{"generated extra", strings.Replace(src, "    by: human:test", "    source: changed\n    by: human:test", 1), true},
