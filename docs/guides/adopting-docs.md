@@ -4,7 +4,7 @@ title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
 generated:
   by: human:salmonumbrella
-  at: "2026-11-17T22:20:21Z"
+  at: "2026-11-17T22:25:31Z"
 ---
 
 # Adopting the Kenn documentation profile
@@ -98,6 +98,8 @@ Move a nested landing-page README to `index.md`. Organize pages in `tutorials/`
 (learn), `guides/` (do), `reference/` (look up), and `explanation/`
 (understand), creating sections only where content exists. No folder needs an
 index, and no new `log.md` is required. Indexes and logs have no concept header.
+
+A parent managed index also lists pages under a nested managed index.
 
 A folder can opt into its own recursive list by adding these whole-line markers
 to its `index.md`:

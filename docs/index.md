@@ -30,3 +30,4 @@ release notes. Package APIs are documented in Go documentation.
 ## Releases
 
 - [Kit v0.8.0](releases/v0.8.0.md)
+- [Kit v0.37.1](releases/v0.37.1.md)

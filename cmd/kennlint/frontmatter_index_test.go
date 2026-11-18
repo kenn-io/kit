@@ -27,6 +27,8 @@ func TestRefreshIndex(t *testing.T) {
 		{"multiline title", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [First second third](page.md) - description\n" + indexEnd + "\n", []indexPage{{"page.md", "First\n\nsecond\tthird", "description"}}, false},
 		{"punctuation title and colon path", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Use \\*bold\\* \\[safely\\]\\!](./guide:setup.md) - description\n" + indexEnd + "\n", []indexPage{{"guide:setup.md", "Use *bold* [safely]!", "description"}}, false},
 		{"GFM punctuation", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Tilde \\~\\~text\\~\\~](page.md) - Emoji \\:smile\\:\n" + indexEnd + "\n", []indexPage{{"page.md", "Tilde ~~text~~", "Emoji :smile:"}}, false},
+		{"fenced backticks", "```markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n```\n", "```markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n```\n", []indexPage{{"page.md", "Page", "Description"}}, false},
+		{"fenced tildes and real block", "~~~markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n~~~\n" + indexBegin + "\nold\n" + indexEnd + "\n", "~~~markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n~~~\n" + indexBegin + "\n- [Page](page.md) - Description\n" + indexEnd + "\n", []indexPage{{"page.md", "Page", "Description"}}, false},
 		{"unmarked", "untouched\n", "untouched\n", nil, false},
 		{"missing end", indexBegin + "\n", "", nil, true},
 		{"end first", indexEnd + "\n" + indexBegin + "\n", "", nil, true},

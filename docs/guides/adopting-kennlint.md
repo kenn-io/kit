@@ -4,7 +4,7 @@ title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
 generated:
   by: human:salmonumbrella
-  at: "2026-11-17T22:20:21Z"
+  at: "2026-11-17T22:25:31Z"
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -131,7 +131,10 @@ it after adding rule labels and reasons to their suppressions.
    On pull requests, also run:
 
    ```sh
-   go run go.kenn.io/kit/cmd/kennlint@<kit version> frontmatter -changed "$FRONTMATTER_BASE"
+   go run go.kenn.io/kit/cmd/kennlint@<kit version> frontmatter -changed "$FRONTMATTER_BASE" || {
+     echo "fix locally: make fix-frontmatter (set stale generated.at by hand)"
+     exit 1
+   }
    ```
 
    Set `FRONTMATTER_BASE` to the actual pull request base commit (for GitHub

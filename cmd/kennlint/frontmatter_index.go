@@ -36,8 +36,29 @@ func findIndexBlock(src []byte) (*indexBlock, error) {
 	lines := bytes.SplitAfter(src, []byte("\n"))
 	begin, end, offset, start, finish := 0, 0, 0, 0, 0
 	newline := "\n"
+	var fence byte
+	fenceLen := 0
 	for _, line := range lines {
 		value := strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r")
+		trimmed := strings.TrimLeft(value, " ")
+		if len(value)-len(trimmed) <= 3 && len(trimmed) > 0 && (trimmed[0] == '`' || trimmed[0] == '~') {
+			marker := trimmed[0]
+			size := 0
+			for size < len(trimmed) && trimmed[size] == marker {
+				size++
+			}
+			if fence == 0 && size >= 3 && (marker != '`' || !strings.ContainsRune(trimmed[size:], '`')) {
+				fence, fenceLen = marker, size
+			} else if fence == marker && size >= fenceLen && strings.Trim(trimmed[size:], " \t") == "" {
+				fence, fenceLen = 0, 0
+			}
+			offset += len(line)
+			continue
+		}
+		if fence != 0 {
+			offset += len(line)
+			continue
+		}
 		switch value {
 		case indexBegin:
 			begin++
