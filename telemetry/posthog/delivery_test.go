@@ -233,8 +233,11 @@ func TestCaptureConfirmedValidationAndDisable(t *testing.T) {
 	_, err = r.CaptureConfirmed(t.Context(), "unencodable", map[string]any{"callback": true}, valid)
 	require.ErrorContains(t, err, "encode telemetry properties")
 	assert.Empty(t, client.messages)
+	old := startupConsent
+	startupConsent = ConsentGranted
+	t.Cleanup(func() { startupConsent = old })
 	t.Setenv(GenericEnabledEnv, "0")
-	disabled, err := NewReporter(Options{}, WithAllowedEvent("milestone"))
+	disabled, err := NewReporter(Options{APIKey: "caller-owned-key", Application: "test", EnvPrefix: "KATA", DistinctID: "id", Version: "1.2.3"}, WithAllowedEvent("milestone"))
 	require.NoError(t, err)
 	status, err := disabled.CaptureConfirmed(t.Context(), "milestone", nil, valid)
 	require.NoError(t, err)

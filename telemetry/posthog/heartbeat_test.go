@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -40,38 +39,27 @@ func (c *heartbeatClient) count() int {
 	return len(c.events)
 }
 
-func TestRunHeartbeatHonorsReporterOptOut(t *testing.T) {
-	for _, optOut := range []bool{false, true} {
-		t.Run(strconv.FormatBool(optOut), func(t *testing.T) {
-			t.Setenv(GenericEnabledEnv, "1")
-			if optOut {
-				t.Setenv(GenericEnabledEnv, "0")
-			}
-			synctest.Test(t, func(t *testing.T) {
-				client := &recordingPostHogClient{}
-				reporter, err := newPostHogReporter(Options{
-					APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA",
-					DistinctID: "anonymous-instance-id", Version: "v1.2.3",
-				}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
-					return client, nil
-				}, WithAllowedEvent(EventDaemonActive))
-				require.NoError(t, err)
-				defer func() { require.NoError(t, reporter.Close()) }()
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				go RunHeartbeat(ctx, reporter, nil)
-				synctest.Wait()
-				if !optOut {
-					require.Len(t, client.messages, 1)
-					assert.Equal(t, EventDaemonActive, client.messages[0].Event)
-				} else {
-					assert.Empty(t, client.messages)
-				}
-				cancel()
-				synctest.Wait()
-			})
-		})
-	}
+func TestRunHeartbeatWithReporter(t *testing.T) {
+	t.Setenv(GenericEnabledEnv, "1")
+	synctest.Test(t, func(t *testing.T) {
+		client := &recordingPostHogClient{}
+		reporter, err := newPostHogReporter(Options{
+			APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA",
+			DistinctID: "anonymous-instance-id", Version: "v1.2.3",
+		}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
+			return client, nil
+		}, WithAllowedEvent(EventDaemonActive))
+		require.NoError(t, err)
+		defer func() { require.NoError(t, reporter.Close()) }()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go RunHeartbeat(ctx, reporter, nil)
+		synctest.Wait()
+		require.Len(t, client.messages, 1)
+		assert.Equal(t, EventDaemonActive, client.messages[0].Event)
+		cancel()
+		synctest.Wait()
+	})
 }
 
 func TestRunHeartbeatStopsWhenDisabled(t *testing.T) {

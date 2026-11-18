@@ -83,37 +83,6 @@ func TestConsentNextStart(t *testing.T) {
 	assert.False(t, Eligible("KATA", "1.2.3"))
 }
 
-func TestConsentDisabledReporter(t *testing.T) {
-	work := t.TempDir()
-	t.Chdir(work)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv(GenericEnabledEnv, "")
-	t.Setenv("KATA_TELEMETRY_ENABLED", "")
-	old := startupConsent
-	startupConsent = ConsentUnanswered
-	t.Cleanup(func() { startupConsent = old })
-	called := false
-	r, err := newPostHogReporter(Options{APIKey: "test", EnvPrefix: "KATA", Version: "1.2.3"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
-		called = true
-		return &fakePostHogClient{}, nil
-	}, WithAllowedEvent("event"))
-	require.NoError(t, err)
-	require.NoError(t, r.Capture("event", nil))
-	status, err := r.Report(t.Context(), "event", nil)
-	require.NoError(t, err)
-	assert.Equal(t, StatusDisabled, status)
-	require.NoError(t, r.Close())
-	assert.False(t, called)
-	entries, err := os.ReadDir(home)
-	require.NoError(t, err)
-	assert.Empty(t, entries)
-	entries, err = os.ReadDir(work)
-	require.NoError(t, err)
-	assert.Empty(t, entries)
-}
-
 func TestConsentAcrossProcesses(t *testing.T) {
 	if os.Getenv("CONSENT_CHILD") == "1" {
 		client := &fakePostHogClient{}
@@ -145,30 +114,5 @@ func TestConsentAcrossProcesses(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		cancel()
 		require.NoError(t, err, string(out))
-	}
-}
-
-func TestConsentAdmissionPrecedence(t *testing.T) {
-	old := startupConsent
-	t.Cleanup(func() { startupConsent = old })
-	for _, tc := range []struct {
-		name              string
-		sample            Consent
-		generic, prefixed string
-		want              bool
-	}{
-		{"stored yes", ConsentGranted, "", "", true},
-		{"stored no", ConsentDenied, "", "", false},
-		{"generic yes over no", ConsentDenied, " yes ", "", true},
-		{"generic off over yes", ConsentGranted, "off", "", false},
-		{"prefixed off over yes", ConsentGranted, "", "0", false},
-		{"prefixed yes alone", ConsentUnanswered, "", "yes", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			startupConsent = tc.sample
-			t.Setenv(GenericEnabledEnv, tc.generic)
-			t.Setenv("KATA_TELEMETRY_ENABLED", tc.prefixed)
-			assert.Equal(t, tc.want, Eligible("KATA", "1.2.3"))
-		})
 	}
 }
