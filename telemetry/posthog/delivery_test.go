@@ -237,8 +237,11 @@ func TestCaptureConfirmedValidationAndDisable(t *testing.T) {
 	startupConsent = ConsentGranted
 	t.Cleanup(func() { startupConsent = old })
 	t.Setenv(GenericEnabledEnv, "0")
-	disabled, err := NewReporter(Options{APIKey: "caller-owned-key", Application: "test", EnvPrefix: "KATA", DistinctID: "id", Version: "1.2.3"}, WithAllowedEvent("milestone"))
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(server.Close)
+	disabled, err := NewReporter(Options{APIKey: "caller-owned-key", Application: "test", EnvPrefix: "KATA", DistinctID: "id", Version: "1.2.3", Endpoint: server.URL}, WithAllowedEvent("milestone"))
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = disabled.Close() })
 	status, err := disabled.CaptureConfirmed(t.Context(), "milestone", nil, valid)
 	require.NoError(t, err)
 	assert.Equal(t, StatusDisabled, status)
