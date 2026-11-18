@@ -29,8 +29,19 @@ func (s *Store[K, G]) lookup(ctx context.Context, q interface {
 	return id, dim, state, nil
 }
 
+func validState(state vector.State) bool {
+	switch state {
+	case vector.StatePending, vector.StateBuilding, vector.StateActive, vector.StateRetired:
+		return true
+	}
+	return false
+}
+
 // EnsureGeneration registers a model and creates its chunk table and HNSW index.
 func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.Generation, state vector.State) error {
+	if !validState(state) {
+		return fmt.Errorf("invalid generation state %q", state)
+	}
 	if model.Dimensions <= 0 || model.Dimensions > 4000 {
 		return fmt.Errorf("invalid generation dimension %d", model.Dimensions)
 	}
@@ -68,7 +79,7 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if err = tx.QueryRowContext(ctx, `SELECT format_type(a.atttypid,a.atttypmod) FROM pg_attribute a WHERE a.attrelid=to_regclass($1) AND a.attname='doc_key' AND a.attnum>0`, s.stamps()).Scan(&keyType); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (doc_key %s NOT NULL, chunk_index INTEGER NOT NULL, embedding %s.halfvec(%d) NOT NULL, PRIMARY KEY(doc_key,chunk_index)); CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding %s.halfvec_cosine_ops)`, s.chunks(id), keyType, s.ext, model.Dimensions, quote(fmt.Sprintf("%s_chunks_g%d_hnsw", s.schema.Prefix, id)), s.chunks(id), s.ext))
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (doc_key %s NOT NULL, chunk_index INTEGER NOT NULL, embedding %s.halfvec(%d) NOT NULL, PRIMARY KEY(doc_key,chunk_index)); CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding %s.halfvec_cosine_ops)`, s.chunks(id), keyType, quote(s.ext), model.Dimensions, quote(fmt.Sprintf("%s_chunks_g%d_hnsw", s.schema.Prefix, id)), s.chunks(id), quote(s.ext)))
 	if err != nil {
 		return fmt.Errorf("create generation storage: %w", err)
 	}
@@ -77,6 +88,9 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 
 // SetGenerationState records a state without publishing coverage.
 func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vector.State) error {
+	if !validState(state) {
+		return fmt.Errorf("invalid generation state %q", state)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -152,4 +166,17 @@ func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ActiveGeneration returns the newest active generation, if one exists.
+func (s *Store[K, G]) ActiveGeneration(ctx context.Context) (vector.GenerationInfo[G], bool, error) {
+	var info vector.GenerationInfo[G]
+	err := s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT gen_key, fingerprint, dimension, state FROM %s WHERE state=$1 ORDER BY id DESC LIMIT 1`, s.generations()), vector.StateActive).Scan(&info.Key, &info.Fingerprint, &info.Dimension, &info.State)
+	if errors.Is(err, sql.ErrNoRows) {
+		return info, false, nil
+	}
+	if err != nil {
+		return info, false, fmt.Errorf("read active generation: %w", err)
+	}
+	return info, true, nil
 }

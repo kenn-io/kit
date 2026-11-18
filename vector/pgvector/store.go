@@ -79,7 +79,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	var matches bool
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR UPDATE`, quote(s.schema.RevisionColumn), quote(s.schema.DocsTable), quote(s.schema.IDColumn)), doc, revision).Scan(&matches)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("document %v missing", doc)
+		return fmt.Errorf("document %v missing: %w", doc, vector.ErrStale)
 	}
 	if err != nil {
 		return err
@@ -91,7 +91,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		return err
 	}
 	for _, cv := range vectors {
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), s.ext), doc, cv.ChunkIndex, literal(cv.Vector)); err != nil {
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), quote(s.ext)), doc, cv.ChunkIndex, literal(cv.Vector)); err != nil {
 			return err
 		}
 	}
@@ -144,7 +144,7 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 		return nil, err
 	}
 	predicate := fmt.Sprintf(`EXISTS (SELECT 1 FROM %s src JOIN %s stamp ON stamp.generation_id=? AND stamp.doc_key=src.%s WHERE src.%s=d.doc_key AND %s)`, quote(s.schema.DocsTable), s.stamps(), quote(s.schema.IDColumn), quote(s.schema.IDColumn), s.covered("src", "stamp"))
-	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id), SourceKey: "doc_key", VectorColumn: "embedding"}, Query: literal(query), VectorType: "halfvec", TypeSchema: strings.Trim(s.ext, `"`), SourcePredicate: sqlquery.Predicate{SQL: predicate, Args: []any{id}}, ExtraSourceCols: []sqlquery.Column{{Name: "chunk_index", As: "chunk_index"}}, CandidateLimit: limit})
+	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id), SourceKey: "doc_key", VectorColumn: "embedding"}, Query: literal(query), VectorType: "halfvec", TypeSchema: s.ext, SourcePredicate: sqlquery.Predicate{SQL: predicate, Args: []any{id}}, ExtraSourceCols: []sqlquery.Column{{Name: "chunk_index", As: "chunk_index"}}, CandidateLimit: limit})
 	if err != nil {
 		return nil, err
 	}

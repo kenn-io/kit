@@ -95,4 +95,5 @@ test-embedlocal:
 
 .PHONY: test-vector-postgres
 test-vector-postgres:
-	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/pgvector ./search/postgres ./vector/sqlitevec" -- -count=1
+	@test -n "$$KIT_POSTGRES_TEST_DSN" || (echo "set KIT_POSTGRES_TEST_DSN"; exit 1)
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/pgvector ./search/postgres ./vector/sqlitevec" -- -count=1 -p 1

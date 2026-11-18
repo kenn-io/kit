@@ -1,5 +1,7 @@
 // Package pgvector implements vector.Store using PostgreSQL and pgvector.
-// The caller owns the database connection and documents table.
+// The caller owns the database connection and documents table. Call DeleteVectors
+// before deleting a document or reusing its key, so old stamps and vectors cannot
+// be mistaken for the new document.
 package pgvector
 
 import (
@@ -8,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -27,13 +30,17 @@ func (s *Schema) validate() error {
 		s.GenerationKeyType = "text"
 	}
 	for name, value := range map[string]string{"docs table": s.DocsTable, "id column": s.IDColumn, "content column": s.ContentColumn, "revision column": s.RevisionColumn, "prefix": s.Prefix, "generation key type": s.GenerationKeyType} {
-		if !identifier.MatchString(value) {
+		if !identifier.MatchString(value) || len(value) > 63 {
 			return fmt.Errorf("invalid %s %q", name, value)
 		}
 	}
+	// Leave room for a 19-digit generation ID and the HNSW index suffix.
+	if len(s.Prefix) > 30 {
+		return fmt.Errorf("prefix %q is too long", s.Prefix)
+	}
 	return nil
 }
-func quote(s string) string { return `"` + s + `"` }
+func quote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
 // ErrPgvectorMissing means the database has no pgvector halfvec type.
 var ErrPgvectorMissing = errors.New("pgvector halfvec is unavailable")
@@ -69,7 +76,7 @@ func New[K, G comparable](ctx context.Context, db *sql.DB, schema Schema) (*Stor
 	if err != nil {
 		return nil, err
 	}
-	s := &Store[K, G]{db: db, schema: schema, ext: quote(ext)}
+	s := &Store[K, G]{db: db, schema: schema, ext: ext}
 	for _, name := range []string{s.generations(), s.stamps()} {
 		var exists bool
 		if err := db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil {

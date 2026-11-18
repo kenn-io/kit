@@ -191,3 +191,94 @@ func TestNewWithDMLOnlyRole(t *testing.T) {
 	_, err = pgvector.New[int64, string](ctx, runtime, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
 	require.NoError(t, err)
 }
+
+func TestInvalidStatesAndActiveGeneration(t *testing.T) {
+	_, s := setup(t)
+	ctx := t.Context()
+	_, ok, err := s.ActiveGeneration(ctx)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	model := vector.Generation{Model: "model", Dimensions: 2}
+	require.Error(t, s.EnsureGeneration(ctx, "bad", model, vector.State("buildingg")))
+	require.NoError(t, s.EnsureGeneration(ctx, "a", model, vector.StateActive))
+	require.Error(t, s.SetGenerationState(ctx, "a", vector.State("buildingg")))
+	info, ok, err := s.ActiveGeneration(ctx)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "a", info.Key)
+	assert.Equal(t, model.Fingerprint(), info.Fingerprint)
+	assert.Equal(t, 2, info.Dimension)
+	assert.Equal(t, vector.StateActive, info.State)
+}
+
+func TestSchemaRejectsTruncatedNames(t *testing.T) {
+	db, _ := setup(t)
+	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: strings.Repeat("x", 31)}
+	require.Error(t, pgvector.Install(t.Context(), db, schema))
+	schema.Prefix = strings.Repeat("x", 30)
+	require.NoError(t, pgvector.Install(t.Context(), db, schema))
+	schema.IDColumn = strings.Repeat("x", 64)
+	require.Error(t, pgvector.Install(t.Context(), db, schema))
+}
+
+func TestGenerationKeyTypeAliases(t *testing.T) {
+	db, _ := setup(t)
+	ctx := t.Context()
+	for _, typ := range []string{"bigint", "integer"} {
+		schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "v_" + typ, GenerationKeyType: typ}
+		require.NoError(t, pgvector.Install(ctx, db, schema))
+		store, err := pgvector.New[int64, int64](ctx, db, schema)
+		require.NoError(t, err)
+		require.NoError(t, store.EnsureGeneration(ctx, 42, vector.Generation{Dimensions: 2}, vector.StateActive))
+		info, ok, err := store.ActiveGeneration(ctx)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, int64(42), info.Key)
+	}
+}
+
+func TestFillContinuesAfterDocumentDeleted(t *testing.T) {
+	db, s := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'cat',1),(2,'dog',1)`)
+	require.NoError(t, err)
+	require.NoError(t, s.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
+	calls := 0
+	enc := encoder(2, &calls)
+	_, err = vector.Fill(ctx, s, "a", func(ctx context.Context, texts []string) ([][]float32, error) {
+		_, err := db.ExecContext(ctx, `DELETE FROM docs WHERE id=1`)
+		if err != nil {
+			return nil, err
+		}
+		return enc(ctx, texts)
+	})
+	require.NoError(t, err)
+	hits, err := s.QueryGeneration(ctx, "a", vector.Vector{0, 1}, 10)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, int64(2), hits[0].Doc)
+}
+
+func TestQuotedExtensionSchema(t *testing.T) {
+	db, _ := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `CREATE SCHEMA "vector-""ext"; ALTER EXTENSION vector SET SCHEMA "vector-""ext"`)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := db.ExecContext(context.Background(), `ALTER EXTENSION vector SET SCHEMA public; DROP SCHEMA "vector-""ext"`)
+		assert.NoError(t, err)
+	})
+	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"}
+	store, err := pgvector.New[int64, string](ctx, db, schema)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'cat',1)`)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
+	calls := 0
+	_, err = vector.Fill(ctx, store, "a", encoder(2, &calls))
+	require.NoError(t, err)
+	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, int64(1), hits[0].Doc)
+}

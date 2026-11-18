@@ -30,8 +30,12 @@ func Install(ctx context.Context, db *sql.DB, schema Schema) error {
 	if err := columnType(schema.RevisionColumn, &revType); err != nil {
 		return fmt.Errorf("revision type: %w", err)
 	}
+	var generationType string
+	if err := db.QueryRowContext(ctx, `SELECT format_type(t.oid,NULL) FROM pg_type t WHERE t.oid=to_regtype($1)`, schema.GenerationKeyType).Scan(&generationType); err != nil {
+		return fmt.Errorf("generation key type: %w", err)
+	}
 	_, err = db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (id BIGSERIAL PRIMARY KEY, gen_key %s UNIQUE NOT NULL, fingerprint TEXT NOT NULL, dimension INTEGER NOT NULL, state TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS %s (generation_id BIGINT NOT NULL, doc_key %s NOT NULL, revision %s, PRIMARY KEY(generation_id,doc_key))`, quote(schema.Prefix+"_generations"), quote(schema.GenerationKeyType), quote(schema.Prefix+"_stamps"), keyType, revType))
+CREATE TABLE IF NOT EXISTS %s (generation_id BIGINT NOT NULL, doc_key %s NOT NULL, revision %s, PRIMARY KEY(generation_id,doc_key))`, quote(schema.Prefix+"_generations"), generationType, quote(schema.Prefix+"_stamps"), keyType, revType))
 	if err != nil {
 		return fmt.Errorf("install vector catalog: %w", err)
 	}

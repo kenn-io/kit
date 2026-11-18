@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"go.kenn.io/kit/search/sqlquery"
 )
@@ -97,8 +98,8 @@ func BuildVector(req VectorRequest) (sqlquery.Query, error) {
 		return sqlquery.Query{}, fmt.Errorf("postgres: invalid vector type %q", vectorType)
 	}
 	if req.TypeSchema != "" {
-		if err := checkIdentifier("type schema", req.TypeSchema); err != nil {
-			return sqlquery.Query{}, err
+		if len(req.TypeSchema) > 63 || !utf8.ValidString(req.TypeSchema) || strings.ContainsRune(req.TypeSchema, 0) {
+			return sqlquery.Query{}, fmt.Errorf("postgres: invalid type schema %q", req.TypeSchema)
 		}
 		vectorType = quote(req.TypeSchema) + "." + vectorType
 		op = "OPERATOR(" + quote(req.TypeSchema) + "." + op + ")"
