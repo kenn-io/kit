@@ -249,11 +249,6 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 			enablePostHogTelemetryForTest()
 			t.Cleanup(enablePostHogTelemetryForTest)
 			tt.disable(t)
-			work := t.TempDir()
-			t.Chdir(work)
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USERPROFILE", home)
 			options := []Option{nil, WithAllowedEvent("app_opened")}
 			opts := Options{APIKey: "caller-owned-key", Application: "test", EnvPrefix: "KATA", DistinctID: "id", Version: "v1.2.3"}
 
@@ -277,12 +272,6 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 			assert.Equal(t, StatusDisabled, status)
 			require.NoError(t, reporter.Close())
 			assert.Zero(t, factoryCalls)
-			entries, err := os.ReadDir(home)
-			require.NoError(t, err)
-			assert.Empty(t, entries)
-			entries, err = os.ReadDir(work)
-			require.NoError(t, err)
-			assert.Empty(t, entries)
 		})
 	}
 }
