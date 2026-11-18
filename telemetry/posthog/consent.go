@@ -56,7 +56,6 @@ func ReadConsent() (Consent, error) {
 
 // RecordConsent records the shared choice. Only the application that owns the
 // consent flow should write it; reporting apps read the choice and do not ask.
-// Errors may wrap atomicfile.ErrPublished or atomicfile.ErrNotDurable.
 func RecordConsent(granted bool) error {
 	path, err := consentPath()
 	if err != nil {
