@@ -24,7 +24,7 @@ func TestConsentReadWrite(t *testing.T) {
 	for _, tc := range []struct {
 		data string
 		want Consent
-	}{{"yes\n", ConsentGranted}, {"no\n", ConsentDenied}, {"yes", ConsentUnanswered}} {
+	}{{"yes\n", ConsentGranted}, {"no\n", ConsentDenied}, {"yes\r\n", ConsentGranted}, {"garbage", ConsentUnanswered}} {
 		require.NoError(t, os.MkdirAll(filepath.Join(home, ".kenn"), 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(home, ".kenn", "telemetry-consent"), []byte(tc.data), 0o600))
 		got, err = ReadConsent()
@@ -56,22 +56,39 @@ func TestConsentReadWrite(t *testing.T) {
 	err = RecordConsent(true)
 	var pathErr *os.PathError
 	require.ErrorAs(t, err, &pathErr)
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".kenn"), []byte("file"), 0o600))
+	require.Error(t, RecordConsent(true))
 }
 
-func TestConsentNextStart(t *testing.T) {
+func TestConsentReporter(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv(GenericEnabledEnv, "")
 	t.Setenv("KATA_TELEMETRY_ENABLED", "")
-	old := startupConsent
-	t.Cleanup(func() { startupConsent = old })
-	startupConsent = ConsentUnanswered
+	client := &fakePostHogClient{}
+	newReporter := func() *Reporter {
+		r, err := newPostHogReporter(Options{APIKey: "test", Application: "test", EnvPrefix: "KATA", DistinctID: "id", Version: "1.2.3"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) { return client, nil }, WithAllowedEvent("event"))
+		require.NoError(t, err)
+		return r
+	}
+	r := newReporter()
+	require.NoError(t, r.Capture("event", nil))
+	assert.Nil(t, client.message)
+	require.NoError(t, r.Close())
+
 	require.NoError(t, RecordConsent(true))
-	assert.False(t, Eligible("KATA", "1.2.3"))
-	startupConsent = ConsentGranted
+	r = newReporter()
+	require.NoError(t, r.Capture("event", nil))
+	capture, ok := client.message.(phsdk.Capture)
+	require.True(t, ok)
+	assert.Equal(t, true, capture.Properties["telemetry_consent"])
+	require.NoError(t, r.Close())
 	require.NoError(t, RecordConsent(false))
-	assert.True(t, Eligible("KATA", "1.2.3"))
+	assert.False(t, Eligible("KATA", "1.2.3"))
 }
 
 func TestConsentAcrossProcesses(t *testing.T) {

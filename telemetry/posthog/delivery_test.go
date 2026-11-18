@@ -233,9 +233,10 @@ func TestCaptureConfirmedValidationAndDisable(t *testing.T) {
 	_, err = r.CaptureConfirmed(t.Context(), "unencodable", map[string]any{"callback": true}, valid)
 	require.ErrorContains(t, err, "encode telemetry properties")
 	assert.Empty(t, client.messages)
-	old := startupConsent
-	startupConsent = ConsentGranted
-	t.Cleanup(func() { startupConsent = old })
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	require.NoError(t, RecordConsent(true))
 	t.Setenv(GenericEnabledEnv, "0")
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(server.Close)

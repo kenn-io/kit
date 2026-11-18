@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
@@ -25,14 +26,38 @@ import (
 
 func TestMain(m *testing.M) {
 	if os.Getenv("CONSENT_CHILD") != "1" {
-		startupConsent = ConsentUnanswered
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cache, err := exec.CommandContext(ctx, "go", "env", "GOMODCACHE").Output()
+		cancel()
+		if err != nil {
+			panic(err)
+		}
+		if err := os.Setenv("GOMODCACHE", strings.TrimSpace(string(cache))); err != nil {
+			panic(err)
+		}
+		home, err := os.MkdirTemp("", "posthog-test-home-")
+		if err != nil {
+			panic(err)
+		}
+		if err := os.Setenv("HOME", home); err != nil {
+			panic(err)
+		}
+		if err := os.Setenv("USERPROFILE", home); err != nil {
+			panic(err)
+		}
 	}
 	for _, env := range []string{"CI", "DO_NOT_TRACK", GenericEnabledEnv, "KATA_TELEMETRY_ENABLED", "TEST_TELEMETRY_ENABLED"} {
 		if err := os.Unsetenv(env); err != nil {
 			panic(err)
 		}
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if os.Getenv("CONSENT_CHILD") != "1" {
+		if err := os.RemoveAll(os.Getenv("HOME")); err != nil {
+			panic(err)
+		}
+	}
+	os.Exit(code)
 }
 
 type fakePostHogClient struct {
@@ -98,13 +123,13 @@ func TestEligible(t *testing.T) {
 		{name: "tracking zero", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: "0", enabled: true},
 		{name: "tracking false", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
 		{name: "tracking padded zero", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: " 0 ", enabled: true},
-		{name: "tracking set", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: "1"},
-		{name: "tracking empty", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK"},
-		{name: "tracking other", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: "off"},
-		{name: "ci set", version: "v1.2.3", generic: "1", veto: "CI", value: "true"},
-		{name: "ci empty", version: "v1.2.3", generic: "1", veto: "CI"},
-		{name: "ci false", version: "v1.2.3", generic: "1", veto: "CI", value: "false"},
-		{name: "process disable", version: "v1.2.3", generic: "1", processDisabled: true},
+		{name: "tracking set", version: "v1.2.3", sample: ConsentGranted, veto: "DO_NOT_TRACK", value: "1"},
+		{name: "tracking empty", version: "v1.2.3", sample: ConsentGranted, veto: "DO_NOT_TRACK"},
+		{name: "tracking other", version: "v1.2.3", sample: ConsentGranted, veto: "DO_NOT_TRACK", value: "off"},
+		{name: "ci set", version: "v1.2.3", sample: ConsentGranted, veto: "CI", value: "true"},
+		{name: "ci empty", version: "v1.2.3", sample: ConsentGranted, veto: "CI"},
+		{name: "ci false", version: "v1.2.3", sample: ConsentGranted, veto: "CI", value: "false"},
+		{name: "process disable", version: "v1.2.3", sample: ConsentGranted, processDisabled: true},
 		{name: "release without v", generic: "1", version: "1.2.3", enabled: true},
 		{name: "development", generic: "1", version: "dev"},
 		{name: "fork", generic: "1", version: "v1.2.3-fork.1"},
@@ -128,9 +153,12 @@ func TestEligible(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			enablePostHogTelemetryForTest()
 			t.Cleanup(enablePostHogTelemetryForTest)
-			old := startupConsent
-			startupConsent = tt.sample
-			t.Cleanup(func() { startupConsent = old })
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			if tt.sample != ConsentUnanswered {
+				require.NoError(t, RecordConsent(tt.sample == ConsentGranted))
+			}
 			t.Setenv(GenericEnabledEnv, tt.generic)
 			t.Setenv("KATA_TELEMETRY_ENABLED", tt.prefixed)
 			if tt.veto != "" {
@@ -172,9 +200,10 @@ func TestReporterCloseGivesUpAfterShutdownTimeout(t *testing.T) {
 func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
-	old := startupConsent
-	startupConsent = ConsentGranted
-	t.Cleanup(func() { startupConsent = old })
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	require.NoError(t, RecordConsent(true))
 	t.Setenv(GenericEnabledEnv, "0")
 
 	reporter, err := NewReporter(Options{APIKey: "caller-owned-key", Version: "v1.2.3"})

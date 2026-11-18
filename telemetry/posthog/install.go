@@ -31,8 +31,7 @@ type Install struct {
 // LoadOrCreateInstall returns the install stored in dir, creating
 // InstallFileName as a private file on first use. A file that does not parse
 // is replaced with a new install. Every call holds a lock file beside it, so
-// processes that share dir get the same install. Callers must check admission
-// before creating a telemetry install ID.
+// processes that share dir get the same install.
 func LoadOrCreateInstall(dir string) (Install, error) {
 	path := filepath.Join(dir, InstallFileName)
 	// Reads take the lock too: Windows can't replace a file another caller has open.

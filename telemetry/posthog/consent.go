@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.kenn.io/kit/atomicfile"
 )
@@ -17,11 +18,6 @@ const (
 	ConsentGranted
 	ConsentDenied
 )
-
-var startupConsent = func() Consent {
-	consent, _ := ReadConsent()
-	return consent
-}()
 
 func consentPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -45,10 +41,10 @@ func ReadConsent() (Consent, error) {
 	if err != nil {
 		return ConsentUnanswered, fmt.Errorf("read telemetry consent: %w", err)
 	}
-	switch string(data) {
-	case "yes\n":
+	switch strings.TrimSpace(string(data)) {
+	case "yes":
 		return ConsentGranted, nil
-	case "no\n":
+	case "no":
 		return ConsentDenied, nil
 	default:
 		return ConsentUnanswered, nil
