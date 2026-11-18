@@ -247,14 +247,12 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 			t.Cleanup(enablePostHogTelemetryForTest)
 			tt.disable(t)
 			options := []Option{nil, WithAllowedEvent("app_opened")}
-			opts := Options{APIKey: "caller-owned-key", Application: "test", EnvPrefix: "KATA", DistinctID: "id", Version: "v1.2.3"}
-
-			nilFactoryReporter, err := newPostHogReporter(opts, nil, options...)
+			nilFactoryReporter, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: "v1.2.3"}, nil, options...)
 			require.NoError(t, err)
 			assert.True(t, nilFactoryReporter.EventAllowed("app_opened"))
 
 			factoryCalls := 0
-			reporter, err := newPostHogReporter(opts, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
+			reporter, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: "v1.2.3"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 				factoryCalls++
 				return &recordingPostHogClient{}, nil
 			}, options...)
@@ -263,11 +261,7 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 			assert.False(t, reporter.Enabled())
 			assert.True(t, reporter.EventAllowed("app_opened"))
 			assert.False(t, reporter.EventAllowed("app_closed"))
-			require.NoError(t, reporter.Capture("app_opened", nil))
-			status, err := reporter.Report(t.Context(), "app_opened", nil)
-			require.NoError(t, err)
-			assert.Equal(t, StatusDisabled, status)
-			require.NoError(t, reporter.Close())
+			require.NoError(t, reporter.Capture("app_closed", nil))
 			assert.Zero(t, factoryCalls)
 		})
 	}

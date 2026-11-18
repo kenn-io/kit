@@ -64,8 +64,6 @@ func TestConsentReporter(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv(GenericEnabledEnv, "")
-	t.Setenv("KATA_TELEMETRY_ENABLED", "")
 	client := &fakePostHogClient{}
 	newReporter := func() *Reporter {
 		r, err := newPostHogReporter(Options{APIKey: "test", Application: "test", EnvPrefix: "KATA", DistinctID: "id", Version: "1.2.3"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) { return client, nil }, WithAllowedEvent("event"))
