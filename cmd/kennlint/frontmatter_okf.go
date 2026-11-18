@@ -24,7 +24,7 @@ func (r *frontmatterRules) Set(s string) error {
 	if !ok || glob == "" || kind == "" {
 		return fmt.Errorf("invalid type rule %q: expected GLOB=TYPE", s)
 	}
-	var e frontmatterExcludes
+	e := frontmatterExcludes{}
 	if err := e.Set(glob); err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func stringNode(s string) *yaml.Node {
 }
 
 func (b *frontmatterBlock) okfProblems() []string {
-	var p []string
+	p := sourcesProblems(b.fields["sources"], "sources")
 	if b.fields["last_edited"] != nil {
 		p = append(p, "last_edited is replaced by generated.at; remove it")
 	}
@@ -191,6 +191,7 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 				appendField(root, "generated", g)
 				b.fields["generated"] = g
 			}
+			g.Style |= yaml.FlowStyle
 			appendField(g, "by", stringNode(by))
 			appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
 			if i := slices.Index(root.Content, b.fields["last_edited"]); i > 0 {

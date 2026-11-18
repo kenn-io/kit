@@ -26,6 +26,8 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
 
 ## Invariants
 
+- Source validation checks declared metadata only; never fetch resources or
+  infer source-citation intent from ordinary Markdown footnotes.
 - Every analyzer is type-aware through `go/analysis` and proves its behavior
   with `analysistest` fixtures under `testdata/`, including negative cases.
   Do not replace an analyzer with text matching.
