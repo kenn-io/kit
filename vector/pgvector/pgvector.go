@@ -1,6 +1,7 @@
 // Package pgvector implements vector.Store using PostgreSQL and pgvector.
 // The caller owns the database connection and documents table. RevisionColumn
-// must change whenever document content changes in place.
+// must change whenever document content changes, including when a deleted
+// document key is reused for replacement content.
 package pgvector
 
 import (
@@ -8,6 +9,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"go.kenn.io/kit/search/postgres"
 )
@@ -51,11 +54,35 @@ func extensionSchema(ctx context.Context, db *sql.DB) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("find pgvector: %w", err)
 	}
-	var major, minor int
-	if _, err := fmt.Sscanf(version, "%d.%d", &major, &minor); err != nil || (major == 0 && minor < 8) {
+	if !supportedVersion(version) {
 		return "", fmt.Errorf("pgvector 0.8.0 or later required for iterative scans (found %s)", version)
 	}
 	return schema, nil
+}
+
+// supportedVersion accepts numeric three-part versions at or above 0.8.0.
+func supportedVersion(version string) bool {
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	var numbers [3]uint64
+	for i, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		n, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return false
+		}
+		numbers[i] = n
+	}
+	return numbers[0] > 0 || numbers[1] >= 8
 }
 
 // Store implements vector.Store. K and G must be supported by database/sql.

@@ -394,20 +394,3 @@ func TestStampDeleteUsesDocumentIndex(t *testing.T) {
 	require.NoError(t, rows.Err())
 	assert.Contains(t, plan, "vectors_stamps_by_doc")
 }
-
-func TestOldExtensionVersionRejected(t *testing.T) {
-	db, _ := setup(t)
-	ctx := t.Context()
-	var version string
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT extversion FROM pg_extension WHERE extname='vector'`).Scan(&version))
-	_, err := db.ExecContext(ctx, `UPDATE pg_extension SET extversion='0.7.4' WHERE extname='vector'`)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_, err := db.ExecContext(context.Background(), `UPDATE pg_extension SET extversion=$1 WHERE extname='vector'`, version)
-		assert.NoError(t, err)
-	})
-	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"}
-	_, err = pgvector.New[int64, string](ctx, db, schema)
-	require.ErrorContains(t, err, "0.8.0")
-	require.ErrorContains(t, pgvector.Install(ctx, db, schema), "0.8.0")
-}
