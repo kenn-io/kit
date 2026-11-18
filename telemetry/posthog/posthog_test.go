@@ -169,6 +169,20 @@ func TestReporterCloseGivesUpAfterShutdownTimeout(t *testing.T) {
 	assert.False(t, reporter.Enabled())
 }
 
+func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	old := startupConsent
+	startupConsent = ConsentGranted
+	t.Cleanup(func() { startupConsent = old })
+	t.Setenv(GenericEnabledEnv, "0")
+
+	reporter, err := NewReporter(Options{APIKey: "caller-owned-key", Version: "v1.2.3"})
+
+	require.NoError(t, err)
+	assert.False(t, reporter.Enabled())
+}
+
 func TestReporterRequiresReleaseVersion(t *testing.T) {
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
