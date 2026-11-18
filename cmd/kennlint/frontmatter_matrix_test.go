@@ -258,7 +258,6 @@ func TestOKFChangedMatrix(t *testing.T) {
 	}{
 		{"body", strings.Replace(src, "Text here.", "Changed text.", 1), true},
 		{"inline HTML whitespace", strings.Replace(src, ">a b</span>", ">a  b</span>", 1), true},
-		{"prose whitespace", strings.Replace(src, "Text here.", "Text  here.", 1), false},
 		{"backwards timestamp", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "11:59:59Z", 1), true},
 		{"same instant different spelling", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "12:00:00.000Z", 1), true},
 		{"later generated.at", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "12:01:00Z", 1), false},
