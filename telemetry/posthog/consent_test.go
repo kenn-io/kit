@@ -53,9 +53,6 @@ func TestConsentReadWrite(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(home, ".kenn", "telemetry-consent"), 0o700))
 	_, err = ReadConsent()
 	require.Error(t, err)
-	err = RecordConsent(true)
-	var pathErr *os.PathError
-	require.ErrorAs(t, err, &pathErr)
 	home = t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)

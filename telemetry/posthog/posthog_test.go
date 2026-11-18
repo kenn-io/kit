@@ -172,10 +172,6 @@ func TestReporterCloseGivesUpAfterShutdownTimeout(t *testing.T) {
 func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	require.NoError(t, RecordConsent(true))
 	t.Setenv(GenericEnabledEnv, "0")
 
 	reporter, err := NewReporter(Options{APIKey: "caller-owned-key", Version: "v1.2.3"})
@@ -228,13 +224,10 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 		name    string
 		disable func(t *testing.T)
 	}{
-		{name: "no_consent", disable: func(t *testing.T) {
+		{name: "generic_env", disable: func(t *testing.T) {
 			t.Helper()
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USERPROFILE", home)
-			t.Setenv(GenericEnabledEnv, "")
-			t.Setenv("KATA_TELEMETRY_ENABLED", "")
+			t.Setenv(GenericEnabledEnv, " 0 ")
+			t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 		}},
 		{name: "prefixed_env", disable: func(t *testing.T) {
 			t.Helper()

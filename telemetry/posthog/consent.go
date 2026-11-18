@@ -14,8 +14,11 @@ import (
 type Consent uint8
 
 const (
+	// ConsentUnanswered means no valid choice was recorded.
 	ConsentUnanswered Consent = iota
+	// ConsentGranted means reporting was allowed.
 	ConsentGranted
+	// ConsentDenied means reporting was declined.
 	ConsentDenied
 )
 
@@ -53,8 +56,7 @@ func ReadConsent() (Consent, error) {
 
 // RecordConsent records the shared choice. Only the application that owns the
 // consent flow should write it; reporting apps read the choice and do not ask.
-// Errors may wrap atomicfile.ErrPublished or atomicfile.ErrNotDurable when
-// publication or durability is uncertain.
+// Errors may wrap atomicfile.ErrPublished or atomicfile.ErrNotDurable.
 func RecordConsent(granted bool) error {
 	path, err := consentPath()
 	if err != nil {
