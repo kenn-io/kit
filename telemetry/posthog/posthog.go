@@ -102,7 +102,7 @@ type Options struct {
 	Endpoint string
 	// Application is included on every event and cannot be overridden by Capture.
 	Application string
-	// EnvPrefix names the PREFIX_TELEMETRY_ENABLED variable.
+	// EnvPrefix names the PREFIX_TELEMETRY_ENABLED opt-out variable.
 	// NewReporter samples it and TELEMETRY_ENABLED once through Eligible.
 	EnvPrefix string
 	// DistinctID must be an anonymous stable installation or instance ID.
@@ -262,7 +262,7 @@ func Eligible(envPrefix, version string) bool {
 	return EnabledFromEnv(envPrefix) && releaseVersion.MatchString(version)
 }
 
-// PrefixedEnabledEnv returns the telemetry environment variable
+// PrefixedEnabledEnv returns the telemetry opt-out environment variable
 // for prefix, such as KATA_TELEMETRY_ENABLED.
 func PrefixedEnabledEnv(prefix string) string {
 	prefix = strings.Trim(strings.ToUpper(strings.TrimSpace(prefix)), "_")
