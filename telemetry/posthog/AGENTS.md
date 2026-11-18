@@ -11,8 +11,9 @@ Kit's source never embeds a project key. Options.APIKey wins; when it is empty
 the reporter uses projectKey, which release builds set at link time. With
 neither, construction is disabled, so source builds and tests report nothing.
 Reporting starts off unless the shared choice at ~/.kenn/telemetry-consent is
-yes at process start or TELEMETRY_ENABLED is 1, true, yes, or on. Only Kenn
-records the choice; apps read it and never ask. A trimmed, case-insensitive
+yes at process start or TELEMETRY_ENABLED is 1, true, yes, or on. Only the
+application that owns the consent flow records the choice; reporting apps
+read it and never ask. A trimmed, case-insensitive
 0, false, no, or off in
 either TELEMETRY_ENABLED or its prefixed equivalent disables reporting.
 The version must be plain vX.Y.Z or X.Y.Z. Process disable, any present
