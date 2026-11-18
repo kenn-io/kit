@@ -221,5 +221,6 @@ pipeline. Preserve these invariants when changing it.
 
 ## PostgreSQL storage
 
-- `pgvector` considers a document current when its generation stamp matches
-  its revision. `New` runs no DDL. Both stores share lifecycle types in `vector`.
+- `pgvector.New` attaches without DDL; `Install` owns setup. Source keys must
+  be unique, and revisions must change when content is replaced. Deleting a
+  source row cascades to its stamps and vectors; `TRUNCATE` requires `CASCADE`.

@@ -5,7 +5,8 @@ import (
 	"strings"
 )
 
-func validIdentifier(s string) bool {
+// ValidIdentifier reports whether s is a bare PostgreSQL identifier.
+func ValidIdentifier(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -18,7 +19,11 @@ func validIdentifier(s string) bool {
 	return true
 }
 
-func quote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+// QuoteIdentifier quotes a PostgreSQL identifier.
+func QuoteIdentifier(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+func validIdentifier(s string) bool { return ValidIdentifier(s) }
+func quote(s string) string         { return QuoteIdentifier(s) }
 
 // rebase replaces anonymous ? placeholders with PostgreSQL $n placeholders.
 // A ? inside a string, escape string, dollar quote, quoted identifier, or

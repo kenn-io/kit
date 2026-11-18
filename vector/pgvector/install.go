@@ -34,10 +34,17 @@ func Install(ctx context.Context, db *sql.DB, schema Schema) error {
 	if err := db.QueryRowContext(ctx, `SELECT format_type(t.oid,NULL) FROM pg_type t WHERE t.oid=to_regtype($1)`, schema.GenerationKeyType).Scan(&generationType); err != nil {
 		return fmt.Errorf("generation key type: %w", err)
 	}
-	_, err = db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (id BIGSERIAL PRIMARY KEY, gen_key %s UNIQUE NOT NULL, fingerprint TEXT NOT NULL, dimension INTEGER NOT NULL, state TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS %s (generation_id BIGINT NOT NULL, doc_key %s NOT NULL, revision %s, PRIMARY KEY(generation_id,doc_key))`, quote(schema.Prefix+"_generations"), generationType, quote(schema.Prefix+"_stamps"), keyType, revType))
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (id BIGSERIAL PRIMARY KEY, gen_key %s UNIQUE NOT NULL, fingerprint TEXT NOT NULL, dimension INTEGER NOT NULL, state TEXT NOT NULL, CONSTRAINT %s CHECK (state IN ('pending','building','active','retired')));
+CREATE TABLE IF NOT EXISTS %s (generation_id BIGINT NOT NULL, doc_key %s NOT NULL REFERENCES %s(%s) ON DELETE CASCADE, revision %s, PRIMARY KEY(generation_id,doc_key))`, quote(schema.Prefix+"_generations"), generationType, quote(schema.Prefix+"_state_check"), quote(schema.Prefix+"_stamps"), keyType, quote(schema.DocsTable), quote(schema.IDColumn), revType))
 	if err != nil {
 		return fmt.Errorf("install vector catalog: %w", err)
+	}
+	if err := checkCatalog(ctx, db, schema); err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (doc_key)`, quote(schema.Prefix+"_stamps_by_doc"), quote(schema.Prefix+"_stamps")))
+	if err != nil {
+		return fmt.Errorf("index vector stamps: %w", err)
 	}
 	return nil
 }

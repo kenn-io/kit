@@ -86,7 +86,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		}
 	}
 	var matches bool
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR UPDATE`, quote(s.schema.RevisionColumn), quote(s.schema.DocsTable), quote(s.schema.IDColumn)), doc, revision).Scan(&matches)
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR SHARE`, quote(s.schema.RevisionColumn), quote(s.schema.DocsTable), quote(s.schema.IDColumn)), doc, revision).Scan(&matches)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("document %v missing: %w", doc, vector.ErrStale)
 	}
@@ -195,47 +195,4 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 		return nil, err
 	}
 	return hits, nil
-}
-
-// DeleteVectors removes a document's vectors and stamps across generations.
-func (s *Store[K, G]) DeleteVectors(ctx context.Context, doc K) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT id FROM %s FOR UPDATE`, s.generations()))
-	if err != nil {
-		return err
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err = rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	_ = rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		var exists bool
-		if err = tx.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, s.chunks(id)).Scan(&exists); err != nil {
-			return err
-		}
-		if !exists {
-			continue
-		}
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE doc_key=$1`, s.chunks(id)), doc); err != nil {
-			return err
-		}
-	}
-	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE doc_key=$1`, s.stamps()), doc); err != nil {
-		return err
-	}
-	return tx.Commit()
 }

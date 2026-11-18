@@ -99,10 +99,6 @@ func TestFillSearchAndGenerationLifecycle(t *testing.T) {
 	_, err = vector.Fill(ctx, s, "b", encoder(3, &calls))
 	require.NoError(t, err)
 	require.NoError(t, s.Activate(ctx, "b"))
-	require.NoError(t, s.DeleteVectors(ctx, 2))
-	var remaining int
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks_g1 WHERE doc_key=2`).Scan(&remaining))
-	assert.Zero(t, remaining)
 	require.NoError(t, s.Reclaim(ctx, "a"))
 	var exists bool
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT to_regclass('vectors_chunks_g1') IS NOT NULL`).Scan(&exists))
@@ -132,7 +128,6 @@ func TestStaleEditedDeleted(t *testing.T) {
 	hits, err := s.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
 	require.NoError(t, err)
 	assert.Empty(t, hits)
-	require.NoError(t, s.DeleteVectors(ctx, 2))
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks_g1 WHERE doc_key=2`).Scan(&count))
 	assert.Zero(t, count)
 	_, err = vector.Fill(ctx, s, "a", encoder(2, &calls))
@@ -167,9 +162,12 @@ func TestSearchSkipsStaleNearestNeighbors(t *testing.T) {
 }
 
 func TestNewWithDMLOnlyRole(t *testing.T) {
-	db, _ := setup(t)
+	db, owner := setup(t)
 	ctx := t.Context()
-	_, err := db.ExecContext(ctx, `CREATE ROLE vec_runtime LOGIN PASSWORD 'test'`)
+	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'cat',1)`)
+	require.NoError(t, err)
+	require.NoError(t, owner.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
+	_, err = db.ExecContext(ctx, `CREATE ROLE vec_runtime LOGIN PASSWORD 'test'`)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_, err := db.ExecContext(context.Background(), `DROP OWNED BY vec_runtime; DROP ROLE vec_runtime`)
@@ -188,8 +186,12 @@ func TestNewWithDMLOnlyRole(t *testing.T) {
 	runtime, err := sql.Open("pgx", u.String())
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
-	_, err = pgvector.New[int64, string](ctx, runtime, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
+	store, err := pgvector.New[int64, string](ctx, runtime, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
 	require.NoError(t, err)
+	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
 }
 
 func TestInvalidStatesAndActiveGeneration(t *testing.T) {
@@ -312,7 +314,7 @@ func TestSearchRejectsUnknownGenerationState(t *testing.T) {
 	db, store := setup(t)
 	ctx := t.Context()
 	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
-	_, err := db.ExecContext(ctx, `UPDATE vectors_generations SET state='future' WHERE gen_key='a'`)
+	_, err := db.ExecContext(ctx, `ALTER TABLE vectors_generations DROP CONSTRAINT vectors_state_check; UPDATE vectors_generations SET state='future' WHERE gen_key='a'`)
 	require.NoError(t, err)
 	calls := 0
 	_, err = vector.Search(ctx, store, "cat", func(string) vector.EncodeFunc { return encoder(2, &calls) }, vector.SearchOptions{})
@@ -321,4 +323,91 @@ func TestSearchRejectsUnknownGenerationState(t *testing.T) {
 	_, _, err = store.ActiveGeneration(ctx)
 	require.ErrorContains(t, err, "future")
 	require.ErrorContains(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive), "future")
+}
+
+func TestSourceDeletionCascades(t *testing.T) {
+	db, store := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'cat',1)`)
+	require.NoError(t, err)
+	for _, gen := range []string{"a", "b"} {
+		require.NoError(t, store.EnsureGeneration(ctx, gen, vector.Generation{Model: gen, Dimensions: 2}, vector.StateBuilding))
+		require.NoError(t, store.SaveVectors(ctx, gen, 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	}
+	_, err = db.ExecContext(ctx, `DELETE FROM docs WHERE id=1`)
+	require.NoError(t, err)
+	for _, table := range []string{"vectors_stamps", "vectors_chunks_g1", "vectors_chunks_g2"} {
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&count))
+		assert.Zero(t, count, table)
+	}
+	require.ErrorIs(t, store.SaveVectors(ctx, "a", 1, 1, nil), vector.ErrStale)
+	_, err = db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'new',1)`)
+	require.NoError(t, err)
+	pending, err := store.PendingForGeneration(ctx, "a", nil, 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, hits)
+}
+
+func TestIncompatibleCatalog(t *testing.T) {
+	db, _ := setup(t)
+	ctx := t.Context()
+	for _, col := range []string{"gen_key", "state"} {
+		t.Run(col, func(t *testing.T) {
+			_, err := db.ExecContext(ctx, `CREATE TABLE broken_generations (id bigint, fingerprint text, dimension integer, gen_key text, state text); CREATE TABLE broken_stamps (generation_id bigint, doc_key bigint, revision integer); ALTER TABLE broken_generations DROP COLUMN `+col)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_, err := db.ExecContext(context.Background(), `DROP TABLE broken_generations, broken_stamps`)
+				assert.NoError(t, err)
+			})
+			schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "broken"}
+			_, err = pgvector.New[int64, string](ctx, db, schema)
+			require.ErrorContains(t, err, col)
+			require.ErrorContains(t, pgvector.Install(ctx, db, schema), col)
+		})
+	}
+}
+
+func TestStateConstraint(t *testing.T) {
+	db, _ := setup(t)
+	_, err := db.ExecContext(t.Context(), `INSERT INTO vectors_generations (gen_key,fingerprint,dimension,state) VALUES ('x','x',2,'future')`)
+	require.Error(t, err)
+}
+
+func TestStampDeleteUsesDocumentIndex(t *testing.T) {
+	db, _ := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `INSERT INTO docs SELECT i, 'doc', 1 FROM generate_series(1,10000) i; INSERT INTO vectors_stamps SELECT 1, i, 1 FROM generate_series(1,10000) i; ANALYZE vectors_stamps`)
+	require.NoError(t, err)
+	rows, err := db.QueryContext(ctx, `EXPLAIN DELETE FROM vectors_stamps WHERE doc_key=5000`)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, rows.Close()) }()
+	var plan string
+	for rows.Next() {
+		var line string
+		require.NoError(t, rows.Scan(&line))
+		plan += line
+	}
+	require.NoError(t, rows.Err())
+	assert.Contains(t, plan, "vectors_stamps_by_doc")
+}
+
+func TestOldExtensionVersionRejected(t *testing.T) {
+	db, _ := setup(t)
+	ctx := t.Context()
+	var version string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT extversion FROM pg_extension WHERE extname='vector'`).Scan(&version))
+	_, err := db.ExecContext(ctx, `UPDATE pg_extension SET extversion='0.7.4' WHERE extname='vector'`)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := db.ExecContext(context.Background(), `UPDATE pg_extension SET extversion=$1 WHERE extname='vector'`, version)
+		assert.NoError(t, err)
+	})
+	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"}
+	_, err = pgvector.New[int64, string](ctx, db, schema)
+	require.ErrorContains(t, err, "0.8.0")
+	require.ErrorContains(t, pgvector.Install(ctx, db, schema), "0.8.0")
 }

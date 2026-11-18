@@ -85,7 +85,7 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if err = tx.QueryRowContext(ctx, `SELECT format_type(a.atttypid,a.atttypmod) FROM pg_attribute a WHERE a.attrelid=to_regclass($1) AND a.attname='doc_key' AND a.attnum>0`, s.stamps()).Scan(&keyType); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (doc_key %s NOT NULL, chunk_index INTEGER NOT NULL, embedding %s.halfvec(%d) NOT NULL, PRIMARY KEY(doc_key,chunk_index)); CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding %s.halfvec_cosine_ops)`, s.chunks(id), keyType, quote(s.ext), model.Dimensions, quote(fmt.Sprintf("%s_chunks_g%d_hnsw", s.schema.Prefix, id)), s.chunks(id), quote(s.ext)))
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (doc_key %s NOT NULL REFERENCES %s(%s) ON DELETE CASCADE, chunk_index INTEGER NOT NULL, embedding %s.halfvec(%d) NOT NULL, PRIMARY KEY(doc_key,chunk_index)); CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding %s.halfvec_cosine_ops)`, s.chunks(id), keyType, quote(s.schema.DocsTable), quote(s.schema.IDColumn), quote(s.ext), model.Dimensions, quote(fmt.Sprintf("%s_chunks_g%d_hnsw", s.schema.Prefix, id)), s.chunks(id), quote(s.ext)))
 	if err != nil {
 		return fmt.Errorf("create generation storage: %w", err)
 	}
@@ -136,13 +136,6 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 	}
 	if backlog > 0 {
 		return &vector.UncoveredError{Backlog: backlog}
-	}
-	var exists bool
-	if err = tx.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, s.chunks(id)).Scan(&exists); err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("generation storage missing")
 	}
 	_, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET state=CASE WHEN id=$1 THEN $2 ELSE $3 END WHERE id=$1 OR state IN ($2,$4)`, s.generations()), id, vector.StateActive, vector.StateRetired, vector.StateBuilding)
 	if err != nil {
