@@ -117,7 +117,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 
 // LiveGenerations returns building generations before active generations, newest first.
 func (s *Store[K, G]) LiveGenerations(ctx context.Context) ([]G, error) {
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT gen_key FROM %s WHERE state IN ($1,$2) ORDER BY CASE WHEN state=$1 THEN 0 ELSE 1 END,id DESC`, s.generations()), vector.StateBuilding, vector.StateActive)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT gen_key, state FROM %s ORDER BY CASE WHEN state=$1 THEN 0 ELSE 1 END,id DESC`, s.generations()), vector.StateBuilding)
 	if err != nil {
 		return nil, err
 	}
@@ -125,10 +125,16 @@ func (s *Store[K, G]) LiveGenerations(ctx context.Context) ([]G, error) {
 	var gens []G
 	for rows.Next() {
 		var gen G
-		if err := rows.Scan(&gen); err != nil {
+		var state vector.State
+		if err := rows.Scan(&gen, &state); err != nil {
 			return nil, err
 		}
-		gens = append(gens, gen)
+		if !validState(state) {
+			return nil, fmt.Errorf("generation %v has unknown state %q", gen, state)
+		}
+		if state == vector.StateBuilding || state == vector.StateActive {
+			gens = append(gens, gen)
+		}
 	}
 	return gens, rows.Err()
 }

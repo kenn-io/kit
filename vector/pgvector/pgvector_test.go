@@ -307,3 +307,18 @@ func TestHalfvecPreservesDirectionAcrossFloat32Scales(t *testing.T) {
 		assert.InDelta(t, -1, hits[2].Score, 0.001)
 	}
 }
+
+func TestSearchRejectsUnknownGenerationState(t *testing.T) {
+	db, store := setup(t)
+	ctx := t.Context()
+	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
+	_, err := db.ExecContext(ctx, `UPDATE vectors_generations SET state='future' WHERE gen_key='a'`)
+	require.NoError(t, err)
+	calls := 0
+	_, err = vector.Search(ctx, store, "cat", func(string) vector.EncodeFunc { return encoder(2, &calls) }, vector.SearchOptions{})
+	require.ErrorContains(t, err, "future")
+	assert.Zero(t, calls)
+	_, _, err = store.ActiveGeneration(ctx)
+	require.ErrorContains(t, err, "future")
+	require.ErrorContains(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive), "future")
+}

@@ -26,6 +26,9 @@ func (s *Store[K, G]) lookup(ctx context.Context, q interface {
 	if err != nil {
 		return 0, 0, "", err
 	}
+	if !validState(state) {
+		return 0, 0, "", fmt.Errorf("generation %v has unknown state %q", gen, state)
+	}
 	return id, dim, state, nil
 }
 
@@ -59,6 +62,9 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 		err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,fingerprint,dimension,state FROM %s WHERE gen_key=$1 FOR UPDATE`, s.generations()), gen).Scan(&id, &fingerprint, &dim, &current)
 		if err != nil {
 			return err
+		}
+		if !validState(current) {
+			return fmt.Errorf("generation %v has unknown state %q", gen, current)
 		}
 		if current == vector.StateRetired {
 			if state == current {
@@ -170,13 +176,27 @@ func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
 
 // ActiveGeneration returns the newest active generation, if one exists.
 func (s *Store[K, G]) ActiveGeneration(ctx context.Context) (vector.GenerationInfo[G], bool, error) {
-	var info vector.GenerationInfo[G]
-	err := s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT gen_key, fingerprint, dimension, state FROM %s WHERE state=$1 ORDER BY id DESC LIMIT 1`, s.generations()), vector.StateActive).Scan(&info.Key, &info.Fingerprint, &info.Dimension, &info.State)
-	if errors.Is(err, sql.ErrNoRows) {
-		return info, false, nil
-	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT gen_key, fingerprint, dimension, state FROM %s ORDER BY id DESC`, s.generations()))
 	if err != nil {
-		return info, false, fmt.Errorf("read active generation: %w", err)
+		return vector.GenerationInfo[G]{}, false, fmt.Errorf("read generations: %w", err)
 	}
-	return info, true, nil
+	defer func() { _ = rows.Close() }()
+	var active vector.GenerationInfo[G]
+	var found bool
+	for rows.Next() {
+		var info vector.GenerationInfo[G]
+		if err := rows.Scan(&info.Key, &info.Fingerprint, &info.Dimension, &info.State); err != nil {
+			return active, false, fmt.Errorf("scan generation: %w", err)
+		}
+		if !validState(info.State) {
+			return active, false, fmt.Errorf("generation %v has unknown state %q", info.Key, info.State)
+		}
+		if !found && info.State == vector.StateActive {
+			active, found = info, true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return active, false, fmt.Errorf("read generations: %w", err)
+	}
+	return active, found, nil
 }
