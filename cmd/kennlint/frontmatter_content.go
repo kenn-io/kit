@@ -33,11 +33,20 @@ func stripProvenance(header map[string]any) {
 
 // canonicalHTML renders Markdown so that edits which render the same compare
 // equal. Whitespace runs in prose text, including soft line breaks, become one
-// space; code, raw HTML, attributes and hard breaks render untouched.
+// space; code, raw HTML, attributes and hard breaks render untouched. Text
+// in a block containing inline HTML is preserved conservatively.
 func canonicalHTML(src []byte) string {
 	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
 	root := parser.New(parser.WithExtensions(extension.NewGFMParser())).Parse(src)
 	_ = ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering {
+			// Inline HTML tags are siblings of their text, including nested Markdown.
+			for child := range n.Children() {
+				if _, ok := child.(*ast.RawHTML); ok {
+					return ast.WalkSkipChildren, nil
+				}
+			}
+		}
 		if t, ok := n.(*ast.Text); ok && entering {
 			value := t.Value.Value(src)
 			if t.SoftLineBreak() {
