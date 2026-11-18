@@ -365,11 +365,13 @@ func TestPostHogReporterCaptureUsesAnonymousDistinctIDAndPrivacyDefaults(t *test
 		allowedEvents: testAllowedTelemetryEvents(),
 		enabled:       true,
 	}
+	reporter.allowedEvents["daemon_started"]["telemetry_consent"] = AllowBool
 
 	err := reporter.Capture("daemon_started", map[string]any{
 		"$geoip_disable":          false,
 		"$process_person_profile": true,
 		"application":             "caller-app",
+		"telemetry_consent":       false,
 		"distinct_id":             "user-provided",
 		"path":                    "/Users/example/private",
 		"project_count":           3,
@@ -389,6 +391,7 @@ func TestPostHogReporterCaptureUsesAnonymousDistinctIDAndPrivacyDefaults(t *test
 	assert.NotContains(capture.Properties, "view")
 	assert.False(capture.Properties["$process_person_profile"].(bool))
 	assert.True(capture.Properties["$geoip_disable"].(bool))
+	assert.Equal(true, capture.Properties["telemetry_consent"])
 	assert.Equal("kata", capture.Properties["application"])
 	assert.Equal("v-test", capture.Properties["version"])
 	assert.Equal("abc123", capture.Properties["commit"])
@@ -458,12 +461,11 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 		Commit:      "abc123",
 	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		return client, nil
-	}, WithAllowedEvent("event_without_properties", AllowProperty("telemetry_consent", AllowBool)))
+	}, WithAllowedEvent("event_without_properties"))
 	require.NoError(err)
 
 	err = reporter.Capture("event_without_properties", map[string]any{
-		"private_path":      "project-a/private",
-		"telemetry_consent": false,
+		"private_path": "project-a/private",
 	})
 	require.NoError(err)
 
@@ -471,7 +473,6 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 	require.True(ok)
 	assert.Equal("event_without_properties", capture.Event)
 	assert.NotContains(capture.Properties, "private_path")
-	assert.Equal(true, capture.Properties["telemetry_consent"])
 	assert.Equal("kata", capture.Properties["application"])
 	assert.Equal("daemon", capture.Properties["source"])
 	assert.Equal("v1.2.3", capture.Properties["version"])
