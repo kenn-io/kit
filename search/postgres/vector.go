@@ -37,6 +37,8 @@ type VectorRequest struct {
 	// Query is a textual vector such as "[1,0]" or a driver value PostgreSQL
 	// accepts as vector.
 	Query           any
+	VectorType      string
+	TypeSchema      string
 	RevisionColumn  string
 	SourcePredicate sqlquery.Predicate
 	ExtraSourceCols []sqlquery.Column
@@ -87,8 +89,22 @@ func BuildVector(req VectorRequest) (sqlquery.Query, error) {
 		return sqlquery.Query{}, errors.New("postgres: source predicate args require SQL")
 	}
 
+	vectorType := req.VectorType
+	if vectorType == "" {
+		vectorType = "vector"
+	}
+	if vectorType != "vector" && vectorType != "halfvec" {
+		return sqlquery.Query{}, fmt.Errorf("postgres: invalid vector type %q", vectorType)
+	}
+	if req.TypeSchema != "" {
+		if err := checkIdentifier("type schema", req.TypeSchema); err != nil {
+			return sqlquery.Query{}, err
+		}
+		vectorType = quote(req.TypeSchema) + "." + vectorType
+		op = "OPERATOR(" + quote(req.TypeSchema) + "." + op + ")"
+	}
 	col := "d." + quote(req.Mapping.VectorColumn)
-	distance := col + " " + op + " $1::vector"
+	distance := col + " " + op + " $1::" + vectorType
 	projection := []string{"d." + quote(req.Mapping.SourceKey) + " AS doc_key"}
 	if req.RevisionColumn != "" {
 		projection = append(projection, "d."+quote(req.RevisionColumn)+" AS revision")

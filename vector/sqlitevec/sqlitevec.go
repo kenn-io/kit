@@ -35,16 +35,14 @@ import (
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// State is a generation's role in the active/building lifecycle. Only
-// building and active generations are searched; building sorts ahead of
-// active so Merge keeps the newer generation's hit on overlap.
-type State string
+// State and its values are shared with other vector stores.
+type State = vector.State
 
 const (
-	StatePending  State = "pending"
-	StateBuilding State = "building"
-	StateActive   State = "active"
-	StateRetired  State = "retired"
+	StatePending  = vector.StatePending
+	StateBuilding = vector.StateBuilding
+	StateActive   = vector.StateActive
+	StateRetired  = vector.StateRetired
 )
 
 // Schema names the caller's documents table and the prefix for the

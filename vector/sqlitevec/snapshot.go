@@ -14,12 +14,7 @@ import (
 )
 
 // GenerationInfo describes one registered generation.
-type GenerationInfo[G comparable] struct {
-	Key         G
-	Fingerprint string
-	Dimension   int
-	State       State
-}
+type GenerationInfo[G comparable] = vector.GenerationInfo[G]
 
 // Generations lists every registered generation in creation order,
 // whatever its state. LiveGenerations remains the search-time view.

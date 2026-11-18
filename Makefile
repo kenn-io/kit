@@ -92,3 +92,7 @@ actions-lock-check: gh-actions-lock-install
 .PHONY: test-embedlocal
 test-embedlocal:
 	go test -race ./embedlocal
+
+.PHONY: test-vector-postgres
+test-vector-postgres:
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/pgvector ./search/postgres ./vector/sqlitevec" -- -count=1

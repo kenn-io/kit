@@ -218,3 +218,8 @@ pipeline. Preserve these invariants when changing it.
   KNN slots; replacement happens at the next `SaveVectors`, and deletion
   cleanup (`sqlitevec.DeleteVectors`) is the caller's responsibility
   when removing documents.
+
+## PostgreSQL storage
+
+- `pgvector` considers a document current when its generation stamp matches
+  its revision. `New` runs no DDL. Both stores share lifecycle types in `vector`.
