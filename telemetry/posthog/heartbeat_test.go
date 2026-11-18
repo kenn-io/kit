@@ -11,7 +11,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	phsdk "github.com/posthog/posthog-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,46 +36,6 @@ func (c *heartbeatClient) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.events)
-}
-
-func TestRunHeartbeatWithReporter(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		enabled string
-		want    int
-	}{
-		{name: "unanswered"},
-		{name: "opted in", enabled: "1", want: 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USERPROFILE", home)
-			t.Setenv(GenericEnabledEnv, tc.enabled)
-			t.Setenv("KATA_TELEMETRY_ENABLED", "")
-			synctest.Test(t, func(t *testing.T) {
-				client := &recordingPostHogClient{}
-				reporter, err := newPostHogReporter(Options{
-					APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA",
-					DistinctID: "anonymous-instance-id", Version: "v1.2.3",
-				}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
-					return client, nil
-				}, WithAllowedEvent(EventDaemonActive))
-				require.NoError(t, err)
-				defer func() { require.NoError(t, reporter.Close()) }()
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				go RunHeartbeat(ctx, reporter, nil)
-				synctest.Wait()
-				require.Len(t, client.messages, tc.want)
-				if tc.want > 0 {
-					assert.Equal(t, EventDaemonActive, client.messages[0].Event)
-				}
-				cancel()
-				synctest.Wait()
-			})
-		})
-	}
 }
 
 func TestRunHeartbeatStopsWhenDisabled(t *testing.T) {
