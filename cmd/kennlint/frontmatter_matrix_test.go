@@ -191,6 +191,7 @@ func TestOKFFixFiles(t *testing.T) {
 	assert.Equal(t, "Guide", b.fields["type"].Value)
 	assert.Equal(t, "Useful description", b.fields["description"].Value)
 	assert.Equal(t, "human:test", mappingField(b.fields["generated"], "by").Value)
+	assert.Regexp(t, `(?m)^generated: \{by: [^,]+, at: "[0-9T:Z-]+"\}\r?$`, string(data))
 	for _, flag := range []string{"-by", "-description"} {
 		out.Reset()
 		errout.Reset()

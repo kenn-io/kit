@@ -27,6 +27,8 @@ See `docs/guides/adopting-kennlint.md` for the consumer workflow.
 
 ## Invariants
 
+- Source validation checks declared metadata only; never fetch resources or
+  infer source-citation intent from ordinary Markdown footnotes.
 - Managed index regeneration rewrites only the marked block.
 - Every analyzer is type-aware through `go/analysis` and proves its behavior
   with `analysistest` fixtures under `testdata/`, including negative cases.

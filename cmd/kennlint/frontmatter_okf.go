@@ -25,7 +25,7 @@ func (r *frontmatterRules) Set(s string) error {
 	if !ok || glob == "" || kind == "" {
 		return fmt.Errorf("invalid type rule %q: expected GLOB=TYPE", s)
 	}
-	var e frontmatterExcludes
+	e := frontmatterExcludes{}
 	if err := e.Set(glob); err != nil {
 		return err
 	}
@@ -68,7 +68,7 @@ func stringNode(s string) *yaml.Node {
 }
 
 func (b *frontmatterBlock) okfProblems() []string {
-	var p []string
+	p := sourcesProblems(b.fields["sources"], "sources")
 	if b.fields["last_edited"] != nil {
 		p = append(p, "last_edited is replaced by generated.at; remove it")
 	}
@@ -90,12 +90,9 @@ func validStatus(n *yaml.Node) bool {
 }
 
 // generatedProblems checks a generated mapping; the skill profile also
-// requires block style and a quoted at.
+// requires a string timestamp for loader compatibility.
 func generatedProblems(g *yaml.Node, path string, skill bool) []string {
-	if g != nil && (g.Kind != yaml.MappingNode || (skill && g.Style&yaml.FlowStyle != 0)) {
-		if skill {
-			return []string{path + " must be a block mapping"}
-		}
+	if g != nil && g.Kind != yaml.MappingNode {
 		return []string{path + " must be a mapping"}
 	}
 	var p []string
@@ -104,7 +101,7 @@ func generatedProblems(g *yaml.Node, path string, skill bool) []string {
 	}
 	at := mappingField(g, "at")
 	_, validAt := parseTimestamp(at)
-	if !validAt {
+	if at == nil || !validAt {
 		p = append(p, path+".at must be an RFC 3339 UTC timestamp ending in Z")
 	} else if skill && at.Tag != "!!str" {
 		p = append(p, path+`.at must be a quoted string, for example "2026-11-17T19:00:00Z"`)
@@ -135,6 +132,7 @@ func fillGenerated(parent *yaml.Node, by, path string, complete bool) (bool, map
 		g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		appendField(parent, "generated", g)
 	}
+	g.Style |= yaml.FlowStyle
 	appendField(g, "by", stringNode(by))
 	appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
 	return true, nil

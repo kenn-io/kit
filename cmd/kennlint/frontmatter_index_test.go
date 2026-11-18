@@ -67,7 +67,7 @@ func TestManagedIndexFlow(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
-	repo.WriteFile("docs/index.md", "# Index\n"+indexBegin+"\n"+indexEnd+"\nTail\n")
+	repo.WriteFile("docs/index.md", "# Index\n"+indexBegin+"\n- [Missing](gone.md) - Gone\n"+indexEnd+"\n[Future](/not-yet-written.md)\n")
 	repo.WriteFile("docs/a.md", goodFrontmatter)
 	repo.WriteFile("docs/log.md", "no header\n")
 	repo.WriteFile("docs/README.md", goodFrontmatter)
@@ -97,6 +97,8 @@ func TestManagedIndexFlow(t *testing.T) {
 	n, diagnostic = run("-fix", "docs/index.md")
 	require.Zero(t, n, diagnostic)
 	assert.Contains(t, read(), "- [A page](a.md) - A useful page.")
+	assert.NotContains(t, read(), "gone.md")
+	assert.Contains(t, read(), "[Future](/not-yet-written.md)")
 	for _, name := range []string{"log.md", "README.md", "hidden.md", "SKILL.md", "resource.md", "old.md", "untracked.md"} {
 		assert.NotContains(t, read(), name)
 	}

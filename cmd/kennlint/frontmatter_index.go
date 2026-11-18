@@ -116,13 +116,14 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 		if err != nil {
 			return nil, &indexPageError{file, err}
 		}
-		if status := b.fields["status"]; validString(status) && status.Value == "deprecated" {
+		if status := b.fields["status"]; status != nil && validString(status) && status.Value == "deprecated" {
 			continue
 		}
-		if !validString(b.fields["title"]) || !validString(b.fields["description"]) {
+		title, description := b.fields["title"], b.fields["description"]
+		if title == nil || description == nil || !validString(title) || !validString(description) {
 			return nil, &indexPageError{file, errors.New("index page requires a valid title and description")}
 		}
-		pages = append(pages, indexPage{rel, b.fields["title"].Value, b.fields["description"].Value})
+		pages = append(pages, indexPage{rel, title.Value, description.Value})
 	}
 	return pages, nil
 }
