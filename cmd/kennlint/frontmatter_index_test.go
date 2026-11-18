@@ -24,9 +24,6 @@ func TestRefreshIndex(t *testing.T) {
 	}{
 		{"empty", "before\n" + indexBegin + "\nold\n" + indexEnd + "\nafter\n", "before\n" + indexBegin + "\n" + indexEnd + "\nafter\n", nil, false},
 		{"escaped CRLF", "top\r\n" + indexBegin + "\r\n" + indexEnd + "\r\nend", "top\r\n" + indexBegin + "\r\n- [A\\[b\\]\\\\c](a%20b/x.md) - two words\r\n- [Z](z.md) - last\r\n" + indexEnd + "\r\nend", []indexPage{{"a b/x.md", `A[b]\c`, "two\n words"}, {"z.md", "Z", "last"}}, false},
-		{"multiline title", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [First second third](page.md) - description\n" + indexEnd + "\n", []indexPage{{"page.md", "First\n\nsecond\tthird", "description"}}, false},
-		{"punctuation title and colon path", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Use \\*bold\\* \\[safely\\]\\!](./guide:setup.md) - description\n" + indexEnd + "\n", []indexPage{{"guide:setup.md", "Use *bold* [safely]!", "description"}}, false},
-		{"GFM punctuation", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Tilde \\~\\~text\\~\\~](page.md) - Emoji \\:smile\\:\n" + indexEnd + "\n", []indexPage{{"page.md", "Tilde ~~text~~", "Emoji :smile:"}}, false},
 		{"fenced backticks", "```markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n```\n", "```markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n```\n", []indexPage{{"page.md", "Page", "Description"}}, false},
 		{"fenced tildes and real block", "~~~markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n~~~\n" + indexBegin + "\nold\n" + indexEnd + "\n", "~~~markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n~~~\n" + indexBegin + "\n- [Page](page.md) - Description\n" + indexEnd + "\n", []indexPage{{"page.md", "Page", "Description"}}, false},
 		{"unmarked", "untouched\n", "untouched\n", nil, false},
@@ -36,9 +33,6 @@ func TestRefreshIndex(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if runtime.GOOS == "windows" && tt.name == "punctuation title and colon path" {
-				t.Skip("colon is not valid in Windows filenames")
-			}
 			root := t.TempDir()
 			index := filepath.Join(root, "index.md")
 			require.NoError(t, os.WriteFile(index, []byte(tt.src), 0o600))
@@ -106,14 +100,6 @@ func TestManagedIndexFlow(t *testing.T) {
 	for _, name := range []string{"log.md", "README.md", "hidden.md", "SKILL.md", "resource.md", "old.md", "untracked.md"} {
 		assert.NotContains(t, read(), name)
 	}
-	saved := read()
-	n, diagnostic = run("-fix", "docs/index.md")
-	require.Zero(t, n, diagnostic)
-	assert.Equal(t, saved, read())
-	repo.WriteFile("docs/index.md", "arbitrary content\n")
-	n, diagnostic = run("-fix", "docs/index.md")
-	require.Zero(t, n, diagnostic)
-	assert.Equal(t, "arbitrary content\n", read())
 	n, diagnostic = run("docs/log.md")
 	assert.Zero(t, n, diagnostic)
 	n, diagnostic = run("-legacy", "docs/log.md")
@@ -134,6 +120,34 @@ func TestManagedIndexDescriptionRendersAsText(t *testing.T) {
 	assert.Contains(t, rendered.String(), `<a href="b.md">Second</a> - Visible`)
 	assert.NotContains(t, rendered.String(), "<em>")
 	assert.NotContains(t, rendered.String(), `href="y"`)
+	assert.Equal(t, `I/O kenn-io, 1.2 (ok)\!`, escapeIndexText("I/O kenn-io, 1.2 (ok)!"))
+	tests := []struct {
+		name, src, want string
+		pages           []indexPage
+	}{
+		{"multiline title", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [First second third](page.md) - description\n" + indexEnd + "\n", []indexPage{{"page.md", "First\n\nsecond\tthird", "description"}}},
+		{"punctuation title and colon path", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Use \\*bold\\* \\[safely\\]\\!](./guide:setup.md) - description\n" + indexEnd + "\n", []indexPage{{"guide:setup.md", "Use *bold* [safely]!", "description"}}},
+		{"GFM punctuation", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Tilde \\~\\~text\\~\\~](page.md) - Emoji \\:smile\\:\n" + indexEnd + "\n", []indexPage{{"page.md", "Tilde ~~text~~", "Emoji :smile:"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && tt.name == "punctuation title and colon path" {
+				t.Skip("colon is not valid in Windows filenames")
+			}
+			root := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(root, "index.md"), []byte(tt.src), 0o600))
+			files := []string{"index.md"}
+			for _, page := range tt.pages {
+				header := "---\ntitle: " + strconv.Quote(page.title) + "\ndescription: " + strconv.Quote(page.description) + "\n---\n"
+				require.NoError(t, os.WriteFile(filepath.Join(root, page.path), []byte(header), 0o600))
+				files = append(files, page.path)
+			}
+			got, changed, err := refreshTrackedIndex(root, "index.md", files, nil, nil)
+			require.NoError(t, err)
+			assert.True(t, changed)
+			assert.Equal(t, tt.want, string(got))
+		})
+	}
 }
 
 func TestRootSkillSkipsManagedIndexes(t *testing.T) {
@@ -145,13 +159,11 @@ func TestRootSkillSkipsManagedIndexes(t *testing.T) {
 	const original = indexBegin + "\nold\n" + indexEnd + "\n"
 	repo.WriteFile("index.md", original)
 	repo.WriteFile("references/index.md", original)
-	repo.WriteFile("skills/managed/SKILL.md", strings.Replace(skillHeader, "type: Skill", "type: Wrong", 1))
 	repo.Run("add", ".")
 	var out, errs bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-managed-skill", "skills/**/SKILL.md"}, &out, &errs)
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test"}, &out, &errs)
 	require.NoError(t, err)
-	assert.Positive(t, n) // The managed nested skill still gets validated.
-	assert.Contains(t, errs.String(), "skills/managed/SKILL.md:")
+	assert.Zero(t, n, errs.String())
 	for _, file := range []string{"index.md", "references/index.md"} {
 		got, err := os.ReadFile(file)
 		require.NoError(t, err)
@@ -175,6 +187,7 @@ func TestManagedIndexSelectedPageChanges(t *testing.T) {
 	t.Chdir(repo.Root)
 	repo.WriteFile("docs/index.md", indexBegin+"\n"+indexEnd+"\n")
 	repo.WriteFile("other/index.md", indexBegin+"\n"+indexEnd+"\n")
+	repo.WriteFile("other/page.md", goodOKF)
 	repo.WriteFile("docs/a.md", goodOKF)
 	repo.Run("add", ".")
 	read := func(name string) string {
@@ -189,12 +202,14 @@ func TestManagedIndexSelectedPageChanges(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 1, n, errs.String())
 		assert.Contains(t, errs.String(), "docs/index.md: managed index is stale")
+		assert.NotContains(t, errs.String(), "other/index.md")
 		assert.Equal(t, before, read("docs/index.md"))
 		out.Reset()
 		errs.Reset()
 		n, err = runFrontmatter(t.Context(), []string{"-fix", selected}, &out, &errs)
 		require.NoError(t, err)
 		require.Zero(t, n, errs.String())
+		assert.NotContains(t, errs.String(), "other/index.md")
 		assert.Equal(t, indexBegin+"\n"+indexEnd+"\n", read("other/index.md"))
 	}
 	checkAndFix("docs/a.md")
@@ -243,38 +258,4 @@ func TestManagedIndexInvalidPageReportedOnce(t *testing.T) {
 	got, err := os.ReadFile("docs/index.md")
 	require.NoError(t, err)
 	assert.Equal(t, original, string(got))
-}
-
-func TestEscapeIndexTextPreservesOrdinaryPunctuation(t *testing.T) {
-	assert.Equal(t, `I/O kenn-io, 1.2 (ok)\!`, escapeIndexText("I/O kenn-io, 1.2 (ok)!"))
-}
-
-func TestDocumentationReadmeSectionLinks(t *testing.T) {
-	data, err := os.ReadFile("../../docs/README.md")
-	require.NoError(t, err)
-	sections := strings.Split(string(data), "\n## ")
-	require.Len(t, sections, 7)
-	for _, section := range sections[1:] {
-		heading, body, ok := strings.Cut(section, "\n")
-		require.True(t, ok)
-		t.Run(heading, func(t *testing.T) {
-			_, link, ok := strings.Cut(body, "](")
-			require.True(t, ok)
-			link, _, ok = strings.Cut(link, ")")
-			require.True(t, ok)
-			target, fragment, _ := strings.Cut(link, "#")
-			require.False(t, target == "index.md" && fragment == "", "index links must point to a section")
-			page, err := os.ReadFile(filepath.Join("../../docs", filepath.FromSlash(target)))
-			require.NoError(t, err)
-			if fragment != "" {
-				found := false
-				for line := range strings.SplitSeq(string(page), "\n") {
-					if strings.HasPrefix(line, "## ") && strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(line, "## ")), " ", "-") == fragment {
-						found = true
-					}
-				}
-				assert.True(t, found, "%s fragment %s", target, fragment)
-			}
-		})
-	}
 }

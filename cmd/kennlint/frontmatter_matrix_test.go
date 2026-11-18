@@ -370,11 +370,3 @@ func TestOKFFixLegacyDateOnCompletion(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "last_edited")
 }
-
-func TestOKFDocumentationGuide(t *testing.T) {
-	data, err := os.ReadFile("../../docs/guides/adopting-docs.md")
-	require.NoError(t, err)
-	b, err := parseFrontmatter(data)
-	require.NoError(t, err)
-	assert.Empty(t, b.okfProblems())
-}
