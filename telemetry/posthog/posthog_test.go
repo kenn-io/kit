@@ -462,7 +462,7 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 	require.NoError(err)
 
 	err = reporter.Capture("event_without_properties", map[string]any{
-		"private_path":      "/Users/example/private",
+		"private_path":      "project-a/private",
 		"telemetry_consent": false,
 	})
 	require.NoError(err)
