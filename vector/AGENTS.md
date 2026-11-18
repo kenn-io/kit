@@ -224,3 +224,6 @@ pipeline. Preserve these invariants when changing it.
 - `pgvector.New` attaches without DDL; `Install` owns setup. Source keys must
   be unique, and revisions must change when content is replaced. Deleting a
   source row cascades to its stamps and vectors; `TRUNCATE` requires `CASCADE`.
+- Re-ensuring an existing generation with the same model needs no DDL.
+- Scoped predicates run before the candidate limit, alongside freshness.
+- A reclaimed generation contributes no search hits.

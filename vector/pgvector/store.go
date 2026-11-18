@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"go.kenn.io/kit/search/postgres"
 	"go.kenn.io/kit/search/sqlquery"
@@ -141,12 +142,20 @@ func (s *Store[K, G]) LiveGenerations(ctx context.Context) ([]G, error) {
 
 // QueryGeneration returns current chunk hits ordered by cosine similarity.
 func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.Vector, limit int) ([]vector.Hit[K], error) {
+	return s.QueryGenerationWithPredicate(ctx, gen, query, limit, sqlquery.Predicate{})
+}
+
+// QueryGenerationWithPredicate is QueryGeneration with a caller filter that applies before the
+// candidate limit, together with the freshness check. The filter's SQL refers to chunk rows as d
+// (d.doc_key, d.chunk_index) and binds values with ? placeholders. A retired generation whose
+// storage was reclaimed has no hits.
+func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, query vector.Vector, limit int, filter sqlquery.Predicate) ([]vector.Hit[K], error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	id, dim, _, err := s.lookup(ctx, tx, gen, false)
+	id, dim, state, err := s.lookup(ctx, tx, gen, false)
 	if err != nil {
 		return nil, err
 	}
@@ -156,36 +165,28 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 	if limit <= 0 {
 		return nil, errors.New("limit must be positive")
 	}
+	if state == vector.StateRetired {
+		if exists, err := s.storageExists(ctx, tx, id); err != nil || !exists {
+			return nil, err
+		}
+	}
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL hnsw.ef_search = %d`, min(max(limit, 40), 1000))); err != nil {
 		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
 		return nil, err
 	}
-	value, err := halfvec(query)
-	if err != nil {
-		return nil, fmt.Errorf("query: %w", err)
-	}
-	predicate := fmt.Sprintf(`EXISTS (SELECT 1 FROM %s src JOIN %s stamp ON stamp.generation_id=? AND stamp.doc_key=src.%s WHERE src.%s=d.doc_key AND %s)`, quote(s.schema.DocsTable), s.stamps(), quote(s.schema.IDColumn), quote(s.schema.IDColumn), s.covered("src", "stamp"))
-	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id), SourceKey: "doc_key", VectorColumn: "embedding"}, Query: value, VectorType: "halfvec", TypeSchema: s.ext, SourcePredicate: sqlquery.Predicate{SQL: predicate, Args: []any{id}}, ExtraSourceCols: []sqlquery.Column{{Name: "chunk_index", As: "chunk_index"}}, CandidateLimit: limit})
+	q, err := s.candidateQuery(id, query, limit, filter)
 	if err != nil {
 		return nil, err
 	}
-	q.SQL = fmt.Sprintf(`SELECT c.doc_key,stamp.revision,c.score,c.chunk_index FROM (%s) c JOIN %s stamp ON stamp.generation_id=$2 AND stamp.doc_key=c.doc_key ORDER BY c.score DESC,c.doc_key`, q.SQL, s.stamps())
 	rows, err := tx.QueryContext(ctx, q.SQL, q.Args...)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var hits []vector.Hit[K]
-	for rows.Next() {
-		var hit vector.Hit[K]
-		if err := rows.Scan(&hit.Doc, &hit.Revision, &hit.Score, &hit.ChunkIndex); err != nil {
-			return nil, err
-		}
-		hits = append(hits, hit)
-	}
-	if err = rows.Err(); err != nil {
+	hits, err := scanHits[K](rows)
+	if err != nil {
 		return nil, err
 	}
 	if err = rows.Close(); err != nil {
@@ -195,4 +196,35 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 		return nil, err
 	}
 	return hits, nil
+}
+
+// candidateQuery selects the nearest fresh chunks that pass filter, then joins their stamp revision.
+func (s *Store[K, G]) candidateQuery(id int64, query vector.Vector, limit int, filter sqlquery.Predicate) (sqlquery.Query, error) {
+	value, err := halfvec(query)
+	if err != nil {
+		return sqlquery.Query{}, fmt.Errorf("query: %w", err)
+	}
+	predicate := sqlquery.Predicate{SQL: fmt.Sprintf(`EXISTS (SELECT 1 FROM %s src JOIN %s stamp ON stamp.generation_id=? AND stamp.doc_key=src.%s WHERE src.%s=d.doc_key AND %s)`, quote(s.schema.DocsTable), s.stamps(), quote(s.schema.IDColumn), quote(s.schema.IDColumn), s.covered("src", "stamp")), Args: []any{id}}
+	if strings.TrimSpace(filter.SQL) != "" {
+		predicate.SQL = "(" + predicate.SQL + ") AND (" + filter.SQL + ")"
+	}
+	predicate.Args = append(predicate.Args, filter.Args...)
+	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id), SourceKey: "doc_key", VectorColumn: "embedding"}, Query: value, VectorType: "halfvec", TypeSchema: s.ext, SourcePredicate: predicate, ExtraSourceCols: []sqlquery.Column{{Name: "chunk_index", As: "chunk_index"}}, CandidateLimit: limit})
+	if err != nil {
+		return sqlquery.Query{}, err
+	}
+	q.SQL = fmt.Sprintf(`SELECT c.doc_key,stamp.revision,c.score,c.chunk_index FROM (%s) c JOIN %s stamp ON stamp.generation_id=$2 AND stamp.doc_key=c.doc_key ORDER BY c.score DESC,c.doc_key`, q.SQL, s.stamps())
+	return q, nil
+}
+
+func scanHits[K comparable](rows *sql.Rows) ([]vector.Hit[K], error) {
+	var hits []vector.Hit[K]
+	for rows.Next() {
+		var hit vector.Hit[K]
+		if err := rows.Scan(&hit.Doc, &hit.Revision, &hit.Score, &hit.ChunkIndex); err != nil {
+			return nil, err
+		}
+		hits = append(hits, hit)
+	}
+	return hits, rows.Err()
 }

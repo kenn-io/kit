@@ -40,7 +40,78 @@ func validState(state vector.State) bool {
 	return false
 }
 
+type generationRow struct {
+	id          int64
+	fingerprint string
+	dim         int
+	state       vector.State
+}
+
+// lockGeneration reads and locks a generation row. It wraps ErrGenerationNotFound when none exists.
+func (s *Store[K, G]) lockGeneration(ctx context.Context, tx *sql.Tx, gen G) (generationRow, error) {
+	var r generationRow
+	err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,fingerprint,dimension,state FROM %s WHERE gen_key=$1 FOR UPDATE`, s.generations()), gen).Scan(&r.id, &r.fingerprint, &r.dim, &r.state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, fmt.Errorf("generation %v: %w", gen, vector.ErrGenerationNotFound)
+	}
+	if err == nil && !validState(r.state) {
+		err = fmt.Errorf("generation %v has unknown state %q", gen, r.state)
+	}
+	return r, err
+}
+
+// insertGeneration adds a missing generation. A concurrent insert is read back instead.
+func (s *Store[K, G]) insertGeneration(ctx context.Context, tx *sql.Tx, gen G, model vector.Generation, state vector.State) (generationRow, error) {
+	r := generationRow{fingerprint: model.Fingerprint(), dim: model.Dimensions, state: state}
+	err := tx.QueryRowContext(ctx, fmt.Sprintf(`INSERT INTO %s (gen_key,fingerprint,dimension,state) VALUES ($1,$2,$3,$4) ON CONFLICT(gen_key) DO NOTHING RETURNING id`, s.generations()), gen, r.fingerprint, r.dim, state).Scan(&r.id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return s.lockGeneration(ctx, tx, gen)
+	}
+	return r, err
+}
+
+// reuseGeneration checks an existing row against the request and records the requested state.
+// done is true when nothing else is needed.
+func (s *Store[K, G]) reuseGeneration(ctx context.Context, tx *sql.Tx, gen G, r generationRow, model vector.Generation, state vector.State) (done bool, err error) {
+	if r.state == vector.StateRetired {
+		if state == r.state {
+			return true, nil
+		}
+		return false, vector.ErrRetired
+	}
+	if r.fingerprint != model.Fingerprint() || r.dim != model.Dimensions {
+		return false, fmt.Errorf("generation %v has different model", gen)
+	}
+	if r.state == state {
+		return false, nil
+	}
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2`, s.generations()), state, r.id)
+	return false, err
+}
+
+func (s *Store[K, G]) storageExists(ctx context.Context, tx *sql.Tx, id int64) (exists bool, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, s.chunks(id)).Scan(&exists)
+	return exists, err
+}
+
+// ensureStorage creates a generation's chunk table and HNSW index unless the table exists.
+func (s *Store[K, G]) ensureStorage(ctx context.Context, tx *sql.Tx, id int64, dimensions int) error {
+	if exists, err := s.storageExists(ctx, tx, id); err != nil || exists {
+		return err
+	}
+	var keyType string
+	if err := tx.QueryRowContext(ctx, `SELECT format_type(a.atttypid,a.atttypmod) FROM pg_attribute a WHERE a.attrelid=to_regclass($1) AND a.attname='doc_key' AND a.attnum>0`, s.stamps()).Scan(&keyType); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (doc_key %s NOT NULL REFERENCES %s(%s) ON DELETE CASCADE, chunk_index INTEGER NOT NULL, embedding %s.halfvec(%d) NOT NULL, PRIMARY KEY(doc_key,chunk_index)); CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding %s.halfvec_cosine_ops)`, s.chunks(id), keyType, quote(s.schema.DocsTable), quote(s.schema.IDColumn), quote(s.ext), dimensions, quote(fmt.Sprintf("%s_chunks_g%d_hnsw", s.schema.Prefix, id)), s.chunks(id), quote(s.ext)))
+	if err != nil {
+		return fmt.Errorf("create generation storage: %w", err)
+	}
+	return nil
+}
+
 // EnsureGeneration registers a model and creates its chunk table and HNSW index.
+// An existing generation with the same model needs no sequence value and no DDL.
 func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.Generation, state vector.State) error {
 	if !validState(state) {
 		return fmt.Errorf("invalid generation state %q", state)
@@ -53,41 +124,19 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var id int64
-	var current vector.State
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`INSERT INTO %s (gen_key,fingerprint,dimension,state) VALUES ($1,$2,$3,$4) ON CONFLICT(gen_key) DO NOTHING RETURNING id,state`, s.generations()), gen, model.Fingerprint(), model.Dimensions, state).Scan(&id, &current)
-	if errors.Is(err, sql.ErrNoRows) {
-		var fingerprint string
-		var dim int
-		err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,fingerprint,dimension,state FROM %s WHERE gen_key=$1 FOR UPDATE`, s.generations()), gen).Scan(&id, &fingerprint, &dim, &current)
-		if err != nil {
-			return err
-		}
-		if !validState(current) {
-			return fmt.Errorf("generation %v has unknown state %q", gen, current)
-		}
-		if current == vector.StateRetired {
-			if state == current {
-				return nil
-			}
-			return vector.ErrRetired
-		}
-		if fingerprint != model.Fingerprint() || dim != model.Dimensions {
-			return fmt.Errorf("generation %v has different model", gen)
-		}
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2`, s.generations()), state, id); err != nil {
-			return err
-		}
-	} else if err != nil {
-		return err
+	row, err := s.lockGeneration(ctx, tx, gen)
+	if errors.Is(err, vector.ErrGenerationNotFound) {
+		row, err = s.insertGeneration(ctx, tx, gen, model, state)
 	}
-	var keyType string
-	if err = tx.QueryRowContext(ctx, `SELECT format_type(a.atttypid,a.atttypmod) FROM pg_attribute a WHERE a.attrelid=to_regclass($1) AND a.attname='doc_key' AND a.attnum>0`, s.stamps()).Scan(&keyType); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (doc_key %s NOT NULL REFERENCES %s(%s) ON DELETE CASCADE, chunk_index INTEGER NOT NULL, embedding %s.halfvec(%d) NOT NULL, PRIMARY KEY(doc_key,chunk_index)); CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding %s.halfvec_cosine_ops)`, s.chunks(id), keyType, quote(s.schema.DocsTable), quote(s.schema.IDColumn), quote(s.ext), model.Dimensions, quote(fmt.Sprintf("%s_chunks_g%d_hnsw", s.schema.Prefix, id)), s.chunks(id), quote(s.ext)))
 	if err != nil {
-		return fmt.Errorf("create generation storage: %w", err)
+		return err
+	}
+	done, err := s.reuseGeneration(ctx, tx, gen, row, model, state)
+	if err != nil || done {
+		return err
+	}
+	if err = s.ensureStorage(ctx, tx, row.id, model.Dimensions); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
