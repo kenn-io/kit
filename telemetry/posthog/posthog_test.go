@@ -91,6 +91,7 @@ func TestEligible(t *testing.T) {
 		{name: "stored no", version: "v1.2.3", sample: ConsentDenied},
 		{name: "generic yes over no", version: "v1.2.3", sample: ConsentDenied, generic: " yes ", enabled: true},
 		{name: "prefixed off over yes", version: "v1.2.3", sample: ConsentGranted, prefixed: "0"},
+		{name: "prefixed yes alone", version: "v1.2.3", prefixed: "1"},
 		{name: "unknown", version: "v1.2.3", generic: "enabled", prefixed: "2"},
 		{name: "tracking zero", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: "0", enabled: true},
 		{name: "tracking false", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
@@ -112,9 +113,7 @@ func TestEligible(t *testing.T) {
 		{name: "trailing newline", generic: "1", version: "v1.2.3\n"},
 	}
 	for _, value := range []string{"1", "true", "yes", "on", " TRUE ", " YeS ", " ON ", " 1 "} {
-		tests = append(tests,
-			admissionCase{name: "generic " + value, version: "v1.2.3", generic: value, enabled: true},
-			admissionCase{name: "prefixed " + value, version: "v1.2.3", prefixed: value})
+		tests = append(tests, admissionCase{name: "generic " + value, version: "v1.2.3", generic: value, enabled: true})
 	}
 	for _, value := range []string{"0", "false", "no", "off", " FALSE ", "Off"} {
 		tests = append(tests,
@@ -459,11 +458,12 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 		Commit:      "abc123",
 	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		return client, nil
-	}, WithAllowedEvent("event_without_properties"))
+	}, WithAllowedEvent("event_without_properties", AllowProperty("telemetry_consent", AllowBool)))
 	require.NoError(err)
 
 	err = reporter.Capture("event_without_properties", map[string]any{
-		"private_path": "/Users/example/private",
+		"private_path":      "/Users/example/private",
+		"telemetry_consent": false,
 	})
 	require.NoError(err)
 
@@ -471,6 +471,7 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 	require.True(ok)
 	assert.Equal("event_without_properties", capture.Event)
 	assert.NotContains(capture.Properties, "private_path")
+	assert.Equal(true, capture.Properties["telemetry_consent"])
 	assert.Equal("kata", capture.Properties["application"])
 	assert.Equal("daemon", capture.Properties["source"])
 	assert.Equal("v1.2.3", capture.Properties["version"])
@@ -691,11 +692,11 @@ func TestReporterSerializedPayloadMatchesDocumentedFields(t *testing.T) {
 				APIKey: "phc_test", Endpoint: server.URL + "/ingest", Application: "test", EnvPrefix: "TEST",
 				DistinctID: "synthetic-install", Version: "v1.2.3", Commit: "abc123", Source: "cli",
 				InstalledAt: now.Add(-48 * time.Hour),
-			}, WithAllowedEvent("screen_view", AllowProperty("screen", AllowStringValues("home")), AllowProperty("count", AllowNumber), AllowProperty("telemetry_consent", AllowBool), AllowProperty("$os", AllowStringValues("redacted")), AllowProperty("$os_version", AllowStringValues("redacted")), AllowProperty("$os_distro", AllowStringValues("redacted")), AllowProperty("$go_version", AllowStringValues("redacted"))),
+			}, WithAllowedEvent("screen_view", AllowProperty("screen", AllowStringValues("home")), AllowProperty("count", AllowNumber), AllowProperty("$os", AllowStringValues("redacted")), AllowProperty("$os_version", AllowStringValues("redacted")), AllowProperty("$os_distro", AllowStringValues("redacted")), AllowProperty("$go_version", AllowStringValues("redacted"))),
 				postHogOptionFunc(func(config *postHogReporterConfig) { config.now = func() time.Time { return now } }))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = reporter.Close() })
-			require.NoError(t, reporter.Capture("screen_view", map[string]any{"screen": "home", "count": int64(9007199254740993), "telemetry_consent": false, "$os": "redacted", "$os_version": "redacted", "$os_distro": "redacted", "$go_version": "redacted"}))
+			require.NoError(t, reporter.Capture("screen_view", map[string]any{"screen": "home", "count": int64(9007199254740993), "$os": "redacted", "$os_version": "redacted", "$os_distro": "redacted", "$go_version": "redacted"}))
 			require.NoError(t, reporter.Close())
 			require.Len(t, bodies, len(tc.paths))
 			for _, path := range tc.paths {

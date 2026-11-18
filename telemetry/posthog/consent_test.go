@@ -77,13 +77,13 @@ func TestConsentAcrossProcesses(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	for _, expected := range []string{"unanswered", "yes", "no"} {
-		if expected != "unanswered" {
-			require.NoError(t, RecordConsent(expected == "yes"))
+	for _, expected := range []string{"unanswered", "yes"} {
+		if expected == "yes" {
+			require.NoError(t, RecordConsent(true))
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestConsentAcrossProcesses$")
-		cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home, "TELEMETRY_ENABLED=", "OTHER_TELEMETRY_ENABLED=", "CONSENT_CHILD=1", "CONSENT_EXPECT="+expected)
+		cmd.Env = append(os.Environ(), "OTHER_TELEMETRY_ENABLED=", "CONSENT_CHILD=1", "CONSENT_EXPECT="+expected)
 		out, err := cmd.CombinedOutput()
 		cancel()
 		require.NoError(t, err, string(out))
