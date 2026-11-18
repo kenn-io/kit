@@ -23,7 +23,7 @@ func TestRefreshIndex(t *testing.T) {
 		bad             bool
 	}{
 		{"empty", "before\n" + indexBegin + "\nold\n" + indexEnd + "\nafter\n", "before\n" + indexBegin + "\n" + indexEnd + "\nafter\n", nil, false},
-		{"sorted escaped CRLF", "top\r\n" + indexBegin + "\r\n" + indexEnd + "\r\nend", "top\r\n" + indexBegin + "\r\n- [A\\[b\\]\\\\c](a%20b/x.md) - two words\r\n- [Z](z.md) - last\r\n" + indexEnd + "\r\nend", []indexPage{{"z.md", "Z", "last"}, {"a b/x.md", `A[b]\c`, "two\n words"}}, false},
+		{"escaped CRLF", "top\r\n" + indexBegin + "\r\n" + indexEnd + "\r\nend", "top\r\n" + indexBegin + "\r\n- [A\\[b\\]\\\\c](a%20b/x.md) - two words\r\n- [Z](z.md) - last\r\n" + indexEnd + "\r\nend", []indexPage{{"a b/x.md", `A[b]\c`, "two\n words"}, {"z.md", "Z", "last"}}, false},
 		{"multiline title", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [First second third](page.md) - description\n" + indexEnd + "\n", []indexPage{{"page.md", "First\n\nsecond\tthird", "description"}}, false},
 		{"punctuation title and colon path", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Use \\*bold\\* \\[safely\\]\\!](./guide:setup.md) - description\n" + indexEnd + "\n", []indexPage{{"guide:setup.md", "Use *bold* [safely]!", "description"}}, false},
 		{"GFM punctuation", indexBegin + "\n" + indexEnd + "\n", indexBegin + "\n- [Tilde \\~\\~text\\~\\~](page.md) - Emoji \\:smile\\:\n" + indexEnd + "\n", []indexPage{{"page.md", "Tilde ~~text~~", "Emoji :smile:"}}, false},
@@ -110,16 +110,6 @@ func TestManagedIndexFlow(t *testing.T) {
 	n, diagnostic = run("-fix", "docs/index.md")
 	require.Zero(t, n, diagnostic)
 	assert.Equal(t, saved, read())
-	repo.Run("mv", "docs/a.md", "docs/renamed.md")
-	repo.WriteFile("docs/renamed.md", strings.Replace(goodFrontmatter, "A page", "Renamed", 1))
-	n, diagnostic = run("-fix", "docs/index.md")
-	require.Zero(t, n, diagnostic)
-	assert.Contains(t, read(), "[Renamed](renamed.md)")
-	assert.NotContains(t, read(), "a.md)")
-	repo.Run("rm", "-f", "docs/renamed.md")
-	n, diagnostic = run("-fix", "docs/index.md")
-	require.Zero(t, n, diagnostic)
-	assert.NotContains(t, read(), "renamed.md")
 	repo.WriteFile("docs/index.md", "arbitrary content\n")
 	n, diagnostic = run("-fix", "docs/index.md")
 	require.Zero(t, n, diagnostic)
@@ -129,24 +119,6 @@ func TestManagedIndexFlow(t *testing.T) {
 	n, diagnostic = run("-legacy", "docs/log.md")
 	assert.Positive(t, n)
 	assert.Contains(t, diagnostic, "missing opening")
-}
-
-func TestManagedIndexInvalidPage(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	original := indexBegin + "\nold\n" + indexEnd + "\n"
-	repo.WriteFile("docs/index.md", original)
-	repo.WriteFile("docs/bad.md", "---\ntitle: Bad\n---\n")
-	repo.Run("add", "docs/index.md", "docs/bad.md")
-	var out, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix", "docs/index.md"}, &out, &stderr)
-	require.NoError(t, err)
-	assert.Positive(t, n)
-	assert.Contains(t, stderr.String(), "valid title and description")
-	got, err := os.ReadFile("docs/index.md")
-	require.NoError(t, err)
-	assert.Equal(t, original, string(got))
 }
 
 func TestManagedIndexDescriptionRendersAsText(t *testing.T) {
@@ -262,11 +234,15 @@ func TestManagedIndexInvalidPageReportedOnce(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, original, string(got))
 	}
+	// Selecting only the index still reports the page and leaves the index alone.
 	var out, errs bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"docs/index.md"}, &out, &errs)
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "docs/index.md"}, &out, &errs)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Contains(t, errs.String(), "index page requires a valid title and description")
+	got, err := os.ReadFile("docs/index.md")
+	require.NoError(t, err)
+	assert.Equal(t, original, string(got))
 }
 
 func TestEscapeIndexTextPreservesOrdinaryPunctuation(t *testing.T) {

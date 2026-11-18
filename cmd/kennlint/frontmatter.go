@@ -341,10 +341,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		reported[file] = len(problems) > 0
 	}
 	for _, file := range files {
-		if rootSkill {
-			break
-		}
-		if path.Base(file) != "index.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, indexExcludes) || !frontmatterIndexSelected(file, selected) {
+		if rootSkill || path.Base(file) != "index.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, indexExcludes) || !frontmatterIndexSelected(file, selected) {
 			continue
 		}
 		updated, stale, err := refreshTrackedIndex(root, file, files, skillDirs, excludes)

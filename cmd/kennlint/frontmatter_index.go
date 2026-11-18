@@ -8,8 +8,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"slices"
 	"strings"
+
+	"github.com/yuin/goldmark/v2/ast"
+	"github.com/yuin/goldmark/v2/parser"
+	"github.com/yuin/goldmark/v2/text"
 )
 
 const (
@@ -32,61 +35,36 @@ type indexBlock struct {
 	newline       string
 }
 
+// findIndexBlock reads markers only from HTML blocks, so marker lines inside
+// code, such as a documented example, are never a managed block.
 func findIndexBlock(src []byte) (*indexBlock, error) {
-	lines := bytes.SplitAfter(src, []byte("\n"))
-	begin, end, offset, start, finish := 0, 0, 0, 0, 0
-	newline := "\n"
-	var fence byte
-	fenceLen := 0
-	for _, line := range lines {
-		value := strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r")
-		trimmed := strings.TrimLeft(value, " ")
-		if len(value)-len(trimmed) <= 3 && len(trimmed) > 0 && (trimmed[0] == '`' || trimmed[0] == '~') {
-			marker := trimmed[0]
-			size := 0
-			for size < len(trimmed) && trimmed[size] == marker {
-				size++
-			}
-			if fence == 0 && size >= 3 && (marker != '`' || !strings.ContainsRune(trimmed[size:], '`')) {
-				fence, fenceLen = marker, size
-			} else if fence == marker && size >= fenceLen && strings.Trim(trimmed[size:], " \t") == "" {
-				fence, fenceLen = 0, 0
-			}
-			offset += len(line)
-			continue
-		}
-		if fence != 0 {
-			offset += len(line)
-			continue
-		}
-		switch value {
-		case indexBegin:
-			begin++
-			if begin == 1 {
-				start = offset + len(line)
-				if bytes.HasSuffix(line, []byte("\r\n")) {
-					newline = "\r\n"
+	var begins, ends []text.Segment
+	for n := parser.New().Parse(src).FirstChild(); n != nil; n = n.NextSibling() {
+		if html, ok := n.(*ast.HTMLBlock); ok {
+			for _, line := range html.Value.Segments() {
+				switch strings.TrimRight(string(src[line.Start:line.Stop]), "\r\n") {
+				case indexBegin:
+					begins = append(begins, line)
+				case indexEnd:
+					ends = append(ends, line)
 				}
 			}
-		case indexEnd:
-			end++
-			if end == 1 {
-				finish = offset
-			}
 		}
-		offset += len(line)
 	}
-	if begin == 0 && end == 0 {
+	if len(begins) == 0 && len(ends) == 0 {
 		return nil, nil
 	}
-	if begin != 1 || end != 1 || finish < start {
+	if len(begins) != 1 || len(ends) != 1 || ends[0].Start < begins[0].Stop {
 		return nil, errors.New("invalid managed index markers")
 	}
-	return &indexBlock{start, finish, newline}, nil
+	newline := "\n"
+	if bytes.HasSuffix(src[:begins[0].Stop], []byte("\r\n")) {
+		newline = "\r\n"
+	}
+	return &indexBlock{begins[0].Stop, ends[0].Start, newline}, nil
 }
 
 func renderIndex(src []byte, bounds *indexBlock, pages []indexPage) ([]byte, bool) {
-	slices.SortFunc(pages, func(a, b indexPage) int { return strings.Compare(a.path, b.path) })
 	var block strings.Builder
 	for _, page := range pages {
 		title := escapeIndexText(page.title)
@@ -119,11 +97,12 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 	var pages []indexPage
 	dir := path.Dir(index)
 	for _, file := range files {
-		if dir != "." && !strings.HasPrefix(file, dir+"/") {
-			continue
+		rel, ok := strings.CutPrefix(file, dir+"/")
+		if dir == "." {
+			rel, ok = file, true
 		}
 		base := path.Base(file)
-		if base == "index.md" || base == "log.md" || base == "SKILL.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, excludes) {
+		if !ok || base == "index.md" || base == "log.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, excludes) {
 			continue
 		}
 		src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
@@ -143,11 +122,7 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 		if !validString(b.fields["title"]) || !validString(b.fields["description"]) {
 			return nil, &indexPageError{file, errors.New("index page requires a valid title and description")}
 		}
-		rel, err := filepath.Rel(filepath.FromSlash(dir), filepath.FromSlash(file))
-		if err != nil {
-			return nil, err
-		}
-		pages = append(pages, indexPage{filepath.ToSlash(rel), b.fields["title"].Value, b.fields["description"].Value})
+		pages = append(pages, indexPage{rel, b.fields["title"].Value, b.fields["description"].Value})
 	}
 	return pages, nil
 }
