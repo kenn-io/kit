@@ -221,7 +221,7 @@ func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 // TELEMETRY_ENABLED value (1, true, yes, or on). A 0, false, no, or off in
 // either variable vetoes reporting. Values are trimmed and case-insensitive.
 // Process disable, any present CI, and DO_NOT_TRACK except 0 or false also veto.
-// Environment vetoes are live; DisableProcess also stops existing reporters.
+// Each call reads the environment and consent; DisableProcess also stops existing reporters.
 func EnabledFromEnv(envPrefix string) bool {
 	if ProcessDisabled() {
 		return false
@@ -299,7 +299,8 @@ func ProcessDisabled() bool {
 // Disabled construction skips client configuration validation and client creation,
 // preserving configured events for handler validation. Invalid event declarations
 // still return errors.
-// Later environment changes have no effect; DisableProcess stops reporting at runtime.
+// Later environment and consent changes have no effect on the reporter;
+// DisableProcess stops reporting at runtime.
 func NewReporter(opts Options, options ...Option) (*Reporter, error) {
 	return newPostHogReporter(opts, func(apiKey string, config phsdk.Config) (postHogEnqueueCloser, error) {
 		return phsdk.NewWithConfig(apiKey, config)

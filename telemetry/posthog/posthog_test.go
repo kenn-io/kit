@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
@@ -25,39 +24,12 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("CONSENT_CHILD") != "1" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		cache, err := exec.CommandContext(ctx, "go", "env", "GOMODCACHE").Output()
-		cancel()
-		if err != nil {
-			panic(err)
-		}
-		if err := os.Setenv("GOMODCACHE", strings.TrimSpace(string(cache))); err != nil {
-			panic(err)
-		}
-		home, err := os.MkdirTemp("", "posthog-test-home-")
-		if err != nil {
-			panic(err)
-		}
-		if err := os.Setenv("HOME", home); err != nil {
-			panic(err)
-		}
-		if err := os.Setenv("USERPROFILE", home); err != nil {
-			panic(err)
-		}
-	}
 	for _, env := range []string{"CI", "DO_NOT_TRACK", GenericEnabledEnv, "KATA_TELEMETRY_ENABLED", "TEST_TELEMETRY_ENABLED"} {
 		if err := os.Unsetenv(env); err != nil {
 			panic(err)
 		}
 	}
-	code := m.Run()
-	if os.Getenv("CONSENT_CHILD") != "1" {
-		if err := os.RemoveAll(os.Getenv("HOME")); err != nil {
-			panic(err)
-		}
-	}
-	os.Exit(code)
+	os.Exit(m.Run())
 }
 
 type fakePostHogClient struct {
@@ -258,6 +230,9 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 	}{
 		{name: "no_consent", disable: func(t *testing.T) {
 			t.Helper()
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
 			t.Setenv(GenericEnabledEnv, "")
 			t.Setenv("KATA_TELEMETRY_ENABLED", "")
 		}},
