@@ -12,6 +12,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/search/sqlquery"
 	"go.kenn.io/kit/vector"
 	"go.kenn.io/kit/vector/pgvector"
 )
@@ -188,6 +189,7 @@ func TestNewWithDMLOnlyRole(t *testing.T) {
 	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
 	store, err := pgvector.New[int64, string](ctx, runtime, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
 	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
 	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
 	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
 	require.NoError(t, err)
@@ -393,4 +395,55 @@ func TestStampDeleteUsesDocumentIndex(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 	assert.Contains(t, plan, "vectors_stamps_by_doc")
+}
+
+type capturedGenerationsStore struct {
+	*pgvector.Store[int64, string]
+	generations []string
+}
+
+func (s capturedGenerationsStore) LiveGenerations(context.Context) ([]string, error) {
+	return s.generations, nil
+}
+
+func TestSearchAfterCapturedGenerationReclaimed(t *testing.T) {
+	db, store := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'cat',1)`)
+	require.NoError(t, err)
+	model := vector.Generation{Dimensions: 2}
+	require.NoError(t, store.EnsureGeneration(ctx, "old", model, vector.StateActive))
+	require.NoError(t, store.EnsureGeneration(ctx, "new", model, vector.StateBuilding))
+	calls := 0
+	for _, gen := range []string{"old", "new"} {
+		_, err = vector.Fill(ctx, store, gen, encoder(2, &calls))
+		require.NoError(t, err)
+	}
+	gens, err := store.LiveGenerations(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"new", "old"}, gens)
+	require.NoError(t, store.Activate(ctx, "new"))
+	require.NoError(t, store.Reclaim(ctx, "old"))
+	hits, err := vector.Search(ctx, capturedGenerationsStore{store, gens}, "cat", func(string) vector.EncodeFunc { return encoder(2, &calls) }, vector.SearchOptions{})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, int64(1), hits[0].Doc)
+}
+
+func TestQueryGenerationPredicateBeforeLimit(t *testing.T) {
+	db, store := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'excluded',1),(2,'allowed',1)`)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
+	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	require.NoError(t, store.SaveVectors(ctx, "a", 2, 1, []vector.ChunkVector{{Vector: vector.Vector{0.8, 0.2}}}))
+	query, ok := any(store).(interface {
+		QueryGenerationWithPredicate(context.Context, string, vector.Vector, int, sqlquery.Predicate) ([]vector.Hit[int64], error)
+	})
+	require.True(t, ok, "store must support a predicate before the candidate limit")
+	hits, err := query.QueryGenerationWithPredicate(ctx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{SQL: "d.doc_key = ?", Args: []any{int64(2)}})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, int64(2), hits[0].Doc)
 }
