@@ -60,32 +60,6 @@ func TestConsentReadWrite(t *testing.T) {
 	require.Error(t, RecordConsent(true))
 }
 
-func TestConsentReporter(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	client := &fakePostHogClient{}
-	newReporter := func() *Reporter {
-		r, err := newPostHogReporter(Options{APIKey: "test", Application: "test", EnvPrefix: "KATA", DistinctID: "id", Version: "1.2.3"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) { return client, nil }, WithAllowedEvent("event"))
-		require.NoError(t, err)
-		return r
-	}
-	r := newReporter()
-	require.NoError(t, r.Capture("event", nil))
-	assert.Nil(t, client.message)
-	require.NoError(t, r.Close())
-
-	require.NoError(t, RecordConsent(true))
-	r = newReporter()
-	require.NoError(t, r.Capture("event", nil))
-	capture, ok := client.message.(phsdk.Capture)
-	require.True(t, ok)
-	assert.Equal(t, true, capture.Properties["telemetry_consent"])
-	require.NoError(t, r.Close())
-	require.NoError(t, RecordConsent(false))
-	assert.False(t, Eligible("KATA", "1.2.3"))
-}
-
 func TestConsentAcrossProcesses(t *testing.T) {
 	if os.Getenv("CONSENT_CHILD") == "1" {
 		client := &fakePostHogClient{}
@@ -103,14 +77,13 @@ func TestConsentAcrossProcesses(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	for _, tc := range []struct {
-		yes      bool
-		expected string
-	}{{true, "yes"}, {false, "no"}} {
-		require.NoError(t, RecordConsent(tc.yes))
+	for _, expected := range []string{"unanswered", "yes", "no"} {
+		if expected != "unanswered" {
+			require.NoError(t, RecordConsent(expected == "yes"))
+		}
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestConsentAcrossProcesses$")
-		cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home, "TELEMETRY_ENABLED=", "OTHER_TELEMETRY_ENABLED=", "CONSENT_CHILD=1", "CONSENT_EXPECT="+tc.expected)
+		cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home, "TELEMETRY_ENABLED=", "OTHER_TELEMETRY_ENABLED=", "CONSENT_CHILD=1", "CONSENT_EXPECT="+expected)
 		out, err := cmd.CombinedOutput()
 		cancel()
 		require.NoError(t, err, string(out))

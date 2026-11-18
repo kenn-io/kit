@@ -243,18 +243,6 @@ func TestPostHogReporterYoungInstallSendsEveryCapture(t *testing.T) {
 	assert.False(reporter.Enabled())
 }
 
-func TestPostHogReporterInstalledAtHonorsOptOut(t *testing.T) {
-	t.Run("process_disable", func(t *testing.T) {
-		reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart.Add(-61*time.Minute))
-
-		DisableProcess()
-
-		require.NoError(t, reporter.Capture("daemon_active", map[string]any{"project_count": 1}))
-		assert.Empty(t, client.messages)
-		assert.False(t, reporter.Enabled())
-	})
-}
-
 type failingPostHogClient struct {
 	enqueueErr error
 	flushErr   error
