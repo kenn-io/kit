@@ -29,8 +29,8 @@ func TestSkillProfileShapes(t *testing.T) {
 		{"scalar metadata", "---\nmetadata: x\n---\n", "metadata must be a block mapping"},
 		{"missing type", strings.Replace(skillHeader, "  type: Skill\n", "", 1), "metadata.type must be the string Skill"},
 		{"wrong type", strings.Replace(skillHeader, "type: Skill", "type: skill", 1), "metadata.type must be the string Skill"},
-		{"flow generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1), "metadata.generated must be a block mapping"},
-		{"scalar generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: x", 1), "metadata.generated must be a block mapping"},
+		{"flow generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1), ""},
+		{"scalar generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: x", 1), "metadata.generated must be a mapping"},
 		{"bare at", strings.ReplaceAll(skillHeader, "\"", ""), "metadata.generated.at must be a quoted string, for example \"2026-11-17T19:00:00Z\""},
 		{"status invalid", strings.Replace(skillHeader, "---\nBody", "  status: retired\n---\nBody", 1), "metadata.status must be one of stable, draft, or deprecated"},
 	}
@@ -48,10 +48,10 @@ func TestSkillProfileShapes(t *testing.T) {
 	}
 	b, err := parseFrontmatter([]byte(skillHeader))
 	require.NoError(t, err)
-	assertSkillNodeKinds(t, b)
+	assertSkillNodeKinds(t, b, false)
 }
 
-func assertSkillNodeKinds(t *testing.T, b *frontmatterBlock) {
+func assertSkillNodeKinds(t *testing.T, b *frontmatterBlock, flow bool) {
 	t.Helper()
 	m := b.fields["metadata"]
 	require.NotNil(t, m)
@@ -61,7 +61,7 @@ func assertSkillNodeKinds(t *testing.T, b *frontmatterBlock) {
 		n := m.Content[i]
 		if m.Content[i-1].Value == "generated" {
 			require.Equal(t, yaml.MappingNode, n.Kind)
-			assert.Zero(t, n.Style&yaml.FlowStyle)
+			assert.Equal(t, flow, n.Style&yaml.FlowStyle != 0)
 			for j := 1; j < len(n.Content); j += 2 {
 				assert.Equal(t, yaml.ScalarNode, n.Content[j].Kind)
 				assert.Equal(t, "!!str", n.Content[j].Tag)
@@ -105,14 +105,14 @@ func TestSkillSelectionAndFix(t *testing.T) {
 	assert.Zero(t, n, errs.String())
 	data, err = os.ReadFile("skills/a/SKILL.md")
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "at: \"2026-11-17T12:00:00Z\"")
+	assert.Regexp(t, `(?m)^  generated: \{by: [^,]+, at: "2026-11-17T12:00:00Z"\}$`, string(data))
 	assert.Contains(t, string(data), "# comment")
 	assert.NotContains(t, string(data), "title:")
 	assert.True(t, bytes.HasSuffix(data, []byte("Body\n")))
 	written, err := parseFrontmatter(data)
 	require.NoError(t, err)
 	assert.Empty(t, written.skillProblems())
-	assertSkillNodeKinds(t, written)
+	assertSkillNodeKinds(t, written, true)
 	_, err = runFrontmatter(t.Context(), fix, &out, &errs)
 	require.NoError(t, err)
 	again, err := os.ReadFile("skills/a/SKILL.md")
@@ -244,11 +244,19 @@ func TestRootSkillBundleAndManagedSkills(t *testing.T) {
 	}
 }
 
+func TestSkillFixFillsEmptyGeneratedMapping(t *testing.T) {
+	b, err := parseFrontmatter([]byte("---\nmetadata:\n  type: Skill\n  generated: {}\n---\nBody\n"))
+	require.NoError(t, err)
+	changed, _ := b.fixSkill("codex")
+	require.True(t, changed)
+	assert.Empty(t, b.skillProblems())
+	assertSkillNodeKinds(t, b, true)
+}
+
 func TestSkillFixRefusesIncompleteProfile(t *testing.T) {
 	for _, tc := range []struct{ name, header, by, note string }{
 		{"null metadata", "name: x\nmetadata:\n", "human:test", ""},
 		{"null generated", "metadata:\n  type: Skill\n  generated:\n", "human:test", ""},
-		{"empty generated", "metadata:\n  type: Skill\n  generated: {}\n", "human:test", ""},
 		{"by only", "metadata:\n  type: Skill\n  generated:\n    by: human:old\n", "human:new", "supply both"},
 		{"at only", "metadata:\n  type: Skill\n  generated:\n    at: \"2020-01-01T00:00:00Z\"\n", "human:new", "supply both"},
 		{"wrong type", "metadata:\n  type: wrong\n", "human:test", ""},

@@ -2,9 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated:
-  by: human:salmonumbrella
-  at: "2026-11-17T22:09:49Z"
+generated: { by: codex, at: 2026-11-18T11:16:46Z }
 ---
 
 # Adopting the Kenn documentation profile
@@ -15,6 +13,8 @@ Each page has nonempty string `type`, `title`, and `description` fields, plus
 `generated.at` with the actual edit time in UTC, in RFC 3339 format ending in
 `Z`. Use Guide for instructions, Reference for facts and formats, and
 Explanation for architecture and research. Extra metadata is allowed.
+Write provenance on one line: `generated: { by: codex, at: 2026-11-18T10:00:00Z }`.
+The fixer emits a flow mapping; equivalent existing block mappings remain valid.
 
 The optional top-level `status` is `stable`, `draft`, or `deprecated`. An
 omitted status means stable; explicitly marking a page stable does not mean it
@@ -60,6 +60,32 @@ Repositories migrating after Kit can temporarily pass `-legacy` to retain the
 `last_edited` profile. Remove this bridge as each repository adopts the Kenn
 OKF profile; it is not an alternative standard.
 
+## Sources and links
+
+`sources` is optional. When present, it is a sequence of mappings, each with a
+nonempty string `resource`. A resource can be a URL, a path, or an opaque scope
+description such as `all queries in project X`. Optional string `id` values
+must be nonempty and unique within the list. Other source fields are allowed.
+
+```yaml
+sources:
+  - id: api-guide
+    resource: references/api.md
+  - resource: all queries in project X
+```
+
+For per-claim attribution, use a Markdown footnote with the source ID as its
+label, for example `[^api-guide]`, and supply the ordinary footnote definition.
+The declared ID links the note to its source. OKF uses the same syntax as
+ordinary footnotes: an unknown label cannot reliably be identified as a
+misspelled source ID. The check therefore validates declared source IDs, not
+unmatched footnote labels, and does not require every source to be cited.
+
+No sources or backlinks are required. Validation never opens source resources
+or fetches remote links, including private URLs. Ordinary document links can
+be relative or bundle-root-relative; missing targets are tolerated because
+linked knowledge may not exist yet. Authored links are not rewritten.
+
 ## Skills
 
 List Kenn-managed skills with repeatable `-managed-skill 'skills/*/SKILL.md'`
@@ -75,12 +101,11 @@ Keep native `name` and `description` fields. The managed profile adds:
 ```yaml
 metadata:
   type: Skill
-  generated:
-    by: human:alex
-    at: "2026-11-17T19:00:00Z"
+  generated: { by: codex, at: "2026-11-18T10:00:00Z" }
   status: deprecated # only when the skill has been retired
 ```
 
+Keep the skill timestamp quoted so its YAML type is string.
 Omitted `metadata.status` means stable; use draft for provisional skills. If a
 retired skill is retained, set `metadata.status: deprecated` and link to its
 replacement when one exists. The fixer leaves status and native fields alone.

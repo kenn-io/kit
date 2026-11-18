@@ -8,7 +8,7 @@ func (b *frontmatterBlock) skillProblems() []string {
 		return []string{"metadata must be a block mapping"}
 	}
 	var p []string
-	if n := mappingField(m, "type"); !validString(n) || n.Value != "Skill" {
+	if n := mappingField(m, "type"); n == nil || !validString(n) || n.Value != "Skill" {
 		p = append(p, "metadata.type must be the string Skill")
 	}
 	p = append(p, generatedProblems(mappingField(m, "generated"), "metadata.generated", true)...)
