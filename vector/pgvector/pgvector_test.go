@@ -282,3 +282,28 @@ func TestQuotedExtensionSchema(t *testing.T) {
 	require.Len(t, hits, 1)
 	assert.Equal(t, int64(1), hits[0].Doc)
 }
+
+func TestHalfvecPreservesDirectionAcrossFloat32Scales(t *testing.T) {
+	db, store := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'one',1),(2,'two',1),(3,'three',1)`)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
+	for _, tc := range []struct {
+		doc       int64
+		embedding vector.Vector
+	}{
+		{1, vector.Vector{1e-8, 0}}, {2, vector.Vector{0, 1e30}}, {3, vector.Vector{-1e-40, 0}},
+	} {
+		require.NoError(t, store.SaveVectors(ctx, "a", tc.doc, 1, []vector.ChunkVector{{Vector: tc.embedding}}))
+	}
+	for _, query := range []vector.Vector{{1e-8, 0}, {1e30, 0}, {1e-40, 0}} {
+		hits, err := store.QueryGeneration(ctx, "a", query, 3)
+		require.NoError(t, err)
+		require.Len(t, hits, 3)
+		assert.Equal(t, []int64{1, 2, 3}, []int64{hits[0].Doc, hits[1].Doc, hits[2].Doc})
+		assert.InDelta(t, 1, hits[0].Score, 0.001)
+		assert.InDelta(t, 0, hits[1].Score, 0.001)
+		assert.InDelta(t, -1, hits[2].Score, 0.001)
+	}
+}

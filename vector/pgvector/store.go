@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
+	"math"
 
 	"go.kenn.io/kit/search/postgres"
 	"go.kenn.io/kit/search/sqlquery"
 	"go.kenn.io/kit/vector"
+	"go.kenn.io/kit/vector/internal/vectorliteral"
 )
 
 // PendingForGeneration returns uncovered documents in key order.
@@ -44,17 +44,26 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, after *K,
 	}
 	return out, rows.Err()
 }
-func literal(v vector.Vector) string {
-	var b strings.Builder
-	b.WriteByte('[')
-	for i, x := range v {
-		if i > 0 {
-			b.WriteByte(',')
+
+// halfvec preserves cosine direction by scaling the largest component to one.
+// Scaling in float64 handles the full range of finite float32 inputs.
+func halfvec(v vector.Vector) (string, error) {
+	var maxComponent float64
+	for _, component := range v {
+		value := math.Abs(float64(component))
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return "", errors.New("vector has a non-finite component")
 		}
-		b.WriteString(strconv.FormatFloat(float64(x), 'g', -1, 32))
+		maxComponent = max(maxComponent, value)
 	}
-	b.WriteByte(']')
-	return b.String()
+	if maxComponent == 0 {
+		return "", errors.New("vector has zero norm")
+	}
+	scaled := make([]float32, len(v))
+	for i, component := range v {
+		scaled[i] = float32(float64(component) / maxComponent)
+	}
+	return vectorliteral.Format(scaled), nil
 }
 
 // SaveVectors atomically checks the document revision, replaces chunks, and stamps it.
@@ -91,7 +100,11 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		return err
 	}
 	for _, cv := range vectors {
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), quote(s.ext)), doc, cv.ChunkIndex, literal(cv.Vector)); err != nil {
+		value, err := halfvec(cv.Vector)
+		if err != nil {
+			return fmt.Errorf("chunk %d: %w", cv.ChunkIndex, err)
+		}
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), quote(s.ext)), doc, cv.ChunkIndex, value); err != nil {
 			return err
 		}
 	}
@@ -143,8 +156,12 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 	if _, err = tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
 		return nil, err
 	}
+	value, err := halfvec(query)
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
 	predicate := fmt.Sprintf(`EXISTS (SELECT 1 FROM %s src JOIN %s stamp ON stamp.generation_id=? AND stamp.doc_key=src.%s WHERE src.%s=d.doc_key AND %s)`, quote(s.schema.DocsTable), s.stamps(), quote(s.schema.IDColumn), quote(s.schema.IDColumn), s.covered("src", "stamp"))
-	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id), SourceKey: "doc_key", VectorColumn: "embedding"}, Query: literal(query), VectorType: "halfvec", TypeSchema: s.ext, SourcePredicate: sqlquery.Predicate{SQL: predicate, Args: []any{id}}, ExtraSourceCols: []sqlquery.Column{{Name: "chunk_index", As: "chunk_index"}}, CandidateLimit: limit})
+	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id), SourceKey: "doc_key", VectorColumn: "embedding"}, Query: value, VectorType: "halfvec", TypeSchema: s.ext, SourcePredicate: sqlquery.Predicate{SQL: predicate, Args: []any{id}}, ExtraSourceCols: []sqlquery.Column{{Name: "chunk_index", As: "chunk_index"}}, CandidateLimit: limit})
 	if err != nil {
 		return nil, err
 	}
