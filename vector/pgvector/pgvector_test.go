@@ -963,3 +963,9 @@ func TestQueryGenerationWithPredicateTxLeavesFailedTransactionToCaller(t *testin
 	assert.NotErrorIs(t, err, sql.ErrTxDone)
 	require.NoError(t, tx.Rollback())
 }
+
+func TestQueryGenerationWithPredicateTxRejectsNilTransaction(t *testing.T) {
+	store := &pgvector.Store[int64, string]{}
+	_, err := store.QueryGenerationWithPredicateTx(t.Context(), nil, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{})
+	require.ErrorContains(t, err, "transaction is nil")
+}

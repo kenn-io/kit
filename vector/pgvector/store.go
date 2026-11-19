@@ -187,11 +187,13 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 	return hits, nil
 }
 
-// QueryGenerationWithPredicateTx searches using the caller's transaction and
-// snapshot, including repeatable-read snapshots. The caller owns the transaction
-// and must roll it back after a SQL error. The chunk table lock and SET LOCAL settings last until the caller ends
-// the transaction. The predicate follows QueryGenerationWithPredicate's rules.
+// QueryGenerationWithPredicateTx searches the caller's transaction. After a SQL
+// error, the caller must roll it back. The chunk lock lasts until the transaction
+// ends; SET LOCAL also affects later vector queries in that transaction.
 func (s *Store[K, G]) QueryGenerationWithPredicateTx(ctx context.Context, tx *sql.Tx, gen G, query vector.Vector, limit int, predicate sqlquery.Predicate) ([]vector.Hit[K], error) {
+	if tx == nil {
+		return nil, errors.New("pgvector: transaction is nil")
+	}
 	hits, _, err := s.queryGenerationWithPredicate(ctx, tx, gen, query, limit, predicate, false)
 	return hits, err
 }
