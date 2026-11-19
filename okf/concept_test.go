@@ -1,14 +1,15 @@
-package main
+package okf_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"go.kenn.io/kit/okf"
 )
 
-func TestOKFSources(t *testing.T) {
+func TestConceptSources(t *testing.T) {
 	cases := []struct {
 		name, sources, problem string
 	}{
@@ -19,7 +20,7 @@ func TestOKFSources(t *testing.T) {
 		{"distinct IDs", "sources: [{id: a, resource: same}, {id: b, resource: same}]\n", ""},
 		{"null", "sources: null\n", ""},
 		{"mapping", "sources: {resource: page}\n", ""},
-		{"scalar", "sources: page\n", "sources must be a sequence"},
+		{"scalar", "sources: page\n", "sources must be a sequence or a mapping"},
 		{"scalar entry", "sources: [page]\n", "sources[0] must be a mapping"},
 		{"null entry", "sources: [null]\n", "sources[0] must be a mapping"},
 		{"missing resource", "sources: [{}]\n", "sources[0].resource must be a non-empty string"},
@@ -33,28 +34,14 @@ func TestOKFSources(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			src := strings.Replace(goodOKF, "type: Guide\n", "type: Guide\n"+tc.sources, 1)
-			b, err := parseFrontmatter([]byte(src))
+			src := "---\ntype: Custom\n" + tc.sources + "---\n"
+			b, err := okf.Parse([]byte(src))
 			require.NoError(t, err)
 			if tc.problem == "" {
-				assert.Empty(t, b.okfProblems())
+				assert.Empty(t, b.ConceptProblems())
 			} else {
-				assert.Equal(t, []string{tc.problem}, b.okfProblems())
+				assert.Equal(t, []string{tc.problem}, b.ConceptProblems())
 			}
 		})
-	}
-}
-
-func TestOKFSourcesDoNotInferCitationIntent(t *testing.T) {
-	for _, sources := range []string{"", "sources: [{id: api, resource: 'references/api.md'}]\n"} {
-		src := strings.Replace(goodOKF, "type: Guide\n", "type: Guide\n"+sources, 1)
-		src += "\nClaim.[^api] Ordinary note.[^note] Unknown label.[^unknown]\n\n[^api]: API guide\n[^note]: An aside\n\n`[^inline]`\n\n```markdown\n[^code]\n```\n\n[Future concept](/not-yet-written.md)\n"
-		b, err := parseFrontmatter([]byte(src))
-		require.NoError(t, err)
-		assert.Empty(t, b.okfProblems())
-		body := string(b.body)
-		changed, _ := b.fixOKF("page.md", nil, "", "")
-		assert.False(t, changed)
-		assert.Equal(t, body, string(b.body))
 	}
 }

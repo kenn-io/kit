@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	gittest "go.kenn.io/kit/git/test"
+	"go.kenn.io/kit/okf"
 )
 
 func runLegacyFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
@@ -57,31 +58,16 @@ func TestFrontmatterValidation(t *testing.T) {
 		{"numeric title", strings.ReplaceAll(goodFrontmatter, "title: A page", "title: 123"), "title must be a non-empty string"},
 		{"missing title", strings.ReplaceAll(goodFrontmatter, "title: A page\n", ""), "title must be a non-empty string"},
 		{"missing description", strings.ReplaceAll(goodFrontmatter, "description: A useful page.\n", ""), "description must be a non-empty string"},
-		{"empty file", "", "missing opening"},
-		{"body only", "# Heading\n", "missing opening"},
-		{"leading blank", "\n" + goodFrontmatter, "missing opening"},
-		{"unterminated", "---\ntitle: Page\n", "missing closing"},
-		{"empty mapping", "---\n---\n", "must be a YAML mapping"},
-		{"sequence", "---\n- page\n---\n", "must be a YAML mapping"},
-		{"scalar", "---\npage\n---\n", "must be a YAML mapping"},
-		{"invalid YAML", "---\ntitle: [\n---\n", "invalid frontmatter YAML"},
-		{"duplicate key", strings.ReplaceAll(goodFrontmatter, "title: A page", "title: A page\ntitle: Another"), "already defined"},
-		{"nested duplicate", "---\ngenerated: {by: a, by: b}\n---\n", "already defined"},
-		{"second document", "---\ntitle: Page\n...\nother: value\n---\n", "single YAML mapping"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte(tt.src))
+			b, err := okf.Parse([]byte(tt.src))
+			require.NoError(t, err)
 			if tt.problem == "" {
-				require.NoError(t, err)
-				assert.Empty(t, b.problems())
+				assert.Empty(t, legacyProblems(b))
 				return
 			}
-			if err != nil {
-				assert.ErrorContains(t, err, tt.problem)
-			} else {
-				assert.Contains(t, strings.Join(b.problems(), "\n"), tt.problem)
-			}
+			assert.Contains(t, strings.Join(legacyProblems(b), "\n"), tt.problem)
 		})
 	}
 }
@@ -337,11 +323,11 @@ func TestFrontmatterFix(t *testing.T) {
 	} {
 		src, err := os.ReadFile(tt.name)
 		require.NoError(t, err)
-		b, err := parseFrontmatter(src)
+		b, err := okf.Parse(src)
 		require.NoError(t, err)
-		assert.Equal(t, tt.date, b.fields["last_edited"].Value)
-		assert.Zero(t, b.fields["last_edited"].Style)
-		assert.Equal(t, tt.body, string(b.body))
+		assert.Equal(t, tt.date, b.Field("last_edited").Value)
+		assert.Zero(t, b.Field("last_edited").Style)
+		assert.Equal(t, tt.body, string(b.Body))
 		// A second fix must leave the entire file byte-for-byte unchanged.
 		_, err = runLegacyFrontmatter(t.Context(), []string{"-fix", tt.name}, &stdout, &stderr)
 		require.NoError(t, err)

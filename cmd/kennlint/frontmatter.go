@@ -15,11 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/consolewindow"
 	gitenv "go.kenn.io/kit/git/env"
+	"go.kenn.io/kit/okf"
 )
 
 // trimmedText is a flag whose value, once set, is non-empty after trimming.
@@ -84,60 +83,6 @@ func frontmatterGit(ctx context.Context, dir string, args ...string) ([]byte, er
 	return out, nil
 }
 
-type frontmatterBlock struct {
-	doc     yaml.Node
-	fields  map[string]*yaml.Node
-	body    []byte
-	newline string
-}
-
-var errFrontmatterMissing = errors.New("missing opening --- frontmatter delimiter")
-
-func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
-	lines := bytes.SplitAfter(src, []byte("\n"))
-	lineText := func(line []byte) string { return strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r") }
-	if lineText(lines[0]) != "---" {
-		return nil, errFrontmatterMissing
-	}
-	end := 1
-	for end < len(lines) && lineText(lines[end]) != "---" {
-		end++
-	}
-	if end == len(lines) {
-		return nil, errors.New("missing closing --- frontmatter delimiter")
-	}
-	b := &frontmatterBlock{body: bytes.Join(lines[end+1:], nil), newline: "\n"}
-	if bytes.HasSuffix(lines[0], []byte("\r\n")) {
-		b.newline = "\r\n"
-	}
-	header := bytes.Join(lines[1:end], nil)
-	dec := yaml.NewDecoder(bytes.NewReader(header))
-	if err := dec.Decode(&b.doc); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("invalid frontmatter YAML: %w", err)
-	}
-	var extra yaml.Node
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, errors.New("frontmatter must contain a single YAML mapping")
-	}
-	if len(b.doc.Content) != 1 || b.doc.Content[0].Kind != yaml.MappingNode {
-		return nil, errors.New("frontmatter must be a YAML mapping")
-	}
-	// Decode the whole mapping to reject duplicate keys at every depth.
-	var fields map[string]any
-	if err := b.doc.Decode(&fields); err != nil {
-		return nil, fmt.Errorf("invalid frontmatter YAML: %w", err)
-	}
-	// Freeze alias uses as independent values before any fixer can mutate an
-	// anchor or remove its defining field. Unknown extensions retain their values.
-	materializeYAMLAliases(&b.doc)
-	b.fields = make(map[string]*yaml.Node)
-	content := b.doc.Content[0].Content
-	for i := 0; i < len(content); i += 2 {
-		b.fields[content[i].Value] = resolveYAML(content[i+1])
-	}
-	return b, nil
-}
-
 func frontmatterInSkillDirectory(file string, skillDirs map[string]struct{}) bool {
 	for dir := path.Dir(file); dir != "."; dir = path.Dir(dir) {
 		if _, ok := skillDirs[dir]; ok {
@@ -145,62 +90,6 @@ func frontmatterInSkillDirectory(file string, skillDirs map[string]struct{}) boo
 		}
 	}
 	return false
-}
-
-func frontmatterDate(n *yaml.Node) bool {
-	if n == nil || n.Kind != yaml.ScalarNode || len(n.Value) != len(time.DateOnly) {
-		return false
-	}
-	date, err := time.Parse(time.DateOnly, n.Value)
-	return err == nil && date.Year() > 0
-}
-
-func (b *frontmatterBlock) problems() []string {
-	var problems []string
-	for _, key := range []string{"title", "description"} {
-		if !validString(b.fields[key]) {
-			problems = append(problems, key+" must be a non-empty string")
-		}
-	}
-	n := b.fields["last_edited"]
-	if n == nil || !frontmatterDate(n) || n.Tag != "!!timestamp" || n.Style != 0 {
-		problems = append(problems, "last_edited must be a bare YYYY-MM-DD date")
-	}
-	return problems
-}
-
-func (b *frontmatterBlock) fix(date string) ([]byte, bool, error) {
-	n := b.fields["last_edited"]
-	switch {
-	case n == nil:
-		n = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!timestamp", Value: date}
-		b.doc.Content[0].Content = append(b.doc.Content[0].Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "last_edited"}, n)
-		b.fields["last_edited"] = n
-	case frontmatterDate(n) && (n.Style == yaml.SingleQuotedStyle || n.Style == yaml.DoubleQuotedStyle):
-		n.Tag, n.Style = "!!timestamp", 0
-	default:
-		return nil, false, nil
-	}
-	return b.encode()
-}
-
-func (b *frontmatterBlock) encode() ([]byte, bool, error) {
-	var header bytes.Buffer
-	enc := yaml.NewEncoder(&header)
-	enc.SetIndent(2)
-	if err := enc.Encode(&b.doc); err != nil {
-		return nil, false, fmt.Errorf("encoding frontmatter: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return nil, false, err
-	}
-	result := []byte("---" + b.newline + strings.ReplaceAll(header.String(), "\n", b.newline) + "---" + b.newline)
-	result = append(result, b.body...)
-	if _, err := parseFrontmatter(result); err != nil {
-		return nil, false, fmt.Errorf("encoded frontmatter is invalid: %w", err)
-	}
-	return result, true, nil
 }
 
 // frontmatterTracked lists tracked Markdown files and the directories that
@@ -259,13 +148,16 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return 0, err
 	}
-	// rev-parse --revs-only returns no revisions for an unborn HEAD, which has
-	// no commit dates for -fix to use.
-	head, err := frontmatterGit(ctx, root, "rev-parse", "--revs-only", "HEAD")
-	if err != nil {
-		return 0, err
+	// Only the legacy fixer falls back to the last commit date. An unborn
+	// branch has no history, even for a file already in the index.
+	hasHead := false
+	if *legacy && *fix {
+		head, err := frontmatterGit(ctx, root, "rev-parse", "--revs-only", "HEAD")
+		if err != nil {
+			return 0, err
+		}
+		hasHead = len(bytes.TrimSpace(head)) != 0
 	}
-	hasHead := len(bytes.TrimSpace(head)) != 0
 
 	var targets []string
 	for _, file := range files {
@@ -360,62 +252,57 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 		case "index.md":
 			// Reserved indexes are not concepts. A bundle root may carry metadata;
 			// validation and index regeneration leave it untouched.
-			_, err := parseFrontmatter(src)
-			if err != nil && !errors.Is(err, errFrontmatterMissing) {
+			_, err := okf.Parse(src)
+			if err != nil && !errors.Is(err, okf.ErrNoFrontmatter) {
 				return []string{err.Error()}, false, nil
 			}
 			return nil, false, nil
 		}
 	}
-	b, err := parseFrontmatter(src)
-	if fix && errors.Is(err, errFrontmatterMissing) {
-		b, err = parseFrontmatter(frontmatterScaffold(src))
-		if err == nil {
-			b.doc.Content[0].Style = 0
-		}
+	b, err := okf.Parse(src)
+	if fix && errors.Is(err, okf.ErrNoFrontmatter) {
+		b, err = okf.New(src), nil
 	}
 	if err != nil {
 		return []string{err.Error()}, false, nil //nolint:nilerr // Count invalid metadata as a finding so scanning continues.
 	}
-	if !legacy {
-		var changed bool
+	var problems []string
+	var changed bool
+	if legacy {
+		if fix {
+			date := time.Now().UTC().Format(time.DateOnly)
+			if b.Field("last_edited") == nil && hasHead {
+				committed, err := frontmatterGit(ctx, root, "log", "-1", "--format=%cs", "--", file)
+				if err != nil {
+					return nil, false, err
+				}
+				if value := strings.TrimSpace(string(committed)); value != "" {
+					date = value
+				}
+			}
+			changed = fixLegacyDate(b, date)
+		}
+		problems = legacyProblems(b)
+	} else {
 		var notes map[string]string
 		if fix {
-			changed, notes = b.fixOKF(file, rules, by, description)
+			changed, notes = fixOKF(b, file, rules, by, description)
 		}
-		problems := frontmatterFixProblems(b.okfProblems(), notes)
-		if !changed {
-			return problems, false, nil
-		}
-		updated, _, err := b.encode()
-		if err == nil {
-			err = atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink())
-		}
-		return problems, err == nil, err
+		problems = frontmatterFixProblems(profileProblems(b), notes)
 	}
-	if !fix {
-		return b.problems(), false, nil
+	if !changed {
+		return problems, false, nil
 	}
-	date := time.Now().UTC().Format(time.DateOnly)
-	if b.fields["last_edited"] == nil && hasHead {
-		committed, err := frontmatterGit(ctx, root, "log", "-1", "--format=%cs", "--", file)
-		if err != nil {
-			return nil, false, err
-		}
-		if value := strings.TrimSpace(string(committed)); value != "" {
-			date = value
-		}
-	}
-	updated, changed, err := b.fix(date)
-	if err != nil || !changed {
-		return b.problems(), false, err
+	updated, err := b.Marshal()
+	if err != nil {
+		return nil, false, err
 	}
 	// A Markdown symlink is fixed like any path: the file it names changes and
 	// the link stays.
 	if err := atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink()); err != nil {
 		return nil, false, err
 	}
-	return b.problems(), true, nil
+	return problems, true, nil
 }
 
 // Fixer guidance replaces the generic finding for the same field.
@@ -468,31 +355,30 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 		if err != nil {
 			return nil, err
 		}
-		before, errBefore := parseFrontmatter(previous)
-		after, errAfter := parseFrontmatter(current)
+		before, errBefore := okf.Parse(previous)
+		after, errAfter := okf.Parse(current)
 		if errBefore != nil || errAfter != nil {
 			continue // Missing or invalid metadata is reported, or was adopted in this change.
 		}
-		if !legacy {
-			b, a := mappingField(before.fields["generated"], "at"), mappingField(after.fields["generated"], "at")
-			beforeTime, validBefore := parseTimestamp(b)
-			afterTime, validAfter := parseTimestamp(a)
-			if validBefore && validAfter && !afterTime.After(beforeTime) && frontmatterMeaningful(before, after) {
+		if legacy {
+			b, a := before.Field("last_edited"), after.Field("last_edited")
+			if b != nil && a != nil && b.Value == a.Value {
 				stale = append(stale, file)
 			}
 			continue
 		}
-		if b, a := before.fields["last_edited"], after.fields["last_edited"]; b != nil && a != nil && b.Value == a.Value {
+		beforeTime, validBefore := okf.Timestamp(before.Field("generated", "at"))
+		afterTime, validAfter := okf.Timestamp(after.Field("generated", "at"))
+		if !validBefore || !validAfter || afterTime.After(beforeTime) {
+			continue
+		}
+		meaningful, err := frontmatterMeaningful(before, after)
+		if err != nil {
+			return nil, fmt.Errorf("comparing %s: %w", file, err)
+		}
+		if meaningful {
 			stale = append(stale, file)
 		}
 	}
 	return stale, nil
-}
-
-func frontmatterScaffold(src []byte) []byte {
-	newline := "\n"
-	if i := bytes.IndexByte(src, '\n'); i > 0 && src[i-1] == '\r' {
-		newline = "\r\n"
-	}
-	return append([]byte("---"+newline+"{}"+newline+"---"+newline), src...)
 }

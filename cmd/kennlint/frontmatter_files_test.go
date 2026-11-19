@@ -5,32 +5,15 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	gittest "go.kenn.io/kit/git/test"
+	"go.kenn.io/kit/okf"
 )
 
-func TestOKFV03Timestamps(t *testing.T) {
-	for _, value := range []string{"2026-11-17", "'2026-11-17'", "2026-11-17T13:00:00+01:00", "\"2026-11-17t12:00:00z\"", "\"2026-11-17T07:00:00-05:00\""} {
-		t.Run(value, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte(strings.Replace(goodOKF, "2026-11-17T12:00:00Z", value, 1)))
-			require.NoError(t, err)
-			assert.Empty(t, b.okfProblems())
-			got, ok := parseTimestamp(mappingField(b.fields["generated"], "at"))
-			require.True(t, ok)
-			want := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
-			if strings.Contains(strings.ToUpper(value), "T") {
-				assert.True(t, got.Equal(want))
-			} else {
-				assert.Equal(t, want.Add(-12*time.Hour), got)
-			}
-		})
-	}
-}
-
-func TestOKFV03ReservedFiles(t *testing.T) {
+func TestOKFReservedFiles(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
@@ -56,65 +39,69 @@ func TestOKFV03ReservedFiles(t *testing.T) {
 	assert.Equal(t, goodOKF, string(got))
 }
 
-func TestOKFV03FixPreservesExtensions(t *testing.T) {
+func TestOKFFixPreservesExtensions(t *testing.T) {
 	src := "---\ndescription: Useful\nx-root: {nested: [one, true, 2], date: \"2026-11-17\"}\ngenerated:\n  x-audit: {actor: other, ids: [1, 2]}\nsources:\n  - resource: ../reference.md\n    x-proof: {key: [a, b]}\n---\n# Page\n"
-	b, err := parseFrontmatter([]byte(src))
+	b, err := okf.Parse([]byte(src))
 	require.NoError(t, err)
 	var before map[string]any
-	require.NoError(t, b.doc.Decode(&before))
-	changed, _ := b.fixOKF("page.md", frontmatterRules{{"**", "Guide"}}, "human:test", "")
+	require.NoError(t, b.Metadata.Decode(&before))
+	changed, _ := fixOKF(b, "page.md", frontmatterRules{{"**", "Guide"}}, "human:test", "")
 	require.True(t, changed)
-	data, _, err := b.encode()
+	data, err := b.Marshal()
 	require.NoError(t, err)
-	after, err := parseFrontmatter(data)
+	after, err := okf.Parse(data)
 	require.NoError(t, err)
 	var values map[string]any
-	require.NoError(t, after.doc.Decode(&values))
+	require.NoError(t, after.Metadata.Decode(&values))
 	assert.Equal(t, before["x-root"], values["x-root"])
 	assert.Equal(t, before["sources"], values["sources"])
 	assert.Equal(t, before["generated"].(map[string]any)["x-audit"], values["generated"].(map[string]any)["x-audit"])
-	assert.Equal(t, b.body, after.body)
-	assert.Empty(t, after.okfProblems())
+	assert.Equal(t, b.Body, after.Body)
+	assert.Empty(t, profileProblems(after))
 }
 
-func TestOKFV03ReviewMetadata(t *testing.T) {
+func TestOKFReviewMetadata(t *testing.T) {
 	for _, source := range []string{"", "sources: null\n", "sources: ''\n", "sources: []\n", "status: null\n", "status: ''\n", "status: []\n"} {
-		before, err := parseFrontmatter([]byte(goodOKF))
+		before, err := okf.Parse([]byte(goodOKF))
 		require.NoError(t, err)
-		after, err := parseFrontmatter([]byte(strings.Replace(goodOKF, "type: Guide\n", source+"type: Guide\n", 1)))
+		after, err := okf.Parse([]byte(strings.Replace(goodOKF, "type: Guide\n", source+"type: Guide\n", 1)))
 		require.NoError(t, err)
-		assert.False(t, frontmatterMeaningful(before, after))
+		changed, err := frontmatterMeaningful(before, after)
+		require.NoError(t, err)
+		assert.False(t, changed)
 	}
-	before, err := parseFrontmatter([]byte(strings.Replace(goodOKF, "type: Guide\n", "sources: {resource: /page.md}\ntype: Guide\n", 1)))
+	before, err := okf.Parse([]byte(strings.Replace(goodOKF, "type: Guide\n", "sources: {resource: /page.md}\ntype: Guide\n", 1)))
 	require.NoError(t, err)
-	after, err := parseFrontmatter([]byte(strings.Replace(goodOKF, "type: Guide\n", "sources: [{resource: /page.md}]\nverified: {by: 'human:reviewer', at: '2026-11-18T00:00:00Z'}\ntype: Guide\n", 1)))
+	after, err := okf.Parse([]byte(strings.Replace(goodOKF, "type: Guide\n", "sources: [{resource: /page.md}]\nverified: {by: 'human:reviewer', at: '2026-11-18T00:00:00Z'}\ntype: Guide\n", 1)))
 	require.NoError(t, err)
-	assert.False(t, frontmatterMeaningful(before, after), "source list shape and verification do not alter generated content")
+	changed, err := frontmatterMeaningful(before, after)
+	require.NoError(t, err)
+	assert.False(t, changed, "source list shape and verification do not alter generated content")
 }
 
-func TestOKFV03Aliases(t *testing.T) {
+func TestOKFAliases(t *testing.T) {
 	src := "---\nx-title: &title Page\nx-provenance: &provenance {by: 'human:test', at: '2026-11-17T12:00:00Z'}\nx-source: &source {resource: /reference.md}\ntype: Guide\ntitle: *title\ndescription: Useful\ngenerated: *provenance\nsources: [*source]\n---\n# Page\n"
-	b, err := parseFrontmatter([]byte(src))
+	b, err := okf.Parse([]byte(src))
 	require.NoError(t, err)
-	assert.Empty(t, b.okfProblems())
+	assert.Empty(t, profileProblems(b))
 	src = "---\ntype: Guide\ntitle: Page\ndescription: Useful\nx-template: &template {x-extra: [original, true]}\ngenerated: *template\n---\n# Page\n"
-	b, err = parseFrontmatter([]byte(src))
+	b, err = okf.Parse([]byte(src))
 	require.NoError(t, err)
 	var before map[string]any
-	require.NoError(t, b.doc.Decode(&before))
-	changed, _ := b.fixOKF("page.md", nil, "human:test", "")
+	require.NoError(t, b.Metadata.Decode(&before))
+	changed, _ := fixOKF(b, "page.md", nil, "human:test", "")
 	require.True(t, changed)
-	data, _, err := b.encode()
+	data, err := b.Marshal()
 	require.NoError(t, err)
-	after, err := parseFrontmatter(data)
+	after, err := okf.Parse(data)
 	require.NoError(t, err)
-	assert.Empty(t, after.okfProblems())
+	assert.Empty(t, profileProblems(after))
 	var values map[string]any
-	require.NoError(t, after.doc.Decode(&values))
+	require.NoError(t, after.Metadata.Decode(&values))
 	assert.Equal(t, before["x-template"], values["x-template"], "fixing an alias must not mutate its unknown extension anchor")
 }
 
-func TestOKFV03ReservedChangedGate(t *testing.T) {
+func TestOKFReservedChangedGate(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
@@ -131,7 +118,7 @@ func TestOKFV03ReservedChangedGate(t *testing.T) {
 	assert.Zero(t, n, errs.String())
 }
 
-func TestOKFV03AnchoredExtensionFix(t *testing.T) {
+func TestOKFAnchoredExtensionFix(t *testing.T) {
 	for _, header := range []string{
 		"last_edited: &old 2026-11-17\nx-snapshot: *old\n",
 		"generated: &generation {x-tag: [one, 2]}\nx-snapshot: *generation\n",
@@ -141,10 +128,10 @@ func TestOKFV03AnchoredExtensionFix(t *testing.T) {
 			repo := gittest.NewRepoWithCommit(t)
 			t.Chdir(repo.Root)
 			src := "---\ntype: Guide\ntitle: Page\ndescription: Useful\n" + header + "---\n# Page\n"
-			before, err := parseFrontmatter([]byte(src))
+			before, err := okf.Parse([]byte(src))
 			require.NoError(t, err)
 			var original map[string]any
-			require.NoError(t, before.doc.Decode(&original))
+			require.NoError(t, before.Metadata.Decode(&original))
 			repo.WriteFile("page.md", src)
 			repo.Run("add", "page.md")
 			var out, errs bytes.Buffer
@@ -153,17 +140,17 @@ func TestOKFV03AnchoredExtensionFix(t *testing.T) {
 			assert.Zero(t, n, errs.String())
 			got, err := os.ReadFile("page.md")
 			require.NoError(t, err)
-			after, err := parseFrontmatter(got)
+			after, err := okf.Parse(got)
 			require.NoError(t, err, "encoded metadata must remain readable")
 			var values map[string]any
-			require.NoError(t, after.doc.Decode(&values))
+			require.NoError(t, after.Metadata.Decode(&values))
 			assert.Equal(t, original["x-snapshot"], values["x-snapshot"])
-			assert.Empty(t, after.okfProblems())
+			assert.Empty(t, profileProblems(after))
 		})
 	}
 }
 
-func TestOKFV03NativeReleaseNotes(t *testing.T) {
+func TestOKFNativeReleaseNotes(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)

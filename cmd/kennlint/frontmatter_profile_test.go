@@ -11,7 +11,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	gittest "go.kenn.io/kit/git/test"
+	"go.kenn.io/kit/okf"
 )
 
 const goodOKF = "---\ntype: Guide\ntitle: A page\ndescription: Useful\ngenerated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z\n---\n\n# A page\n\nText here.\n"
@@ -38,19 +40,19 @@ func TestOKFValidationMatrix(t *testing.T) {
 	}
 	for i, tt := range fields {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			b, err := parseFrontmatter([]byte(strings.Replace(goodOKF, tt.old, tt.invalid, 1)))
+			b, err := okf.Parse([]byte(strings.Replace(goodOKF, tt.old, tt.invalid, 1)))
 			require.NoError(t, err)
-			assert.Contains(t, strings.Join(b.okfProblems(), "\n"), tt.problem)
+			assert.Contains(t, strings.Join(profileProblems(b), "\n"), tt.problem)
 		})
 	}
 	for _, src := range []string{goodOKF, strings.ReplaceAll(goodOKF, "\n", "\r\n"), strings.Replace(goodOKF, "2026-11-17T12:00:00Z", "'2026-11-17T12:00:00.123Z'", 1), strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z", "generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1)} {
-		b, err := parseFrontmatter([]byte(src))
+		b, err := okf.Parse([]byte(src))
 		require.NoError(t, err)
-		assert.Empty(t, b.okfProblems())
+		assert.Empty(t, profileProblems(b))
 	}
-	b, err := parseFrontmatter([]byte("---\ntype: Guide\ntitle: A\ndescription: B\ngenerated: nope\n---\n"))
+	b, err := okf.Parse([]byte("---\ntype: Guide\ntitle: A\ndescription: B\ngenerated: nope\n---\n"))
 	require.NoError(t, err)
-	assert.Contains(t, b.okfProblems(), "generated must be a mapping")
+	assert.Contains(t, profileProblems(b), "generated must be a mapping")
 	statuses := []struct {
 		name, field string
 		valid       bool
@@ -68,17 +70,17 @@ func TestOKFValidationMatrix(t *testing.T) {
 	}
 	for _, tt := range statuses {
 		t.Run("status "+tt.name, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte(strings.Replace(goodOKF, "type: Guide\n", tt.field, 1)))
+			b, err := okf.Parse([]byte(strings.Replace(goodOKF, "type: Guide\n", tt.field, 1)))
 			require.NoError(t, err)
-			changed, _ := b.fixOKF("page.md", frontmatterRules{{"**", "Guide"}}, "", "")
+			changed, _ := fixOKF(b, "page.md", frontmatterRules{{"**", "Guide"}}, "", "")
 			require.True(t, changed)
 			if tt.valid {
-				assert.Empty(t, b.okfProblems())
+				assert.Empty(t, profileProblems(b))
 			} else {
-				assert.Contains(t, b.okfProblems(), "status must be a non-empty string")
+				assert.Contains(t, profileProblems(b), "status must be a non-empty string")
 			}
 			if tt.field != "" {
-				data, _, err := b.encode()
+				data, err := b.Marshal()
 				require.NoError(t, err)
 				assert.Contains(t, string(data), tt.field)
 			}
@@ -108,40 +110,40 @@ func TestOKFFixMatrix(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte("---\n{}\n---\n" + tt.body))
+			b, err := okf.Parse([]byte("---\n{}\n---\n" + tt.body))
 			require.NoError(t, err)
-			changed, notes := b.fixOKF("docs/file.md", tt.rules, tt.by, tt.description)
+			changed, notes := fixOKF(b, "docs/file.md", tt.rules, tt.by, tt.description)
 			require.True(t, changed)
 			if tt.wantTitle != "" {
-				require.NotNil(t, b.fields["title"])
-				assert.Equal(t, tt.wantTitle, b.fields["title"].Value)
+				require.NotNil(t, b.Field("title"))
+				assert.Equal(t, tt.wantTitle, b.Field("title").Value)
 			}
 			if tt.wantType != "" {
-				require.NotNil(t, b.fields["type"])
-				assert.Equal(t, tt.wantType, b.fields["type"].Value)
+				require.NotNil(t, b.Field("type"))
+				assert.Equal(t, tt.wantType, b.Field("type").Value)
 			}
 			if tt.wantNote != "" {
 				assert.Contains(t, fmt.Sprint(notes), tt.wantNote)
 			}
 			if tt.wantGenerated {
-				assert.Equal(t, "2026-11-17T12:34:56Z", mappingField(b.fields["generated"], "at").Value)
+				assert.Equal(t, "2026-11-17T12:34:56Z", b.Field("generated", "at").Value)
 			} else {
-				assert.Nil(t, b.fields["generated"])
+				assert.Nil(t, b.Field("generated"))
 			}
-			data, _, err := b.encode()
+			data, err := b.Marshal()
 			require.NoError(t, err)
 			assert.True(t, bytes.HasSuffix(data, []byte(tt.body)))
-			changed, _ = b.fixOKF("docs/file.md", tt.rules, tt.by, tt.description)
+			changed, _ = fixOKF(b, "docs/file.md", tt.rules, tt.by, tt.description)
 			assert.False(t, changed)
 			if tt.description == "" && tt.by != "" {
-				changed, _ = b.fixOKF("docs/file.md", tt.rules, "human:second", "Details")
+				changed, _ = fixOKF(b, "docs/file.md", tt.rules, "human:second", "Details")
 				require.True(t, changed)
-				g := b.fields["generated"]
+				g := b.Field("generated")
 				require.NotNil(t, g)
-				require.NotNil(t, mappingField(g, "by"))
-				require.NotNil(t, mappingField(g, "at"))
-				assert.Equal(t, "human:second", mappingField(g, "by").Value)
-				assert.Equal(t, "2026-11-17T12:34:56Z", mappingField(g, "at").Value)
+				require.NotNil(t, b.Field("generated", "by"))
+				require.NotNil(t, b.Field("generated", "at"))
+				assert.Equal(t, "human:second", b.Field("generated", "by").Value)
+				assert.Equal(t, "2026-11-17T12:34:56Z", b.Field("generated", "at").Value)
 			}
 		})
 	}
@@ -186,11 +188,11 @@ func TestOKFFixFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, strings.ReplaceAll(string(data), "\r\n", ""), "\n")
 	assert.True(t, bytes.HasSuffix(data, []byte(original)))
-	b, err := parseFrontmatter(data)
+	b, err := okf.Parse(data)
 	require.NoError(t, err)
-	assert.Equal(t, "Guide", b.fields["type"].Value)
-	assert.Equal(t, "Useful description", b.fields["description"].Value)
-	assert.Equal(t, "human:test", mappingField(b.fields["generated"], "by").Value)
+	assert.Equal(t, "Guide", b.Field("type").Value)
+	assert.Equal(t, "Useful description", b.Field("description").Value)
+	assert.Equal(t, "human:test", b.Field("generated", "by").Value)
 	assert.Regexp(t, `(?m)^generated: \{by: [^,]+, at: "[0-9T:Z-]+"\}\r?$`, string(data))
 	for _, flag := range []string{"-by", "-description"} {
 		out.Reset()
@@ -208,6 +210,8 @@ func TestOKFCanonicalFormatting(t *testing.T) {
 		name, a, b string
 		equal      bool
 	}{
+		{"referenced footnote content", "Claim.[^a]\n\n[^a]: A\n", "Claim.[^a]\n\n[^a]: <A>\n", false},
+		{"footnote definition placement", "Claim.[^a]\n\n[^a]: A\n", "[^a]: A\n\nClaim.[^a]\n", true},
 		{"rewrap", "A long line of prose.\n", "A long line\nof prose.\n", true},
 		{"table padding", "| A | B |\n|---|---|\n| x | y |\n", "| A   | B   |\n| --- | --- |\n| x   | y   |\n", true},
 		{"bullet", "* one\n* two\n", "- one\n- two\n", true},
@@ -284,7 +288,7 @@ func TestOKFChangedMatrix(t *testing.T) {
 }
 
 func TestOKFMetadataComparison(t *testing.T) {
-	base, err := parseFrontmatter([]byte(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1)))
+	base, err := okf.Parse([]byte(strings.Replace(goodOKF, "  by: human:test\n", "  source: original\n  by: human:test\n", 1)))
 	require.NoError(t, err)
 	cases := []struct {
 		name, src  string
@@ -298,9 +302,11 @@ func TestOKFMetadataComparison(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte(tt.src))
+			b, err := okf.Parse([]byte(tt.src))
 			require.NoError(t, err)
-			assert.Equal(t, tt.meaningful, frontmatterMeaningful(base, b))
+			changed, err := frontmatterMeaningful(base, b)
+			require.NoError(t, err)
+			assert.Equal(t, tt.meaningful, changed)
 		})
 	}
 }
@@ -317,19 +323,19 @@ func TestOKFFixLeavesExistingValuesAlone(t *testing.T) {
 		{"at only", strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z\n", "generated: {at: '2020-01-01T00:00:00Z'}\n", 1), "by", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte(tt.src))
+			b, err := okf.Parse([]byte(tt.src))
 			require.NoError(t, err)
-			before, _, err := b.encode()
+			before, err := b.Marshal()
 			require.NoError(t, err)
-			changed, notes := b.fixOKF("docs/page.md", frontmatterRules{{"docs/**", "Reference"}}, "human:other", "Other description")
+			changed, notes := fixOKF(b, "docs/page.md", frontmatterRules{{"docs/**", "Reference"}}, "human:other", "Other description")
 			assert.False(t, changed)
 			if tt.wantNote {
 				assert.Contains(t, fmt.Sprint(notes), "both")
-				assert.Nil(t, mappingField(b.fields["generated"], tt.missing))
+				assert.Nil(t, b.Field("generated", tt.missing))
 			} else {
 				assert.Empty(t, notes)
 			}
-			after, _, err := b.encode()
+			after, err := b.Marshal()
 			require.NoError(t, err)
 			assert.Equal(t, before, after)
 		})
@@ -358,16 +364,30 @@ func TestOKFFixReportsEachGapOnce(t *testing.T) {
 
 func TestOKFFixLegacyDateOnCompletion(t *testing.T) {
 	src := "---\ntitle: Title\nlast_edited: 2025-01-01\n---\n# Title\n"
-	b, err := parseFrontmatter([]byte(src))
+	b, err := okf.Parse([]byte(src))
 	require.NoError(t, err)
-	changed, _ := b.fixOKF("page.md", nil, "human:first", "")
+	changed, _ := fixOKF(b, "page.md", nil, "human:first", "")
 	assert.False(t, changed)
-	assert.NotNil(t, b.fields["last_edited"])
-	changed, _ = b.fixOKF("page.md", frontmatterRules{{"**", "Guide"}}, "human:second", "Details")
+	assert.NotNil(t, b.Field("last_edited"))
+	changed, _ = fixOKF(b, "page.md", frontmatterRules{{"**", "Guide"}}, "human:second", "Details")
 	require.True(t, changed)
-	assert.Nil(t, b.fields["last_edited"])
-	assert.Empty(t, b.okfProblems())
-	data, _, err := b.encode()
+	assert.Nil(t, b.Field("last_edited"))
+	assert.Empty(t, profileProblems(b))
+	data, err := b.Marshal()
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "last_edited")
+}
+
+func TestOKFSourcesDoNotInferCitationIntent(t *testing.T) {
+	for _, sources := range []string{"", "sources: [{id: api, resource: 'references/api.md'}]\n"} {
+		src := strings.Replace(goodOKF, "type: Guide\n", "type: Guide\n"+sources, 1)
+		src += "\nClaim.[^api] Ordinary note.[^note] Unknown label.[^unknown]\n\n[^api]: API guide\n[^note]: An aside\n\n`[^inline]`\n\n```markdown\n[^code]\n```\n\n[Future concept](/not-yet-written.md)\n"
+		b, err := okf.Parse([]byte(src))
+		require.NoError(t, err)
+		assert.Empty(t, profileProblems(b))
+		body := string(b.Body)
+		changed, _ := fixOKF(b, "page.md", nil, "", "")
+		assert.False(t, changed)
+		assert.Equal(t, body, string(b.Body))
+	}
 }

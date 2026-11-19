@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:21:15Z" }
+generated: { by: codex/gpt-6, at: "2026-11-19T21:31:09Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -16,6 +16,12 @@ and quoted or native `YYYY-MM-DD` dates (midnight UTC). A date-time without
 an offset is invalid. Kenn producers write the actual edit time in UTC,
 ending in `Z`, rather than reducing precision to a date. Use Guide for instructions,
 Reference for facts and formats, and Explanation for architecture and research.
+
+Go programs can read a page with `okf.Parse` from `go.kenn.io/kit/okf`.
+Use `doc.Field("generated", "at")` with `okf.Timestamp` to read its edit
+time, or `doc.NormalizedMetadata()` to read singleton lists and timestamps
+in a consistent form. Parsing also accepts bundle indexes and incomplete
+metadata. The additional authoring requirements below apply to kennlint.
 
 Write provenance on one line, for example:
 `generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T08:00:00Z" }`.
