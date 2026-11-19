@@ -2,9 +2,7 @@
 type: Guide
 title: "Adopting packed content storage"
 description: "Integrate packed content storage and maintain its publication and recovery guarantees."
-generated:
-  by: human:salmonumbrella
-  at: "2026-11-17T20:55:53Z"
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # Adopting packed content storage

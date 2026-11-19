@@ -2,19 +2,26 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex, at: 2026-11-18T11:16:46Z }
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:50:48Z" }
 ---
 
 # Adopting the Kenn documentation profile
 
-Kenn repositories use the OKF documentation profile for tracked Markdown.
-Each page has nonempty string `type`, `title`, and `description` fields, plus
-`generated.by` identifying its actor (for example `human:salmonumbrella`) and
-`generated.at` with the actual edit time in UTC, in RFC 3339 format ending in
-`Z`. Use Guide for instructions, Reference for facts and formats, and
-Explanation for architecture and research. Extra metadata is allowed.
-Write provenance on one line: `generated: { by: codex, at: 2026-11-18T10:00:00Z }`.
-The fixer emits a flow mapping; equivalent existing block mappings remain valid.
+Kenn applies a documentation profile to tracked Markdown based on the
+[pinned OKF v0.2 specification](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c/SPEC.md).
+OKF itself requires only `type`. Kenn also requires a nonempty `title` and
+`description`, and `generated` recording the actor and the UTC time of the
+last meaningful edit (RFC 3339 ending in `Z`). Use Guide for instructions,
+Reference for facts and formats, and Explanation for architecture and research.
+
+Write provenance on one line, for example:
+`generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T08:00:00Z" }`.
+For an agent-authored edit, name the actual coding tool and model/version as
+`<producer>/<version>`. Use `human:<id>` only for a hand-authored edit, not
+the owner of the repository or the person who approved an agent's change.
+For an automated process, use `process:<id>`. If the actor is unknown, ask
+rather than infer it from Git credentials. Generation does not imply review.
+The fixer writes an inline mapping; equivalent block mappings remain readable.
 
 The optional top-level `status` is `stable`, `draft`, or `deprecated`. An
 omitted status means stable; explicitly marking a page stable does not mean it
@@ -33,10 +40,10 @@ the check to tracked files; put flags before paths.
 
 Configure repeatable path rules such as `-type-rule 'docs/reference/**=Reference'`.
 Rules must agree where they overlap. Run `kennlint frontmatter -fix` with
-those rules and `-by human:your-login` to fill missing fields. When it adds
+those rules and `-by <actor>` to fill missing fields. When it adds
 `generated.at`, the fixer stamps the current UTC time. Converting a page records
-the converting actor and time in `generated`; its earlier history remains in
-Git. The fixer takes an H1 title only when it is the first block; supply a
+the actual converting actor and time, not an invented original author or old
+edit time. Git retains earlier history. The fixer takes an H1 title only when it is the first block; supply a
 missing description with
 `-description 'Text'` for a single selected file. It preserves valid values
 and the Markdown body and reports metadata it cannot determine. Track new
@@ -53,7 +60,7 @@ timestamp change. Fix a stale timestamp by hand; `-fix` never bumps an existing
 timestamp. Kit runs the read-only `make lint-frontmatter` or
 `make lint-frontmatter-changed` check. On failure the Make target prints
 `fix locally: make fix-frontmatter`; that target runs the fixer with Kit’s
-rules, and `BY=human:<login>` supplies the actor. Other repositories can use
+rules, and `BY=<actor>` supplies the actor. Other repositories can use
 the same check and fix target pattern. CI does not write files.
 
 Repositories migrating after Kit can temporarily pass `-legacy` to retain the
@@ -82,26 +89,30 @@ misspelled source ID. The check therefore validates declared source IDs, not
 unmatched footnote labels, and does not require every source to be cited.
 
 No sources or backlinks are required. Validation never opens source resources
-or fetches remote links, including private URLs. Ordinary document links can
-be relative or bundle-root-relative; missing targets are tolerated because
+or fetches remote links. Prefer ordinary file-relative Markdown links for
+other files in the repository (for example, `[lint guide](adopting-kennlint.md)`); OKF also
+supports bundle-root-relative links. Missing targets are tolerated because
 linked knowledge may not exist yet. Authored links are not rewritten.
 
 ## Skills
 
 List Kenn-managed skills with repeatable `-managed-skill 'skills/*/SKILL.md'`
-only when their loaders and sync targets preserve nested YAML mappings. This
+only after confirming their loaders and sync targets preserve nested YAML
+mappings. This
 profile is a Kenn extension, not strict Agent Skills metadata, which allows
 only string values. Portable, third-party, and imported skills stay unlisted
 and untouched; symlinked skill files and all bundle resources, assets,
 templates, and fixtures are skipped. A tracked repository-root `SKILL.md` makes
 the repository root its bundle, whether or not the skill is listed.
 
-Keep native `name` and `description` fields. The managed profile adds:
+Keep native `name` and `description` fields; do not require a separate
+`title` on a skill. Apply the same actor and UTC-time rules to the Kenn
+extension:
 
 ```yaml
 metadata:
   type: Skill
-  generated: { by: codex, at: "2026-11-18T10:00:00Z" }
+  generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T08:00:00Z" }
   status: deprecated # only when the skill has been retired
 ```
 

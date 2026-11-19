@@ -79,53 +79,59 @@ func TestPrefixedTelemetryEnabledEnv(t *testing.T) {
 func TestEligible(t *testing.T) {
 	type admissionCase struct {
 		name, generic, prefixed string
-		absent                  bool
+		sample                  Consent
 		veto, value             string
 		version                 string
 		processDisabled         bool
 		enabled                 bool
 	}
 	tests := []admissionCase{
-		{name: "absent", version: "v1.2.3", absent: true, enabled: true},
-		{name: "empty", version: "v1.2.3", enabled: true},
-		{name: "unknown", version: "v1.2.3", generic: "enabled", prefixed: "2", enabled: true},
-		{name: "tracking zero", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: "0", enabled: true},
-		{name: "tracking false", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
-		{name: "tracking padded zero", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: " 0 ", enabled: true},
-		{name: "tracking set", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: "1"},
-		{name: "tracking empty", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK"},
-		{name: "tracking other", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: "off"},
-		{name: "ci set", version: "v1.2.3", absent: true, veto: "CI", value: "true"},
-		{name: "ci empty", version: "v1.2.3", generic: "1", veto: "CI"},
-		{name: "ci false", version: "v1.2.3", generic: "1", veto: "CI", value: "false"},
-		{name: "process disable", version: "v1.2.3", generic: "1", processDisabled: true},
-		{name: "release without v", absent: true, version: "1.2.3", enabled: true},
-		{name: "development", absent: true, version: "dev"},
-		{name: "fork", absent: true, version: "v1.2.3-fork.1"},
-		{name: "empty version", absent: true},
-		{name: "partial version", absent: true, version: "v1.2"},
-		{name: "build metadata", absent: true, version: "v1.2.3+build.1"},
-		{name: "leading space", absent: true, version: " v1.2.3"},
-		{name: "trailing newline", absent: true, version: "v1.2.3\n"},
+		{name: "empty", version: "v1.2.3"},
+		{name: "stored yes", version: "v1.2.3", sample: ConsentGranted, enabled: true},
+		{name: "stored no", version: "v1.2.3", sample: ConsentDenied},
+		{name: "generic yes over no", version: "v1.2.3", sample: ConsentDenied, generic: " yes ", enabled: true},
+		{name: "prefixed off over yes", version: "v1.2.3", sample: ConsentGranted, prefixed: "0"},
+		{name: "prefixed yes alone", version: "v1.2.3", prefixed: "1"},
+		{name: "unknown", version: "v1.2.3", generic: "enabled", prefixed: "2"},
+		{name: "tracking zero", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: "0", enabled: true},
+		{name: "tracking false", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
+		{name: "tracking padded zero", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: " 0 ", enabled: true},
+		{name: "tracking set", version: "v1.2.3", sample: ConsentGranted, veto: "DO_NOT_TRACK", value: "1"},
+		{name: "tracking empty", version: "v1.2.3", sample: ConsentGranted, veto: "DO_NOT_TRACK"},
+		{name: "tracking other", version: "v1.2.3", sample: ConsentGranted, veto: "DO_NOT_TRACK", value: "off"},
+		{name: "ci set", version: "v1.2.3", sample: ConsentGranted, veto: "CI", value: "true"},
+		{name: "ci empty", version: "v1.2.3", sample: ConsentGranted, veto: "CI"},
+		{name: "ci false", version: "v1.2.3", sample: ConsentGranted, veto: "CI", value: "false"},
+		{name: "process disable", version: "v1.2.3", sample: ConsentGranted, processDisabled: true},
+		{name: "release without v", generic: "1", version: "1.2.3", enabled: true},
+		{name: "development", generic: "1", version: "dev"},
+		{name: "fork", generic: "1", version: "v1.2.3-fork.1"},
+		{name: "empty version", generic: "1"},
+		{name: "partial version", generic: "1", version: "v1.2"},
+		{name: "build metadata", generic: "1", version: "v1.2.3+build.1"},
+		{name: "leading space", generic: "1", version: " v1.2.3"},
+		{name: "trailing newline", generic: "1", version: "v1.2.3\n"},
 	}
 	for _, value := range []string{"1", "true", "yes", "on", " TRUE ", " YeS ", " ON ", " 1 "} {
-		tests = append(tests,
-			admissionCase{name: "generic " + value, version: "v1.2.3", generic: value, enabled: true},
-			admissionCase{name: "prefixed " + value, version: "v1.2.3", prefixed: value, enabled: true})
+		tests = append(tests, admissionCase{name: "generic " + value, version: "v1.2.3", generic: value, enabled: true})
 	}
 	for _, value := range []string{"0", "false", "no", "off", " FALSE ", "Off"} {
 		tests = append(tests,
-			admissionCase{name: "generic " + value, version: "v1.2.3", generic: value, prefixed: "1"},
+			admissionCase{name: "generic " + value, version: "v1.2.3", generic: value, sample: ConsentGranted},
 			admissionCase{name: "prefixed " + value, version: "v1.2.3", generic: "1", prefixed: value})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			enablePostHogTelemetryForTest()
 			t.Cleanup(enablePostHogTelemetryForTest)
-			if !tt.absent {
-				t.Setenv(GenericEnabledEnv, tt.generic)
-				t.Setenv("KATA_TELEMETRY_ENABLED", tt.prefixed)
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			if tt.sample != ConsentUnanswered {
+				require.NoError(t, RecordConsent(tt.sample == ConsentGranted))
 			}
+			t.Setenv(GenericEnabledEnv, tt.generic)
+			t.Setenv("KATA_TELEMETRY_ENABLED", tt.prefixed)
 			if tt.veto != "" {
 				t.Setenv(tt.veto, tt.value)
 			}
@@ -167,7 +173,7 @@ func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
 	t.Cleanup(enablePostHogTelemetryForTest)
 	t.Setenv(GenericEnabledEnv, "0")
 
-	reporter, err := NewReporter(Options{Version: "v1.2.3"})
+	reporter, err := NewReporter(Options{APIKey: "caller-owned-key", Version: "v1.2.3"})
 
 	require.NoError(t, err)
 	assert.False(t, reporter.Enabled())
@@ -240,7 +246,6 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 			t.Cleanup(enablePostHogTelemetryForTest)
 			tt.disable(t)
 			options := []Option{nil, WithAllowedEvent("app_opened")}
-
 			nilFactoryReporter, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: "v1.2.3"}, nil, options...)
 			require.NoError(t, err)
 			assert.True(t, nilFactoryReporter.EventAllowed("app_opened"))
@@ -360,11 +365,13 @@ func TestPostHogReporterCaptureUsesAnonymousDistinctIDAndPrivacyDefaults(t *test
 		allowedEvents: testAllowedTelemetryEvents(),
 		enabled:       true,
 	}
+	reporter.allowedEvents["daemon_started"]["telemetry_consent"] = AllowBool
 
 	err := reporter.Capture("daemon_started", map[string]any{
 		"$geoip_disable":          false,
 		"$process_person_profile": true,
 		"application":             "caller-app",
+		"telemetry_consent":       false,
 		"distinct_id":             "user-provided",
 		"path":                    "/Users/example/private",
 		"project_count":           3,
@@ -384,6 +391,7 @@ func TestPostHogReporterCaptureUsesAnonymousDistinctIDAndPrivacyDefaults(t *test
 	assert.NotContains(capture.Properties, "view")
 	assert.False(capture.Properties["$process_person_profile"].(bool))
 	assert.True(capture.Properties["$geoip_disable"].(bool))
+	assert.Equal(true, capture.Properties["telemetry_consent"])
 	assert.Equal("kata", capture.Properties["application"])
 	assert.Equal("v-test", capture.Properties["version"])
 	assert.Equal("abc123", capture.Properties["commit"])
@@ -457,7 +465,7 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 	require.NoError(err)
 
 	err = reporter.Capture("event_without_properties", map[string]any{
-		"private_path": "/Users/example/private",
+		"private_path": "project-a/private",
 	})
 	require.NoError(err)
 
@@ -710,11 +718,11 @@ func TestReporterSerializedPayloadMatchesDocumentedFields(t *testing.T) {
 				assert.NotEmpty(t, event["uuid"])
 				var properties map[string]json.RawMessage
 				require.NoError(t, json.Unmarshal(event["properties"], &properties))
-				assert.ElementsMatch(t, []string{"application", "source", "version", "commit", "distribution", "goos", "goarch", "install_age_hours", "$lib", "$lib_version", "$process_person_profile", "$geoip_disable", "screen", "count"}, slices.Collect(maps.Keys(properties)))
+				assert.ElementsMatch(t, []string{"telemetry_consent", "application", "source", "version", "commit", "distribution", "goos", "goarch", "install_age_hours", "$lib", "$lib_version", "$process_person_profile", "$geoip_disable", "screen", "count"}, slices.Collect(maps.Keys(properties)))
 				for key, want := range map[string]string{
 					"application": `"test"`, "source": `"cli"`, "version": `"v1.2.3"`, "commit": `"abc123"`, "distribution": `"homebrew"`,
 					"goos": `"` + runtime.GOOS + `"`, "goarch": `"` + runtime.GOARCH + `"`,
-					"install_age_hours": "48", "$lib": `"posthog-go"`, "$process_person_profile": "false", "$geoip_disable": "true",
+					"telemetry_consent": "true", "install_age_hours": "48", "$lib": `"posthog-go"`, "$process_person_profile": "false", "$geoip_disable": "true",
 					"screen": `"home"`, "count": "9007199254740993",
 				} {
 					assert.Equal(t, want, string(properties[key]), key)

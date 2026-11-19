@@ -20,6 +20,7 @@ import (
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/consolewindow"
 	gitenv "go.kenn.io/kit/git/env"
+	"go.kenn.io/kit/pathresolve"
 )
 
 // trimmedText is a flag whose value, once set, is non-empty after trimming.
@@ -226,7 +227,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	changed := flags.String("changed", "", "require metadata to change for meaningful edits since this ref")
 	legacy := flags.Bool("legacy", false, "use the temporary last_edited profile")
 	var by, description trimmedText
-	flags.Var(&by, "by", "actor for missing generated.by")
+	flags.Var(&by, "by", "actor for missing generated.by (producer/version, human:id, or process:id)")
 	flags.Var(&description, "description", "description for one selected file")
 	var rules frontmatterRules
 	flags.Var(&rules, "type-rule", "path rule GLOB=TYPE (repeatable)")
@@ -276,7 +277,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	docCount := 0
 	rootSkill := slices.Contains(files, "SKILL.md")
 	for _, file := range files {
-		if !frontmatterSelected(file, selected, excludes) {
+		if !frontmatterSelected(file, nil, excludes) {
 			continue
 		}
 		skill := isSkillFile(file)
@@ -297,6 +298,30 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 		if skill {
 			eligibleSkills = append(eligibleSkills, file)
+		}
+		if !frontmatterSelected(file, selected, nil) {
+			continue
+		}
+		if !skill && err == nil && info.Mode()&os.ModeSymlink != 0 {
+			resolved, resolveErr := pathresolve.EvalSymlinks(filepath.Join(root, filepath.FromSlash(file)))
+			if resolveErr != nil && !errors.Is(resolveErr, fs.ErrNotExist) {
+				return 0, fmt.Errorf("%s: resolve symlink: %w", file, resolveErr)
+			}
+			if resolveErr == nil {
+				resolvedRoot, rootErr := pathresolve.EvalSymlinks(root)
+				if rootErr != nil {
+					return 0, fmt.Errorf("resolve repository root: %w", rootErr)
+				}
+				rel, relErr := filepath.Rel(resolvedRoot, resolved)
+				if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					target := filepath.ToSlash(rel)
+					if rootSkill || isSkillFile(target) || frontmatterInSkillDirectory(target, skillDirs) {
+						continue
+					}
+				}
+			}
+		}
+		if skill {
 			if !slices.ContainsFunc(managedSkills, func(pattern string) bool { return frontmatterGlob(pattern, file) }) {
 				continue
 			}
@@ -307,7 +332,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	for _, pattern := range managedSkills {
 		if !slices.ContainsFunc(eligibleSkills, func(file string) bool { return frontmatterGlob(pattern, file) }) {
-			return 0, fmt.Errorf("-managed-skill pattern %q matches no tracked SKILL.md selected for checking", pattern)
+			return 0, fmt.Errorf("-managed-skill pattern %q matches no tracked SKILL.md", pattern)
 		}
 	}
 	if description.value != "" && docCount != 1 {
@@ -341,9 +366,9 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			return total, err
 		}
 		for _, file := range stale {
-			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to you"
+			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to the actual editor"
 			if isSkillFile(file) {
-				message = "content changed without a later metadata.generated.at; set metadata.generated.at to the edit time and metadata.generated.by to you"
+				message = "content changed without a later metadata.generated.at; set metadata.generated.at to the edit time and metadata.generated.by to the actual editor"
 			}
 			if *legacy {
 				message = "content changed without changing last_edited"
