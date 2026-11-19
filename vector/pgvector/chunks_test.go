@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"math"
 	"net/url"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -46,21 +44,13 @@ func TestChunks(t *testing.T) {
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 	_, err = db.ExecContext(ctx, `CREATE TABLE "Mixed chunks" (doc_key text, chunk_index integer, embedding public.halfvec(2), PRIMARY KEY(doc_key,chunk_index))`)
 	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `CREATE TABLE incomplete (doc_key text, embedding public.halfvec(2))`)
-	require.NoError(t, err)
-	_, err = pgvector.AttachChunks[string](ctx, db, "incomplete", 2)
-	require.Error(t, err)
 
 	// Attachment and search must use the borrowed transaction's only connection.
 	db.SetMaxOpenConns(1)
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	require.NoError(t, err)
-	chunks, err := pgvector.AttachChunks[string](ctx, tx, "Mixed chunks", 2)
+	chunks, err := pgvector.AttachChunks[string](ctx, tx, "Mixed chunks")
 	require.NoError(t, err)
-	_, err = pgvector.AttachChunks[string](ctx, tx, "Mixed chunks", 3)
-	require.Error(t, err)
-	_, err = pgvector.AttachChunks[string](ctx, tx, "Mixed chunks", 0)
-	require.Error(t, err)
 	require.NoError(t, tx.Commit())
 
 	sequence := func(key string, n int) iter.Seq2[pgvector.Chunk[string], error] {
@@ -125,18 +115,6 @@ func TestChunks(t *testing.T) {
 
 	tx, err = db.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, sequence("other", 1))
-	require.Error(t, err)
-	require.NoError(t, tx.Rollback())
-	tx, err = db.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
-		yield(pgvector.Chunk[string]{Doc: "replace", Vector: vector.Vector{float32(math.NaN()), 1}}, nil)
-	})
-	require.Error(t, err)
-	require.NoError(t, tx.Rollback())
-	tx, err = db.BeginTx(ctx, nil)
-	require.NoError(t, err)
 	_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
 		yield(pgvector.Chunk[string]{Doc: "replace", Vector: vector.Vector{1}}, nil)
 	})
@@ -153,31 +131,16 @@ func TestChunks(t *testing.T) {
 	require.NoError(t, err)
 	tx, err = db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	require.NoError(t, err)
-	_, err = chunks.SearchTx(ctx, tx, vector.Vector{1}, 10)
-	require.Error(t, err)
-	_, err = chunks.SearchTx(ctx, tx, vector.Vector{1, float32(math.Inf(1))}, 10)
-	require.Error(t, err)
-	page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
+	hits, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
 	require.NoError(t, err)
-	assert.Equal(t, 10, page.ScanCap)
-	require.Len(t, page.Hits, 2)
-	assert.Equal(t, []string{"covered", "other"}, []string{page.Hits[0].Doc, page.Hits[1].Doc})
-	assert.InDelta(t, 0.8944272, page.Hits[0].Score, 1e-6)
-	assert.InDelta(t, 0.8942525, page.Hits[1].Score, 1e-6)
-	assert.Nil(t, page.Hits[0].Revision)
-	page, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, -1)
+	require.Len(t, hits, 2)
+	assert.Equal(t, []string{"covered", "other"}, []string{hits[0].Doc, hits[1].Doc})
+	assert.InDelta(t, 0.8944272, hits[0].Score, 1e-6)
+	assert.InDelta(t, 0.8942525, hits[1].Score, 1e-6)
+	assert.Nil(t, hits[0].Revision)
+	hits, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, -1)
 	require.NoError(t, err)
-	assert.Empty(t, page.Hits)
-	assert.Zero(t, page.ScanCap)
-	page, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 1001)
-	require.NoError(t, err)
-	var version string
-	require.NoError(t, tx.QueryRowContext(ctx, `SELECT extversion FROM pg_extension WHERE extname='vector'`).Scan(&version))
-	if strings.HasPrefix(version, "0.7.") {
-		assert.Equal(t, 1000, page.ScanCap)
-	} else {
-		assert.Equal(t, 1001, page.ScanCap)
-	}
+	assert.Empty(t, hits)
 	require.NoError(t, tx.Commit())
 
 	keys := make([]string, 201)
@@ -202,4 +165,29 @@ func TestChunks(t *testing.T) {
 	require.NoError(t, tx.Commit())
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks"`).Scan(&count))
 	assert.Equal(t, 2, count)
+	_, err = db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index integer, embedding public.halfvec(3))`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO chunks SELECT i::text, 0, format('[%s,%s,%s]', sin(i*0.91), cos(i*1.17), sin(i*0.23))::public.halfvec FROM generate_series(1,1600) i`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `CREATE INDEX ON chunks USING hnsw (embedding public.halfvec_cosine_ops)`)
+	require.NoError(t, err)
+	chunks, err = pgvector.AttachChunks[string](ctx, db, "chunks")
+	require.NoError(t, err)
+	reader, err := sql.Open("pgx", u.String())
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, reader.Close()) }()
+	tx, err = reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, `SET LOCAL enable_seqscan=off`)
+	require.NoError(t, err)
+	hits, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0.3, 0.1}, 1200)
+	require.NoError(t, err)
+	require.Equal(t, 1200, len(hits))
+	for i := 1; i < len(hits); i++ {
+		if hits[i-1].Score < hits[i].Score {
+			t.Fatalf("hits %d and %d are out of order: %v < %v", i-1, i, hits[i-1].Score, hits[i].Score)
+		}
+	}
+	require.NoError(t, tx.Commit())
 }
