@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"reflect"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/yuin/goldmark/v2/ast"
@@ -65,23 +66,20 @@ func canonicalHTML(src []byte) string {
 
 var proseSpace = regexp.MustCompile(`[ \t\n\f]+`)
 
-// optionalFields and listFields follow OKF v0.3 §11.2: an empty or null
-// optional value is absent, and a list field accepts one item as a scalar.
-// Unknown extension keys keep their values untouched.
+// OKF v0.3 §11.2: an empty or null value is an absent key, and a list field
+// accepts one item as a scalar. List members are never dropped, and the
+// values of x- extension keys are kept as written.
 var (
-	optionalFields = []string{"status", "tags", "stale_after", "resource", "sources"}
-	listFields     = []string{"tags", "sources", "parameters"}
+	listFields = []string{"tags", "sources", "parameters"}
+	// absentMappings are defined mapping fields whose empty form is also absent.
+	absentMappings = map[string]bool{"usage_window": true, "executor": true, "attester": true}
 )
 
 func canonicalMetadata(header map[string]any) {
 	stripProvenance(header)
 	// Verification records a review, not a change to the generated content.
 	delete(header, "verified")
-	for _, key := range optionalFields {
-		if emptyOptionalValue(header[key]) {
-			delete(header, key)
-		}
-	}
+	pruneAbsent(header)
 	for _, key := range listFields {
 		if value, ok := header[key]; ok {
 			if _, isList := value.([]any); !isList {
@@ -90,6 +88,33 @@ func canonicalMetadata(header map[string]any) {
 		}
 	}
 	canonicalTimestamps(header)
+}
+
+func pruneAbsent(m map[string]any) {
+	for key, value := range m {
+		if !strings.HasPrefix(key, "x-") {
+			pruneNested(value)
+		}
+		if emptyOptionalValue(value) || (absentMappings[key] && emptyMapping(value)) {
+			delete(m, key)
+		}
+	}
+}
+
+func emptyMapping(value any) bool {
+	m, ok := value.(map[string]any)
+	return ok && len(m) == 0
+}
+
+func pruneNested(value any) {
+	switch v := value.(type) {
+	case map[string]any:
+		pruneAbsent(v)
+	case []any:
+		for _, item := range v {
+			pruneNested(item)
+		}
+	}
 }
 
 // canonicalTimestamps rewrites the OKF timestamp keys as UTC instants, so quoted
