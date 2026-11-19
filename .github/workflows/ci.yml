@@ -442,7 +442,7 @@ jobs:
         uses: actions/cache@v6.1.0
         with:
           path: ${{ runner.temp }}/embedserver
-          key: embedserver-${{ runner.os }}-${{ runner.arch }}-ort-1.23.2-nomic-cf5b5a86-d241a60d-faces-af6d057c-f12e1279-${{ hashFiles('embedserver/testdata/faces/*') }}
+          key: embedserver-${{ runner.os }}-${{ runner.arch }}-ort-1.23.2-nomic-cf5b5a86-d241a60d-faces-af6d057c-f12e1279-${{ hashFiles('embedserver/testdata/faces/*') }}-nuget
       - name: Stage ONNX Runtime 1.23.2
         shell: python
         run: |
