@@ -91,7 +91,7 @@ func TestRebaseKeepsLiteralsAndNumbersPlaceholders(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, last := rebase(tt.in, tt.n)
+			got, last := RebasePlaceholders(tt.in, tt.n)
 			assert.Equal(t, tt.want, got)
 			assert.Equal(t, tt.last, last)
 		})
@@ -118,4 +118,10 @@ func TestLexicalConfigAllowsOneSchemaQualifier(t *testing.T) {
 		_, err := BuildLexical(rejected)
 		require.Error(t, err, cfg)
 	}
+}
+
+func TestIdentifierHelpers(t *testing.T) {
+	assert.True(t, ValidIdentifier("docs_1"))
+	assert.False(t, ValidIdentifier("bad-name"))
+	assert.Equal(t, `"odd""schema"`, QuoteIdentifier(`odd"schema`))
 }
