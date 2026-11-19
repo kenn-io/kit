@@ -288,13 +288,9 @@ func (s *Store[K, G]) lockChunksTx(ctx context.Context, tx *sql.Tx, id int64) er
 		if _, err := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT pgvector_chunk_lock`); err != nil {
 			return errors.Join(lockErr, err)
 		}
-		if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT pgvector_chunk_lock`); err != nil {
-			return errors.Join(lockErr, err)
-		}
-		return lockErr
 	}
 	_, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT pgvector_chunk_lock`)
-	return err
+	return errors.Join(lockErr, err)
 }
 
 // candidateQuery selects the nearest fresh chunks and returns their stamp revision.
