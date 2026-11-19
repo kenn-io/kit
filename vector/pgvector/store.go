@@ -135,10 +135,7 @@ func (s *Store[K, G]) saveDocument(ctx context.Context, tx *sql.Tx, row generati
 		}
 	}
 	_, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (generation_id,doc_key,revision) SELECT $1,%s,%s FROM %s WHERE %s=$2 ON CONFLICT (generation_id,doc_key) DO UPDATE SET revision=excluded.revision`, s.stamps(), postgres.QuoteIdentifier(s.schema.IDColumn), postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), id, doc)
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // LiveGenerations returns building generations before active generations, newest first.

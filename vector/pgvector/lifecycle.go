@@ -17,6 +17,16 @@ type generationRow struct {
 	state       vector.State
 }
 
+func (s *Store[K, G]) lifecycleLock(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::regclass::oid::text, 1))`, s.generations())
+	return err
+}
+
+func (s *Store[K, G]) lockGeneration(ctx context.Context, tx *sql.Tx, id int64) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::regclass::oid::text || ':' || $2::bigint::text, 0))`, s.generations(), id)
+	return err
+}
+
 // lookup reads a generation row, locking it when lock is set. It rejects persisted states this version cannot interpret.
 func (s *Store[K, G]) lookup(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
@@ -89,11 +99,17 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = s.lifecycleLock(ctx, tx); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if errors.Is(err, vector.ErrGenerationNotFound) {
 		row, err = s.insertGeneration(ctx, tx, gen, model.Fingerprint(), model.Dimensions, state)
 	}
 	if err != nil {
+		return err
+	}
+	if err = s.lockGeneration(ctx, tx, row.id); err != nil {
 		return err
 	}
 	if row.state == vector.StateRetired && (!s.schema.SharedChunks || state != vector.StateBuilding) {
@@ -125,8 +141,14 @@ func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vecto
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = s.lifecycleLock(ctx, tx); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
+		return err
+	}
+	if err = s.lockGeneration(ctx, tx, row.id); err != nil {
 		return err
 	}
 	if row.state == vector.StateRetired && state != vector.StateRetired {
@@ -146,12 +168,41 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = s.lifecycleLock(ctx, tx); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err
 	}
 	if row.state == vector.StateRetired {
 		return vector.ErrRetired
+	}
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT id FROM %s WHERE id=$1 OR state IN ($2,$3) ORDER BY id`, s.generations()), row.id, vector.StateActive, vector.StateBuilding)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			break
+		}
+		ids = append(ids, id)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err = s.lockGeneration(ctx, tx, id); err != nil {
+			return err
+		}
 	}
 	var backlog int64
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s d LEFT JOIN %s stamp ON stamp.generation_id=$1 AND stamp.doc_key=d.%s WHERE NOT %s`, postgres.QuoteIdentifier(s.schema.DocsTable), s.stamps(), postgres.QuoteIdentifier(s.schema.IDColumn), s.covered("d", "stamp")), row.id).Scan(&backlog)
@@ -176,8 +227,14 @@ func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
 		return fmt.Errorf("begin generation reclamation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = s.lifecycleLock(ctx, tx); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
+		return err
+	}
+	if err = s.lockGeneration(ctx, tx, row.id); err != nil {
 		return err
 	}
 	if row.state != vector.StateRetired {

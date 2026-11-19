@@ -4,6 +4,9 @@
 // document key is reused for replacement content. SaveDocuments requires schema
 // USAGE, SELECT on generations, SELECT and UPDATE on documents, SELECT, INSERT,
 // UPDATE, and DELETE on stamps, and SELECT, INSERT, and DELETE on chunks.
+// SaveDocuments requires READ COMMITTED and a rollback on error. Retry a busy
+// generation in a new transaction, and save documents in a consistent order.
+// Stale keys correspond to input entries in order, including repeated keys.
 package pgvector
 
 import (

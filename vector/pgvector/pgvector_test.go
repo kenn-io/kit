@@ -828,11 +828,97 @@ func TestSaveDocumentsTwoGenerationsDuringActivation(t *testing.T) {
 		return err == nil && blocked
 	}, 5*time.Second, 10*time.Millisecond)
 	stale, err = store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 1}})
-	require.NoError(t, err)
-	require.Empty(t, stale)
-	require.NoError(t, tx.Commit())
+	var busy *pgvector.GenerationBusyError
+	require.ErrorAs(t, err, &busy)
+	require.NoError(t, tx.Rollback())
 	if !finished {
 		activationErr = <-done
 	}
 	require.NoError(t, activationErr)
+}
+
+func TestSaveDocumentsRetiredWhileWaitingForDocument(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	blocker, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = blocker.Rollback() }()
+	_, err = blocker.ExecContext(ctx, `UPDATE docs SET body='changed' WHERE id=1`)
+	require.NoError(t, err)
+	var pid int
+	require.NoError(t, blocker.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid))
+	done := make(chan error, 1)
+	go func() {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		_, err = store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 1}})
+		done <- err
+	}()
+	require.Eventually(t, func() bool {
+		var blocked bool
+		err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&blocked)
+		return err == nil && blocked
+	}, 5*time.Second, 10*time.Millisecond)
+	retired := make(chan error, 1)
+	go func() { retired <- store.SetGenerationState(ctx, "a", vector.StateRetired) }()
+	require.Eventually(t, func() bool {
+		var waiting bool
+		err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE wait_event='advisory' AND query LIKE '%pg_advisory_xact_lock%')`).Scan(&waiting)
+		return err == nil && waiting
+	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, blocker.Commit())
+	require.NoError(t, <-done)
+	require.NoError(t, <-retired)
+}
+
+func TestSaveDocumentsRepeatableReadAfterReclaim(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx := t.Context()
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	var count int
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM vectors_generations`).Scan(&count))
+	require.NoError(t, store.SetGenerationState(ctx, "a", vector.StateRetired))
+	require.NoError(t, store.Reclaim(ctx, "a"))
+	_, err = store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 1}})
+	require.ErrorContains(t, err, "requires READ COMMITTED")
+}
+
+func TestSaveDocumentsReclaimWithCallerDocumentLock(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, `UPDATE docs SET body='changed' WHERE id=1`)
+	require.NoError(t, err)
+	var pid int
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid))
+	require.NoError(t, store.SetGenerationState(ctx, "a", vector.StateRetired))
+	done := make(chan error, 1)
+	go func() { done <- store.Reclaim(ctx, "a") }()
+	require.Eventually(t, func() bool {
+		var blocked bool
+		err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&blocked)
+		return err == nil && blocked
+	}, 5*time.Second, 10*time.Millisecond)
+	_, err = store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 1}})
+	rollbackErr := tx.Rollback()
+	reclaimErr := <-done
+	var busy *pgvector.GenerationBusyError
+	assert.ErrorAs(t, err, &busy)
+	assert.NoError(t, rollbackErr)
+	assert.NoError(t, reclaimErr)
+	retry, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = retry.Rollback() }()
+	_, err = store.SaveDocuments(ctx, retry, "a", nil)
+	assert.ErrorIs(t, err, vector.ErrRetired)
 }
