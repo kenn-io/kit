@@ -22,7 +22,7 @@ type Schema struct {
 	ContentColumn  string
 	RevisionColumn string
 	Prefix         string
-	// SharedChunks uses a caller-installed table for all generations.
+	// SharedChunks uses a caller-installed table with an unbounded halfvec column.
 	SharedChunks bool
 	// Begin opens write transactions; the store commits or rolls them back.
 	Begin func(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -146,7 +146,7 @@ func checkCatalog(ctx context.Context, db *sql.DB, schema Schema) error {
  (SELECT atttypid = 'bigint'::regtype FROM pg_attribute WHERE attrelid=to_regclass($1) AND attname='generation_id' AND NOT attisdropped) AND
  (SELECT atttypid = 'integer'::regtype FROM pg_attribute WHERE attrelid=to_regclass($1) AND attname='chunk_index' AND NOT attisdropped) AND
  (SELECT a.atttypid = d.atttypid FROM pg_attribute a, pg_attribute d WHERE a.attrelid=to_regclass($1) AND a.attname='doc_key' AND NOT a.attisdropped AND d.attrelid=to_regclass($2) AND d.attname=$3 AND NOT d.attisdropped) AND
- (SELECT a.atttypid = t.oid FROM pg_attribute a JOIN pg_type t ON t.oid=a.atttypid JOIN pg_depend dep ON dep.objid=t.oid JOIN pg_extension e ON e.oid=dep.refobjid WHERE a.attrelid=to_regclass($1) AND a.attname='embedding' AND NOT a.attisdropped AND t.typname='halfvec' AND e.extname='vector')`, postgres.QuoteIdentifier(name), postgres.QuoteIdentifier(schema.DocsTable), schema.IDColumn).Scan(&valid)
+ (SELECT a.atttypid = t.oid FROM pg_attribute a JOIN pg_type t ON t.oid=a.atttypid JOIN pg_depend dep ON dep.objid=t.oid JOIN pg_extension e ON e.oid=dep.refobjid WHERE a.attrelid=to_regclass($1) AND a.attname='embedding' AND NOT a.attisdropped AND a.atttypmod=-1 AND t.typname='halfvec' AND e.extname='vector')`, postgres.QuoteIdentifier(name), postgres.QuoteIdentifier(schema.DocsTable), schema.IDColumn).Scan(&valid)
 		if err != nil {
 			return fmt.Errorf("check table %s column types: %w", name, err)
 		}
