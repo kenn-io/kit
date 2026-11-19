@@ -162,6 +162,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks", 3)
 		require.NoError(t, err)
+		db.SetMaxIdleConns(0)
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()

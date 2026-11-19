@@ -158,6 +158,13 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 		return page, fmt.Errorf("query vector: %w", err)
 	}
 	limit = max(limit, 0)
+	if limit > 1000 {
+		// Loading the type registers pgvector's session settings on this connection.
+		var loaded bool
+		if err := tx.QueryRowContext(ctx, "SELECT $1::"+c.ext+".halfvec IS NOT NULL", literal).Scan(&loaded); err != nil {
+			return page, fmt.Errorf("load pgvector: %w", err)
+		}
+	}
 	efSearch := min(max(limit, 40), 1000)
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
 		return page, fmt.Errorf("set hnsw.ef_search: %w", err)
