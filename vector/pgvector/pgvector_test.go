@@ -962,12 +962,6 @@ func TestQueryGenerationWithPredicateTxLeavesFailedTransactionToCaller(t *testin
 	require.NoError(t, tx.Rollback())
 }
 
-func TestQueryGenerationWithPredicateTxRejectsNilTransaction(t *testing.T) {
-	store := &pgvector.Store[int64, string]{}
-	_, err := store.QueryGenerationWithPredicateTx(t.Context(), nil, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{})
-	require.ErrorContains(t, err, "transaction is nil")
-}
-
 func TestQueryGenerationWithPredicateTxReclaimedSnapshot(t *testing.T) {
 	db, owner := setupActiveStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
@@ -1086,4 +1080,23 @@ func TestQueryGenerationWithPredicateTxReturnsLockError(t *testing.T) {
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
 	assert.Equal(t, 1, n)
 	require.NoError(t, tx.Rollback())
+}
+
+func TestQueryGenerationWithPredicateTxCancelledLockLeavesTransactionUnusable(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx := t.Context()
+	blocker, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = blocker.Rollback() }()
+	_, err = blocker.ExecContext(ctx, `LOCK TABLE vectors_chunks_g1 IN ACCESS EXCLUSIVE MODE`)
+	require.NoError(t, err)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	queryCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, err = store.QueryGenerationWithPredicateTx(queryCtx, tx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	var n int
+	require.Error(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
 }

@@ -10,8 +10,11 @@
 // An open SaveDocuments transaction holds its generation lock until it ends;
 // lifecycle operations wait. Keep transactions short and use lifecycle deadlines.
 // QueryGenerationWithPredicateTx uses the caller's transaction. Its chunk lock
-// and SET LOCAL settings last until that transaction ends; lock errors leave the
-// transaction usable, while candidate-query SQL errors require rollback.
+// and SET LOCAL settings last until that transaction ends. A chunk lock error
+// with a live context leaves the transaction usable if savepoint recovery
+// succeeds. If the context is cancelled or expires, the connection may be lost;
+// roll back the transaction. Candidate-query and SET LOCAL errors also require
+// rollback.
 package pgvector
 
 import (

@@ -188,12 +188,12 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 }
 
 // QueryGenerationWithPredicateTx searches the caller's transaction. After a
-// query SQL error, the caller must roll it back. The chunk lock lasts until the
-// transaction ends; SET LOCAL also affects later vector queries in it.
+// chunk lock error with a live context, savepoint recovery can leave the
+// transaction usable. If the context is cancelled or expires, the connection
+// may be lost; roll back the transaction. Candidate-query and SET LOCAL errors
+// also require rollback. The chunk lock and SET LOCAL settings last until the
+// transaction ends.
 func (s *Store[K, G]) QueryGenerationWithPredicateTx(ctx context.Context, tx *sql.Tx, gen G, query vector.Vector, limit int, predicate sqlquery.Predicate) ([]vector.Hit[K], error) {
-	if tx == nil {
-		return nil, errors.New("pgvector: transaction is nil")
-	}
 	hits, _, err := s.queryGenerationWithPredicate(ctx, tx, gen, query, limit, predicate, false)
 	return hits, err
 }
@@ -279,7 +279,8 @@ func (s *Store[K, G]) lockChunkTable(ctx context.Context, tx *sql.Tx, id int64) 
 	return err
 }
 
-// lockChunksTx keeps lock errors from aborting the caller's transaction.
+// lockChunksTx recovers from lock errors when the context is live.
+// A cancelled context returns without rolling back to the savepoint.
 func (s *Store[K, G]) lockChunksTx(ctx context.Context, tx *sql.Tx, id int64) error {
 	if _, err := tx.ExecContext(ctx, `SAVEPOINT pgvector_chunk_lock`); err != nil {
 		return err

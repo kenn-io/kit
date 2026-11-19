@@ -232,7 +232,7 @@ pipeline. Preserve these invariants when changing it.
   `EnsureGeneration` refuses retired generations, `Reclaim` drops their table,
   `QueryGenerationWithPredicate` releases its access-share lock when it
   finishes; `QueryGenerationWithPredicateTx` holds it until the caller's
-  transaction ends.
+  transaction ends. Follow its documentation for transaction recovery after errors.
 - Shared storage uses a caller-installed chunk table with `generation_id bigint`,
   `doc_key` matching the document key and cascading on delete, `chunk_index`
   integer or bigint, unbounded halfvec `embedding`, and primary key
