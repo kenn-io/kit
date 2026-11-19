@@ -14,10 +14,11 @@ func TestOKFSources(t *testing.T) {
 	}{
 		{"omitted", "", ""},
 		{"empty list", "sources: []\n", ""},
+		{"empty string", "sources: ''\n", ""},
 		{"resources", "sources:\n  - {id: web, resource: 'https://private.example/page'}\n  - {resource: '../missing.md'}\n  - {resource: '/not-yet-written.md'}\n  - {resource: 'all queries in project X', extra: {anything: true}}\n", ""},
 		{"distinct IDs", "sources: [{id: a, resource: same}, {id: b, resource: same}]\n", ""},
-		{"null", "sources: null\n", "sources must be a sequence"},
-		{"mapping", "sources: {resource: page}\n", "sources must be a sequence"},
+		{"null", "sources: null\n", ""},
+		{"mapping", "sources: {resource: page}\n", ""},
 		{"scalar", "sources: page\n", "sources must be a sequence"},
 		{"scalar entry", "sources: [page]\n", "sources[0] must be a mapping"},
 		{"null entry", "sources: [null]\n", "sources[0] must be a mapping"},

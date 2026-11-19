@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:01:38Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:12:00Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -32,7 +32,8 @@ has been independently verified. Use draft for intentionally provisional
 content. If a retired page is retained, set `status: deprecated` and link to
 its replacement when one exists, optionally using `superseded_by`. Unknown
 status strings are preserved, never interpreted as stable; current-knowledge
-views exclude them. Kenn requires status to be a nonempty string when present. The check
+views exclude them. Null, empty string, and empty list status values mean
+omitted; other present values must be strings. The check
 cannot infer retirement from a filename or age. The fixer never sets or changes
 status.
 
@@ -64,8 +65,9 @@ Run the read-only check in CI with `-changed` set to the pull request base SHA
 and a full Git history. A meaningful content or metadata edit must change
 `generated.at` to a later edit time and set `generated.by` to the editor; the
 same actor may edit again. The actor is advisory: the check verifies the
-timestamp, not who made the edit. Formatting-only changes do not require a
-timestamp change. Fix a stale timestamp by hand; `-fix` never bumps an existing
+timestamp, not who made the edit. Formatting-only changes and verification-only updates do not require a
+timestamp change. Link destination changes remain meaningful because the
+validator cannot distinguish a repair from a change of meaning. Fix a stale timestamp by hand; `-fix` never bumps an existing
 timestamp. Kit runs the read-only `make lint-frontmatter` or
 `make lint-frontmatter-changed` check. On failure the Make target prints
 `fix locally: make fix-frontmatter`; that target runs the fixer with Kit’s
@@ -78,7 +80,8 @@ OKF profile; it is not an alternative standard.
 
 ## Sources and links
 
-`sources` is optional. When present, it is a sequence of mappings, each with a
+`sources` is optional. Null, an empty string, and an empty list mean absent;
+a single mapping is accepted as a one-item list. Present entries each need a
 nonempty string `resource`. A resource can be a URL, a path, or an opaque scope
 description such as `all queries in project X`. Optional string `id` values
 must be nonempty and unique within the list. Other source fields are allowed.
