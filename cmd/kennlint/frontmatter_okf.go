@@ -39,10 +39,14 @@ func validString(n *yaml.Node) bool {
 }
 
 func parseTimestamp(n *yaml.Node) (time.Time, bool) {
-	if n == nil || n.Kind != yaml.ScalarNode || (n.Tag != "!!str" && n.Tag != "!!timestamp") || !strings.HasSuffix(n.Value, "Z") {
+	if n == nil || n.Kind != yaml.ScalarNode || (n.Tag != "!!str" && n.Tag != "!!timestamp") {
 		return time.Time{}, false
 	}
-	parsed, err := time.Parse(time.RFC3339, n.Value)
+	layout := time.RFC3339
+	if len(n.Value) == len(time.DateOnly) {
+		layout = time.DateOnly
+	}
+	parsed, err := time.Parse(layout, n.Value)
 	return parsed, err == nil
 }
 
@@ -77,8 +81,8 @@ func (b *frontmatterBlock) okfProblems() []string {
 		}
 	}
 	if status := b.fields["status"]; status != nil &&
-		(!validString(status) || (status.Value != "stable" && status.Value != "draft" && status.Value != "deprecated")) {
-		p = append(p, "status must be one of stable, draft, or deprecated")
+		!validString(status) {
+		p = append(p, "status must be a non-empty string")
 	}
 	g := b.fields["generated"]
 	if g != nil && g.Kind != yaml.MappingNode {
@@ -88,7 +92,7 @@ func (b *frontmatterBlock) okfProblems() []string {
 		p = append(p, "generated.by must be a non-empty string")
 	}
 	if _, ok := parseTimestamp(mappingField(g, "at")); !ok {
-		p = append(p, "generated.at must be an RFC 3339 UTC timestamp ending in Z")
+		p = append(p, "generated.at must be an RFC 3339 timestamp with an offset or a YYYY-MM-DD date")
 	}
 	return p
 }

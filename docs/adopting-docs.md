@@ -2,16 +2,19 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:01:38Z" }
 ---
 
 # Adopting the Kenn documentation profile
 
 Kenn applies a documentation profile to tracked Markdown based on the
-[pinned OKF v0.2 specification](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c/SPEC.md).
+[pinned OKF v0.3 specification](https://github.com/open-knowledge-format/open-knowledge-format/blob/527e81af/SPEC.md).
 OKF itself requires only `type`. Kenn also requires a nonempty `title` and
 `description`, and `generated` recording the actor and the UTC time of the
-last meaningful edit (RFC 3339 ending in `Z`). Use Guide for instructions,
+last meaningful edit. Validation accepts RFC 3339 date-times with an offset
+and quoted or native `YYYY-MM-DD` dates (midnight UTC). A date-time without
+an offset is invalid. Kenn producers write the actual edit time in UTC,
+ending in `Z`, rather than reducing precision to a date. Use Guide for instructions,
 Reference for facts and formats, and Explanation for architecture and research.
 
 Write provenance on one line, for example:
@@ -23,18 +26,24 @@ For an automated process, use `process:<id>`. If the actor is unknown, ask
 rather than infer it from Git credentials. Generation does not imply review.
 The fixer writes an inline mapping; equivalent block mappings remain readable.
 
-The optional top-level `status` is `stable`, `draft`, or `deprecated`. An
+The known top-level `status` values are `stable`, `draft`, and `deprecated`. An
 omitted status means stable; explicitly marking a page stable does not mean it
 has been independently verified. Use draft for intentionally provisional
 content. If a retired page is retained, set `status: deprecated` and link to
-its replacement when one exists. The check validates values when present; it
+its replacement when one exists, optionally using `superseded_by`. Unknown
+status strings are preserved, never interpreted as stable; current-knowledge
+views exclude them. Kenn requires status to be a nonempty string when present. The check
 cannot infer retirement from a filename or age. The fixer never sets or changes
 status.
 
 `README.md`, `AGENTS.md`, and `CLAUDE.md` files never take frontmatter at any
 depth. The check also excludes `SKILL.md` files, release notes, changelogs,
 `.github`, `testdata`, `vendor`, and `node_modules`.
-It also skips all Markdown inside skill bundles. Add `-exclude GLOB` for other
+It also skips all Markdown inside skill bundles. Reserved `index.md` files
+are not concepts: they need no type or generated fields. A bundle-root index
+may contain `okf_version: "0.3"`, `title`, `description`, `license`, and
+extension keys. Regeneration must preserve that frontmatter. `log.md` must
+have no frontmatter, and the fixer never adds one. Add `-exclude GLOB` for other
 exceptions. Globs use `**` for any number of directories. Path arguments limit
 the check to tracked files; put flags before paths.
 
@@ -77,7 +86,7 @@ must be nonempty and unique within the list. Other source fields are allowed.
 ```yaml
 sources:
   - id: api-guide
-    resource: references/api.md
+    resource: /references/api.md
   - resource: all queries in project X
 ```
 
@@ -88,8 +97,19 @@ ordinary footnotes: an unknown label cannot reliably be identified as a
 misspelled source ID. The check therefore validates declared source IDs, not
 unmatched footnote labels, and does not require every source to be cited.
 
+Unknown keys are allowed at every level, including inside `generated` and
+`sources`; the fixer preserves their values. Use `x-` for extension keys that
+future OKF versions will never reserve.
+
 No sources or backlinks are required. Validation never opens source resources
-or fetches remote links. Prefer ordinary file-relative Markdown links for
-other files in the repository (for example, `[lint guide](adopting-kennlint.md)`); OKF also
-supports bundle-root-relative links. Missing targets are tolerated because
+or fetches remote links. Links and path fields use the same resolution: without a leading `/`, resolve
+from the directory of the file that contains the value; with `/`, resolve from
+the bundle root. For example, a source in `guides/page.md` can name
+`../references/api.md` or `/references/api.md`. This also applies to `resource`,
+`computation`, `executor.resource`, `attester.resource`, `superseded_by`, and
+bundle `license` paths. Both forms are valid; targets outside the bundle are
+external, and consumers must not read them from the local filesystem. A
+consumer may try the bundle root for an unresolved bare path only for v0.2,
+earlier, or undeclared bundles. This validator checks metadata and does not
+resolve or traverse those targets. Missing targets are tolerated because
 linked knowledge may not exist yet. Authored links are not rewritten.
