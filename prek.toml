@@ -1,3 +1,4 @@
+minimum_prek_version = "0.5.7"
 default_install_hook_types = ["pre-commit", "pre-push"]
 default_stages = ["pre-commit"]
 
@@ -53,6 +54,7 @@ id = "golangci-lint"
 name = "golangci-lint"
 language = "system"
 entry = "make lint-golangci"
+stages = ["pre-push"]
 files = "^(go\\.mod|go\\.sum|.*\\.go)$"
 pass_filenames = false
 require_serial = true
@@ -65,6 +67,15 @@ language = "system"
 entry = "make lint-config-check"
 files = "^(\\.golangci\\.yml|\\.golangci\\.overlay\\.yml|lint/config/.*)$"
 pass_filenames = false
+require_serial = true
+priority = 5
+
+[[repos.hooks]]
+id = "kennlint-frontmatter"
+name = "kennlint Markdown frontmatter"
+language = "system"
+entry = "go run ./cmd/kennlint frontmatter"
+files = "\\.md$"
 require_serial = true
 priority = 5
 
@@ -84,6 +95,7 @@ id = "go-test"
 name = "go test"
 language = "system"
 entry = "go tool gotestsum --format pkgname-and-test-fails -- ./..."
+stages = ["pre-push"]
 files = "^(go\\.mod|go\\.sum|.*\\.go)$"
 pass_filenames = false
 require_serial = true

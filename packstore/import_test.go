@@ -42,8 +42,9 @@ func (c *cancelOnErrContext) Err() error {
 	return c.Context.Err()
 }
 
-func newCancelOnErrContext(cancelAt int) *cancelOnErrContext {
-	ctx, cancel := context.WithCancel(context.Background())
+func newCancelOnErrContext(t *testing.T, cancelAt int) *cancelOnErrContext {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
 	return &cancelOnErrContext{Context: ctx, cancel: cancel, cancelAt: cancelAt}
 }
 
@@ -1243,7 +1244,7 @@ func TestPrepareImportStreamingSpanVerifierCancelsDuringMerge(t *testing.T) {
 	limits.PackEntries = 1
 	// PrepareImport has two checkpoints, and the scan and two span spills add
 	// three. The sixth check is the span merge itself.
-	ctx := newCancelOnErrContext(6)
+	ctx := newCancelOnErrContext(t, 6)
 	t.Cleanup(ctx.cancel)
 
 	prepared, err := PrepareImport(ctx, target, "content", []ImportPack{{

@@ -49,6 +49,11 @@
 // Store.Open remains a seekable compatibility API. Opening compressed loose
 // content through it decodes and verifies the entire object into a private
 // temporary file before exposure, so streaming callers should use OpenStream.
+// Filesystem raw loose opens return the file directly without hash verification,
+// including multi-store reads. A corrupt raw copy with matching catalog sizes
+// is served rather than failed over to a replica, and these unverified opens
+// preserve existing Health marks. A raw location's mark clears only after a
+// verified read, such as a successful Verify call on its OpenStream result.
 // Applications should retain WriteResult receipts or cataloged physical paths
 // for indexed statistics and scheduling. Scanning loose directories to infer
 // representation or size is maintenance work, not a hot-path lookup strategy.

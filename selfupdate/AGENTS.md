@@ -22,8 +22,16 @@ executable path.
   names are refused. Keep the absolute-path containment check after it.
 - Install through a staging path and atomic replacement where the platform
   allows it. Do not leave a half-written destination on ordinary failures.
+- On Windows, backup, install, and rollback renames retry sharing violations
+  for up to two seconds each through `internal/renamebusy`. Do not replace
+  them with bare `atomicfile.Replace`.
 - Keep cache-only update metadata from being installable; force a fresh check
   before install.
+- On Unix, hold `syscall.ForkLock` for reading from staging-file creation
+  through close, and release it before verification. A concurrent fork can
+  inherit even a close-on-exec writer and cause `ETXTBSY` after our close.
+- With `VerifyArgs` set, run the staged copy from the destination directory
+  before replacement, and keep the installed binary when it fails to run.
 - Do not add live GitHub calls to tests. Use fake HTTP handlers and explicit
   responses.
 

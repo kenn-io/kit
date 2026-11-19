@@ -47,6 +47,11 @@ func normalize(agent Agent, input io.Reader) ([]byte, error) {
 			return nil, fmt.Errorf("normalize Hermes Agent hook payload: %w", err)
 		}
 	}
+	if agent == AgentPi {
+		if err := promotePiReason(payload); err != nil {
+			return nil, fmt.Errorf("normalize Pi hook payload: %w", err)
+		}
+	}
 	if err := normalizePayloadString(payload, "hook_event_name", func(value string) string {
 		return canonicalEventName(spec, value)
 	}); err != nil {

@@ -39,6 +39,6 @@ func TestStartDetachedRunsChild(t *testing.T) {
 			return
 		}
 		require.True(t, time.Now().Before(deadline), "detached child never wrote marker file")
-		time.Sleep(25 * time.Millisecond) //nolint:kennlint // polls a marker written by a detached child process
+		time.Sleep(25 * time.Millisecond) //nolint:kennlint // sleeptest: polls a marker written by a detached child process
 	}
 }

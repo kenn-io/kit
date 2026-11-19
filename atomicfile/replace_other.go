@@ -20,5 +20,5 @@ import "os"
 // system does not support that rename. A handle opened there without
 // FILE_SHARE_DELETE, as os.Open opens files, still makes Replace fail.
 func Replace(oldpath, newpath string) error {
-	return os.Rename(oldpath, newpath)
+	return os.Rename(oldpath, newpath) //nolint:forbidigo // Replace is os.Rename off Windows
 }

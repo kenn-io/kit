@@ -18,6 +18,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 )
 
@@ -62,6 +63,7 @@ var looseWriteStripes = func() [256]chan struct{} {
 
 var (
 	syncLooseFile             = func(file *os.File) error { return file.Sync() }
+	lstatLooseDirectory       = os.Lstat
 	snapshotLoosePathIdentity = snapshotPathIdentity
 	newLooseZstdWriter        = func(dst io.Writer) (io.WriteCloser, error) {
 		if cached := looseZstdEncoderPool.Get(); cached != nil {
@@ -84,7 +86,7 @@ var (
 			zstd.WithDecoderMaxMemory(64<<20))
 	}
 	newLooseHashReader = func(ctx context.Context, src io.Reader) io.Reader {
-		return &contextReader{ctx: ctx, reader: src}
+		return &contextio.Reader{Context: ctx, Reader: src}
 	}
 	// Verification pins deliberately reuse the non-removal repair handle. In
 	// particular, Windows deduplication must not require DELETE access merely
@@ -101,7 +103,7 @@ var (
 	removeLooseStagingFile           = os.Remove
 	removeLooseAlternateFile         = os.Remove
 	removeLooseCanonicalFile         = os.Remove
-	claimLooseRemovalPath            = os.Rename
+	claimLooseRemovalPath            = atomicfile.Replace
 	createLooseRemovalAside          = func(path string) error { return os.Mkdir(path, 0o700) }
 	removeLooseRemovalAside          = os.Remove
 	publishLooseRemovalRestoreFile   = os.Link
@@ -337,7 +339,11 @@ func (s *filesystemLooseStore) publish(
 	if known != nil {
 		identity = *known
 	}
-	if err := ensureDirectory(stagingDir, opts.Durability); err != nil {
+	// A store staging child and the final shard share the root as parent.
+	// Shard preparation syncs it before publication or repair recovery, so an
+	// existing staging child needs no separate parent sync.
+	deferStagingParentSync := s.layout.staging == StagingStoreDirectory && stagingDir != s.layout.Root()
+	if err := ensureDirectory(stagingDir, opts.Durability, deferStagingParentSync); err != nil {
 		return identity, fmt.Errorf("packstore: prepare loose staging: %w", err)
 	}
 	var staged []*stagedLooseFile
@@ -381,7 +387,7 @@ func (s *filesystemLooseStore) publish(
 	if encoder != nil {
 		writers = append(writers, encoder)
 	}
-	reader := io.Reader(&contextReader{ctx: ctx, reader: src})
+	reader := io.Reader(&contextio.Reader{Context: ctx, Reader: src})
 	if opts.MaxBytes > 0 && opts.MaxBytes < math.MaxInt64 {
 		reader = io.LimitReader(reader, opts.MaxBytes+1)
 	}
@@ -449,6 +455,28 @@ func (s *filesystemLooseStore) publish(
 	if selected == nil {
 		return identity, errors.New("packstore: no loose staging file selected")
 	}
+	// Discarded duplicate staging needs no sync. Serialize the lookup with
+	// repairs, but release the stripe before syncing new staging bytes.
+	alreadyChecked := known != nil || (opts.ExpectedHash != "" && opts.SizeKnown)
+	if !replace && !alreadyChecked && opts.Durability == DurablePublication {
+		existing, exists, err := func() (WriteResult, bool, error) {
+			releaseStripe, err := acquireLooseWriteStripe(ctx, identity.Hash)
+			if err != nil {
+				return WriteResult{}, false, err
+			}
+			defer releaseStripe()
+			return s.existing(ctx, identity.Hash, identity.Size, opts.Dedup, opts.Durability)
+		}()
+		if err != nil {
+			return identity, err
+		}
+		if err := ctx.Err(); err != nil {
+			return identity, err
+		}
+		if exists {
+			return existing, nil
+		}
+	}
 	if opts.Durability == DurablePublication {
 		if err := syncLooseFile(selected.file); err != nil {
 			return identity, fmt.Errorf("packstore: sync loose staging file: %w", err)
@@ -483,8 +511,8 @@ func (s *filesystemLooseStore) publish(
 
 	final := identity.Path
 	shard := filepath.Dir(final)
-	if filepath.Clean(shard) != filepath.Clean(stagingDir) {
-		if err := ensureDirectory(shard, opts.Durability); err != nil {
+	if deferStagingParentSync || filepath.Clean(shard) != filepath.Clean(stagingDir) {
+		if err := ensureDirectory(shard, opts.Durability, false); err != nil {
 			return identity, fmt.Errorf("packstore: prepare loose shard: %w", err)
 		}
 	}
@@ -729,7 +757,7 @@ func shouldCompressLoose(logicalSize, storedSize int64, opts LooseCompressionOpt
 
 // Verify checks whether the canonical loose object exists and satisfies the
 // requested identity, deduplication, and durability policy.
-func (s *filesystemLooseStore) Verify(hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *filesystemLooseStore) Verify(ctx context.Context, hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
 	if err := hash.Validate(); err != nil {
 		return WriteResult{}, false, err
 	}
@@ -743,7 +771,7 @@ func (s *filesystemLooseStore) Verify(hash Hash, size int64, verification DedupV
 	if err := validateWriteOptions(opts); err != nil {
 		return WriteResult{}, false, err
 	}
-	return s.existing(context.Background(), hash, size, verification, durability)
+	return s.existing(ctx, hash, size, verification, durability)
 }
 
 // Remove deletes both canonical physical representations of a loose object.
@@ -1113,13 +1141,26 @@ func validateRegularNoFollow(path string, info fs.FileInfo) error {
 	return nil
 }
 
-func ensureDirectory(path string, durability Durability) error {
-	info, err := os.Lstat(path)
+// deferParentSync applies only to existing directories. Creation still syncs
+// every missing ancestor; the caller must sync the existing parent before use
+// that requires durability, including publication and repair recovery.
+func ensureDirectory(path string, durability Durability, deferParentSync bool) error {
+	info, err := lstatLooseDirectory(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		if durability == DurablePublication {
-			return pack.MkdirAllSynced(path)
+		if durability != DurablePublication {
+			return os.MkdirAll(path, 0o700)
 		}
-		return os.MkdirAll(path, 0o700)
+		if err := pack.MkdirAllSynced(filepath.Dir(path)); err != nil {
+			return err
+		}
+		if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		// Another writer may have created the entry after our first Lstat.
+		// Validate it and sync its parent ourselves, even if Mkdir lost that
+		// race. Creating just the leaf avoids a redundant creation sync.
+		info, err = lstatLooseDirectory(path)
+		deferParentSync = false
 	}
 	if err != nil {
 		return err
@@ -1127,22 +1168,10 @@ func ensureDirectory(path string, durability Durability) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("%s is not an independent directory", path)
 	}
-	if durability == DurablePublication {
+	if durability == DurablePublication && !deferParentSync {
 		if err := pack.SyncDir(filepath.Dir(path)); err != nil {
 			return fmt.Errorf("packstore: sync loose directory parent: %w", err)
 		}
 	}
 	return nil
-}
-
-type contextReader struct {
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (r *contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.reader.Read(p)
 }

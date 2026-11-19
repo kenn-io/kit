@@ -174,7 +174,7 @@ func TestDeferredTimerRecordsElapsedSeconds(t *testing.T) {
 	}
 
 	timer := telemetry.NewDeferredTimer(histogram, attribute.String("operation", "sync"))
-	time.Sleep(time.Millisecond) //nolint:kennlint // the deferred timer measures the real monotonic clock
+	time.Sleep(time.Millisecond) //nolint:kennlint // sleeptest: the deferred timer measures the real monotonic clock
 	timer.Emit(t.Context())
 	timer.Emit(t.Context())
 

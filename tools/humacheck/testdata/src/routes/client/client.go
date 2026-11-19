@@ -89,6 +89,28 @@ func (c *Client) Foreign(ctx context.Context) error {
 	return c.GetJSON(ctx, "/api/tags", nil)
 }
 
+type ExternalClient struct{ APIOrigin string }
+
+// huma-check:external
+func (c *ExternalClient) get(ctx context.Context, path string) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodGet, c.APIOrigin+path, nil)
+}
+
+// Project calls a configured external API even though its path overlaps the
+// module's own project route and the beginning of its longer close route.
+func (c *ExternalClient) Project(ctx context.Context, projectID string) (*http.Request, error) {
+	return c.get(ctx, "/api/v1/projects/"+projectID)
+}
+
+// The declaration does not exempt neighboring methods on the same receiver.
+func (c *ExternalClient) ownGet(ctx context.Context, path string) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodGet, c.APIOrigin+path, nil)
+}
+
+func (c *ExternalClient) OwnProject(ctx context.Context, projectID string) (*http.Request, error) {
+	return c.ownGet(ctx, "/api/v1/projects/"+projectID) // want "own Huma route /api/v1/projects/\{param\}"
+}
+
 // Other is a non-requester; route-looking literals here are fine.
 func Other() string {
 	return "/api/v1/ping"

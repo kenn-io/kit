@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -13,6 +14,29 @@ import (
 )
 
 var daemonLocks sync.Map
+
+// StartLockHeld reports whether an exclusive start lock prevents a shared
+// observation. Observers coexist and leave missing paths absent. The result is
+// advisory; acquire the start lock before making a launch decision.
+func (s RuntimeStore) StartLockHeld(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	path, err := s.startLockPath()
+	if err != nil {
+		return false, err
+	}
+	lock := flock.New(path, flock.SetFlag(os.O_RDONLY))
+	acquired, err := lock.TryRLock()
+	closeErr := lock.Close()
+	if errors.Is(err, os.ErrNotExist) {
+		return false, errors.Join(ctx.Err(), closeErr)
+	}
+	if err := errors.Join(err, closeErr, ctx.Err()); err != nil {
+		return false, err
+	}
+	return !acquired, nil
+}
 
 // daemonLockRetryDelay is the poll interval; the caller context bounds total wait.
 const daemonLockRetryDelay = 50 * time.Millisecond

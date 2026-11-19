@@ -48,6 +48,14 @@ provider workflows to this repo unless the package already owns that concern.
 - Never name private downstream projects or other private codebases in public
   artifacts. Describe reusable requirements generically and scrub public
   surfaces before publishing.
+- Tracked Markdown outside skill bundles requires frontmatter with non-empty
+  `title` and `description` strings and a bare `last_edited: YYYY-MM-DD` date.
+  `README.md`, `AGENTS.md`, and `CLAUDE.md` files never take frontmatter, at
+  any depth. The check also excludes `.github/`, `testdata/`, `vendor/`,
+  `node_modules/`, `docs/releases/`, `CHANGELOG*.md` and `changelog*.md`
+  files, and skill bundles (`SKILL.md` and everything under a directory that
+  contains one). Change the date when editing existing
+  content; CI compares it with the actual pull request base.
 
 ## Go Conventions
 
@@ -59,6 +67,23 @@ provider workflows to this repo unless the package already owns that concern.
   failures into success-shaped fallbacks.
 - Use `context.Context` for subprocesses, network calls, update checks, probes,
   and other work that can block.
+- Exported functions that block take the caller's context as their first
+  parameter. When a released API lacks one, add a `...Context` variant and keep
+  the old name as a wrapper so consumers keep compiling
+  (`AcquireExclusiveLockContext`, `ListenContext`, `LooseStore.VerifyContext`).
+  Inside kit, call the context variant whenever a context is in scope.
+- Store a context only in a value that lives for one call, such as an
+  `io.Reader` or per-operation state whose methods cannot take a context, or in
+  a type whose lifetime owns its context (`httpproxy.Client`).
+- Cleanup that must outlive a canceled caller (failed-start teardown,
+  freeze-gate release, partial worktree removal) uses
+  `context.WithoutCancel(ctx)`, a timeout where the work can hang, and a
+  comment saying why. `context.Background()` is for `main`, compatibility
+  wrappers, bounded release paths that receive no context, and callbacks the
+  platform gives no context.
+- Tests use `t.Context()`. `t.Cleanup` functions run after it is canceled, so
+  they use `context.Background()` with a comment. `usetesting`, `noctx`,
+  `fatcontext`, and govet's `lostcancel` enforce the mechanical rules.
 - Avoid broad cleanup or mutation. Operate on exact paths, runtime records, and
   repositories that the caller supplied or the test created.
 
@@ -85,10 +110,18 @@ provider workflows to this repo unless the package already owns that concern.
   needs a fixed OS temp path to exercise permissions or runtime-dir behavior.
 - Tests must not depend on the user's git config, global credentials, real
   repositories, home directory state, or live provider availability.
+- Never locate files from a path returned by `runtime.Caller` or a stack
+  trace; builds use `-trimpath`, so those paths are module-relative. Tests run
+  from their package directory, so use paths relative to it.
+- Trimmed binaries cannot find Go's bundled time zone database, so
+  `time.LoadLocation` relies on the host's. A test package that loads a named
+  zone and runs on Windows, which has no host database, or uses a legacy name
+  such as `US/Central` must add `import _ "time/tzdata"` in a `_test.go` file.
 
 ## CI runners
 
-Public CI profiles use Namespace's
+Windows tests use GitHub-hosted runners, with `git/managed` in three separate jobs.
+Linux and macOS jobs use Namespace's
 [Restricted access level](https://namespace.so/docs/solutions/github-actions/runner-controls/access-levels),
 which disables workload access to Namespace features and APIs. GitHub fork
 approvals, token permissions, and secrets are separate controls.
@@ -97,6 +130,14 @@ approvals, token permissions, and secrets are separate controls.
 
 - Do not change branches unless the user explicitly asks.
 - Do not amend commits unless the user explicitly asks.
+- Pull requests must have a user-facing benefit or improve the developer
+  experience, and the body must say which one.
+- Write issues and pull requests in English.
+- End every commit message with a `Co-authored-by:` trailer naming the agent
+  that wrote the change.
+- End the pull request description with a `Model used:` line naming the model,
+  such as `Model used: Opus 5.5` or `Model used: GPT-6.1 Sol`. Squash-merge
+  keeps only the description, so put the `Co-authored-by:` trailer there too.
 - Do not poll or watch CI or pull request checks after pushing unless the user
   explicitly asks. A one-time status lookup is allowed when diagnosing a
   user-identified CI failure.
@@ -105,8 +146,8 @@ approvals, token permissions, and secrets are separate controls.
 - Keep pull request descriptions concise and rationale-first: explain the
   problem, the chosen approach, and consequences that matter to reviewers.
 - Do not add validation sections, command or check inventories, benchmark logs,
-  caveats about unrelated pre-existing failures, or agent/tool attribution to
-  pull request descriptions. Put verification evidence in CI, the kata issue,
+  or caveats about unrelated pre-existing failures to pull request
+  descriptions. Put verification evidence in CI, the kata issue,
   or a targeted review comment when it is useful.
 
 <!-- BEGIN KATA (managed by `kata init --with-agents`) -->

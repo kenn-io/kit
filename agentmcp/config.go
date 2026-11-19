@@ -11,7 +11,13 @@ import (
 )
 
 // InstallOptions registers one caller-owned server name. An existing entry
-// with that exact name is replaced, including any transport-specific options.
+// for Claude Code and Codex keeps user settings when the supplied entry contains
+// only launch fields, env, headers, and bearer settings and uses the same
+// transport. Supplied env and header values override matching user values;
+// other keys remain until removed manually. PreviousBearerTokenEnvVar identifies
+// an old bearer setting to remove. Args follow the application; hand-added
+// arguments make Check report outdated.
+// Other entries are replaced.
 // ConfigPath overrides the user config path with a file using the same top-level
 // schema. Nested Claude local-scope entries and Copilot bare server maps are not
 // handled by this option. Use a stable, application-namespaced Name.
@@ -30,18 +36,41 @@ type Result struct {
 	Data       []byte
 }
 
+// MarshalConfig returns a complete standalone client configuration document
+// containing one named server for the caller to save or merge. It reads and
+// writes no client files. Data can include credentials.
+func MarshalConfig(agent Agent, name string, server Server) ([]byte, error) {
+	entry, err := prepareConfig(agent, name, server)
+	if err != nil {
+		return nil, err
+	}
+	data, _, _, err := planConfig(agent, nil, name, entry, server.PreviousBearerTokenEnvVar)
+	return data, err
+}
+
+func prepareConfig(agent Agent, name string, server Server) (map[string]any, error) {
+	if _, ok := LookupProfile(agent); !ok {
+		return nil, fmt.Errorf("unsupported MCP agent %q", agent)
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("MCP server name is required")
+	}
+	return server.native(agent)
+}
+
+func planConfig(agent Agent, original []byte, name string, entry map[string]any, owned string) ([]byte, bool, bool, error) {
+	if agent == AgentCodex || agent == AgentHermes {
+		return planDocument(agent, original, name, entry, owned, false)
+	}
+	return planJSON(agent, original, name, entry, owned)
+}
+
 // PlanInstall computes a registration without writing files. Other server
 // entries, settings, and comments are retained. Comments on replaced fields
 // remain next to the replacement. Formatting may change; unchanged files retain
 // all bytes.
 func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
-	if _, ok := LookupProfile(agent); !ok {
-		return Result{}, fmt.Errorf("unsupported MCP agent %q", agent)
-	}
-	if strings.TrimSpace(opts.Name) == "" {
-		return Result{}, errors.New("MCP server name is required")
-	}
-	entry, err := opts.Server.native(agent)
+	entry, err := prepareConfig(agent, opts.Name, opts.Server)
 	if err != nil {
 		return Result{}, err
 	}
@@ -56,13 +85,7 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Result{}, fmt.Errorf("read MCP config %s: %w", path, err)
 	}
-	var data []byte
-	var changed bool
-	if agent == AgentCodex || agent == AgentHermes {
-		data, changed, err = planDocument(agent, original, opts.Name, entry)
-	} else {
-		data, changed, err = planJSON(agent, original, opts.Name, entry)
-	}
+	data, changed, _, err := planConfig(agent, original, opts.Name, entry, opts.Server.PreviousBearerTokenEnvVar)
 	if err != nil {
 		return Result{}, fmt.Errorf("plan MCP config %s: %w", path, err)
 	}

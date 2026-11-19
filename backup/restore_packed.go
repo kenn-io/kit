@@ -76,6 +76,9 @@ func (s *restoreState) loadRestoreAttachmentInventory(
 	}
 	pathOwner := make(map[string]string)
 	for hash, rels := range paths {
+		if s.compression.Enabled && (len(rels) != 1 || filepath.ToSlash(rels[0]) != hash[:2]+"/"+hash) {
+			return restoreAttachmentInventory{}, fmt.Errorf("backup: loose compression requires one canonical restore path for %s", hash)
+		}
 		for _, rel := range rels {
 			if !filepath.IsLocal(rel) {
 				return restoreAttachmentInventory{}, fmt.Errorf(

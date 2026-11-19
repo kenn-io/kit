@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,12 +55,9 @@ func TestRuntimeStoreCleanupDeadLeavesMismatchedFiles(t *testing.T) {
 	require := require.New(t)
 
 	store := daemon.RuntimeStore{Dir: t.TempDir()}
-	deadPID := 999999
-	if daemon.ProcessAlive(deadPID) {
-		t.Skipf("pid %d is alive on this host", deadPID)
-	}
+	pid := deadPID(t)
 	dead := daemon.RuntimeRecord{
-		PID:       deadPID,
+		PID:       pid,
 		Network:   daemon.NetworkTCP,
 		Address:   "127.0.0.1:7474",
 		StartedAt: time.Now(),
@@ -67,15 +65,15 @@ func TestRuntimeStoreCleanupDeadLeavesMismatchedFiles(t *testing.T) {
 	_, err := store.Write(dead)
 	require.NoError(err)
 
-	mismatchPath, err := store.Path(deadPID + 1)
+	mismatchPath, err := store.Path(pid + 1)
 	require.NoError(err)
-	err = os.WriteFile(mismatchPath, []byte(`{"pid":999999,"address":"127.0.0.1:7475"}`), 0o644)
+	err = os.WriteFile(mismatchPath, []byte(`{"pid":`+strconv.Itoa(pid)+`,"address":"127.0.0.1:7475"}`), 0o644)
 	require.NoError(err)
 
 	removed, err := store.CleanupDead()
 	require.NoError(err)
 	assert.Equal(1, removed)
-	deadPath, err := store.Path(deadPID)
+	deadPath, err := store.Path(pid)
 	require.NoError(err)
 	_, err = os.Stat(deadPath)
 	assert.True(os.IsNotExist(err), "dead runtime still exists or unexpected stat error: %v", err)
@@ -163,13 +161,10 @@ func TestRuntimeStoreIgnoresStagingFiles(t *testing.T) {
 	require := require.New(t)
 
 	store := daemon.RuntimeStore{Dir: t.TempDir()}
-	deadPID := 999999
-	if daemon.ProcessAlive(deadPID) {
-		t.Skipf("pid %d is alive on this host", deadPID)
-	}
+	pid := deadPID(t)
 	// An interrupted Write leaves its staging file behind under this name.
-	staging := filepath.Join(store.Dir, ".daemon.999999.json.tmp-123456")
-	body := []byte(`{"pid":999999,"address":"127.0.0.1:7474"}`)
+	staging := filepath.Join(store.Dir, ".daemon."+strconv.Itoa(pid)+".json.tmp-123456")
+	body := []byte(`{"pid":` + strconv.Itoa(pid) + `,"address":"127.0.0.1:7474"}`)
 	require.NoError(os.WriteFile(staging, body, 0o644))
 
 	records, err := store.List()
@@ -181,7 +176,7 @@ func TestRuntimeStoreIgnoresStagingFiles(t *testing.T) {
 	_, err = os.Stat(staging)
 	require.NoError(err)
 
-	_, err = store.Write(daemon.RuntimeRecord{PID: deadPID, Address: "127.0.0.1:7475"})
+	_, err = store.Write(daemon.RuntimeRecord{PID: pid, Address: "127.0.0.1:7475"})
 	require.NoError(err)
 	entries, err := os.ReadDir(store.Dir)
 	require.NoError(err)
@@ -189,7 +184,7 @@ func TestRuntimeStoreIgnoresStagingFiles(t *testing.T) {
 	for _, entry := range entries {
 		names = append(names, entry.Name())
 	}
-	assert.ElementsMatch([]string{".daemon.999999.json.tmp-123456", "daemon.999999.json"}, names)
+	assert.ElementsMatch([]string{".daemon." + strconv.Itoa(pid) + ".json.tmp-123456", "daemon." + strconv.Itoa(pid) + ".json"}, names)
 }
 
 func TestRuntimeStoreRejectsNonPortablePrefix(t *testing.T) {
@@ -221,4 +216,69 @@ func TestRuntimeStorePrefixReservesPortableStagingSuffix(t *testing.T) {
 	store.Prefix = strings.Repeat("a", 215)
 	_, err = store.Path(1)
 	require.ErrorIs(err, fsname.ErrNotPortable)
+}
+
+func TestRuntimeProcessAliveKeepsRecordWithUnreadableVersionedIdentity(t *testing.T) {
+	rec := daemon.RuntimeRecord{
+		PID:               deadPID(t),
+		Network:           daemon.NetworkTCP,
+		Address:           "127.0.0.1:7474",
+		ProcessIdentityV2: "future-v1:12345",
+	}
+	assert.True(t, daemon.RuntimeProcessAlive(rec))
+}
+
+func TestCleanupDeadKeepsRecordWithUnjudgedIdentity(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	path, err := store.Write(daemon.RuntimeRecord{
+		PID:               deadPID(t),
+		Network:           daemon.NetworkTCP,
+		Address:           "127.0.0.1:7474",
+		Service:           "tool",
+		StartedAt:         time.Now(),
+		ProcessIdentityV2: "future-v1:12345",
+	})
+	require.NoError(t, err)
+
+	removed, err := store.CleanupDead()
+	require.NoError(t, err)
+	assert.Zero(t, removed)
+	assert.FileExists(t, path)
+}
+
+func TestDiscoverProbesRecordWithUnjudgedIdentity(t *testing.T) {
+	pid := deadPID(t)
+	server := httptest.NewServer(daemon.NewPingHandler(daemon.PingHandlerOptions{
+		Service: "tool",
+		PID:     pid,
+	}))
+	defer server.Close()
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.RuntimeRecord{
+		PID:               pid,
+		Network:           daemon.NetworkTCP,
+		Address:           listenerAddr(t, server),
+		Service:           "tool",
+		StartedAt:         time.Now(),
+		ProcessIdentityV2: "future-v1:12345",
+	})
+	require.NoError(t, err)
+
+	rec, _, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
+		Probe:           daemon.ProbeOptions{ExpectedService: "tool"},
+		RequirePIDAlive: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, pid, rec.PID)
+}
+
+// deadPID returns a PID that names no live process, or skips the test.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	const pid = 999999
+	if daemon.ProcessAlive(pid) {
+		t.Skipf("pid %d is alive on this host", pid)
+	}
+	return pid
 }

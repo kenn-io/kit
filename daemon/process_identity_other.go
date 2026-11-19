@@ -19,6 +19,11 @@ func ReadProcessIdentity(pid int) (ProcessIdentity, bool) {
 		return "", false
 	}
 	created, err := proc.CreateTime()
+	if err != nil {
+		// Another account's process can refuse to open, which would leave a
+		// reused PID unjudged. Some platforms list its creation time anyway.
+		created, err = listedProcessCreateTime(pid)
+	}
 	if err != nil || created <= 0 {
 		return "", false
 	}
@@ -29,6 +34,15 @@ func processIdentityCompatible(identity ProcessIdentity) bool {
 	encoded := string(identity)
 	value, err := strconv.ParseInt(encoded, 10, 64)
 	return err == nil && value > 0 && strconv.FormatInt(value, 10) == encoded
+}
+
+// processIdentityScope is ProcessScopeLocal for a readable identity whatever pid:
+// non-Linux identities carry no boot ID or namespace.
+func processIdentityScope(_ int, identity ProcessIdentity) ProcessScope {
+	if !processIdentityCompatible(identity) {
+		return ProcessScopeUnknown
+	}
+	return ProcessScopeLocal
 }
 
 func runtimeProcessIdentities(pid int) (ProcessIdentity, ProcessIdentity) {

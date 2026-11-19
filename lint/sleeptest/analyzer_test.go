@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/analysistest"
 )
 
@@ -41,3 +42,13 @@ func TestAnalyzerIgnoresPollingAssertionsByDefault(t *testing.T) {
 type silentT struct{ *testing.T }
 
 func (silentT) Errorf(string, ...any) {}
+
+func TestDeadlineAnalyzer(t *testing.T) {
+	analyzer := *DeadlineAnalyzer
+	analyzer.Run = func(pass *analysis.Pass) (any, error) {
+		// GOPATH fixtures have no module metadata; model a module and its subpackage.
+		pass.Module = &analysis.Module{Path: "deadline"}
+		return runDeadline(pass)
+	}
+	analysistest.Run(t, analysistest.TestData(), &analyzer, "deadline")
+}

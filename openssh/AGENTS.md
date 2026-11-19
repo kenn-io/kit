@@ -45,9 +45,10 @@
   disconnects, which must drain without sending another exit command.
 - Keep failed-start cleanup reserved for its full cleanup window while the
   socket is absent, including a final ownership/type inspection when that
-  window expires. A detached master may bind late; if it does, terminate and
-  drain it through the normal verified teardown path before releasing the
-  lifecycle.
+  window expires, even when the expiring window cut a socket dial short. A
+  detached master may bind late; if it does, terminate and drain it through
+  the normal verified teardown path, with its own cleanup window, before
+  releasing the lifecycle.
 - Bind unlocked results to the per-identity generation. Waiters always reread
   state after the in-flight completion channel closes.
 - Require the expected generation when returning client connection arguments,

@@ -13,7 +13,7 @@
 // type "module". Settings:
 //
 //	settings:
-//	  disable: [sleeptest]        # analyzer names to leave out
+//	  disable: [deadlinetest]     # analyzer names to leave out
 //	  errtext:
 //	    include-tests: true       # also report err.Error() matching in tests
 //	  sleeptest:
@@ -32,6 +32,7 @@ import (
 
 	"go.kenn.io/kit/lint"
 	"go.kenn.io/kit/lint/errtext"
+	"go.kenn.io/kit/lint/nolintdirective"
 	"go.kenn.io/kit/lint/sleeptest"
 	"go.kenn.io/kit/lint/testifyhelper"
 )
@@ -75,6 +76,7 @@ type SleeptestSettings struct {
 
 func init() {
 	register.Plugin(Name, New)
+	register.Plugin("kennnolint", func(any) (register.LinterPlugin, error) { return &directivePlugin{}, nil })
 }
 
 // New builds the plugin from decoded settings.
@@ -108,6 +110,7 @@ func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		if a.Name == testifyhelper.Analyzer.Name {
 			a = testifyhelper.New(p.settings.Testifyhelper.RequireHelpers)
 		}
+
 		analyzers = append(analyzers, a)
 	}
 	return analyzers, nil
@@ -116,3 +119,15 @@ func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 func (p *plugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }
+
+type directivePlugin struct{}
+
+func (*directivePlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
+	var names []string
+	for _, a := range lint.Analyzers() {
+		names = append(names, a.Name)
+	}
+	return []*analysis.Analyzer{nolintdirective.New(names)}, nil
+}
+
+func (*directivePlugin) GetLoadMode() string { return register.LoadModeTypesInfo }

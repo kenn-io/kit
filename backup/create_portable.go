@@ -31,7 +31,7 @@ func createPortable(
 		opts.Freezer = NoopFreezeCoordinator{}
 	}
 
-	lock, err := r.AcquireExclusiveLock("create", opts.ForceUnlock)
+	lock, err := r.AcquireExclusiveLockContext(ctx, "create", opts.ForceUnlock)
 	if err != nil {
 		return nil, err
 	}

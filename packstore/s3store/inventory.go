@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"go.kenn.io/kit/internal/s3io"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 )
@@ -25,14 +26,7 @@ func (b *Backend) Inventory(
 	ctx context.Context,
 	cursor packstore.InventoryCursor,
 ) (packstore.InventoryPage, error) {
-	input := &s3.ListObjectsV2Input{
-		Bucket: aws.String(b.bucket), Prefix: aws.String(b.keys.join("")),
-		MaxKeys: aws.Int32(b.page),
-	}
-	if cursor != "" {
-		input.ContinuationToken = aws.String(string(cursor))
-	}
-	output, err := b.client.ListObjectsV2(ctx, input)
+	output, err := s3io.List(ctx, b.client, b.bucket, b.keys.join(""), string(cursor), b.page)
 	if err != nil {
 		return packstore.InventoryPage{}, classifyError("list store inventory", err)
 	}

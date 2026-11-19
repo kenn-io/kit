@@ -1,3 +1,9 @@
+---
+title: "Vite Task's sandbox-compatible IPC changes"
+description: "Research on sandbox-compatible IPC behavior in Vite Task."
+last_edited: 2026-08-24
+---
+
 # Vite Task's sandbox-compatible IPC changes
 
 ## Scope

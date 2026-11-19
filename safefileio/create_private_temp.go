@@ -28,10 +28,7 @@ func CreatePrivateTemp(dir, pattern string) (*os.File, error) {
 			return nil, &fs.PathError{Op: "createtemp", Path: pattern, Err: errors.New("pattern contains path separator")}
 		}
 	}
-	prefix, suffix := pattern, ""
-	if pos := strings.LastIndexByte(pattern, '*'); pos != -1 {
-		prefix, suffix = pattern[:pos], pattern[pos+1:]
-	}
+	prefix, suffix, _ := strings.CutLast(pattern, "*")
 	for range createPrivateTempAttempts {
 		name := prefix + strconv.FormatUint(uint64(rand.Uint32()), 10) + suffix
 		file, err := CreatePrivateFile(filepath.Join(dir, name))

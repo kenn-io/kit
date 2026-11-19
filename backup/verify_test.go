@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -20,12 +21,14 @@ func newTestVerifyState(t *testing.T, r *Repo, quick bool) *verifyState {
 	known, err := r.LoadBlobIndex()
 	require.NoError(t, err)
 	st := &verifyState{
+		ctx:              t.Context(),
 		app:              newTestApp(),
 		repo:             r,
 		known:            known,
+		manifests:        map[string]*Manifest{},
 		quick:            quick,
 		jobs:             2,
-		readers:          map[string]*pack.Reader{},
+		readers:          map[string]*cachedPack{},
 		readerErrs:       map[string]error{},
 		checked:          map[pack.BlobID]bool{},
 		readDone:         map[pack.BlobID]bool{},
@@ -37,6 +40,67 @@ func newTestVerifyState(t *testing.T, r *Repo, quick bool) *verifyState {
 	}
 	t.Cleanup(st.closeReaders)
 	return st
+}
+
+func TestQuickVerifyFooterProblems(t *testing.T) {
+	r := buildMultiPackRepo(t, 2)
+	known, err := r.LoadBlobIndex()
+	require.NoError(t, err)
+	var id pack.BlobID
+	var indexed IndexEntry
+	for id, indexed = range known {
+		break
+	}
+	var otherPack string
+	for _, entry := range known {
+		if entry.PackID != indexed.PackID {
+			otherPack = entry.PackID
+			break
+		}
+	}
+	require.NotEmpty(t, otherPack)
+	wrongOffset := indexed
+	wrongOffset.Offset++
+	wrongPack := indexed
+	wrongPack.PackID = otherPack
+
+	for _, tc := range []struct {
+		name    string
+		entry   IndexEntry
+		detail  string
+		checked int64
+	}{
+		{name: "clean repeated lookup", entry: indexed, checked: 1},
+		{
+			name:  "index offset disagrees",
+			entry: wrongOffset,
+			detail: fmt.Sprintf("blob %s index entry (offset %d, len %d, flags %#x) disagrees with pack %s footer (offset %d, len %d, flags %#x)",
+				id, indexed.Offset+1, indexed.StoredLen, indexed.Flags, indexed.PackID, indexed.Offset, indexed.StoredLen, indexed.Flags),
+		},
+		{
+			name:   "blob missing from named pack",
+			entry:  wrongPack,
+			detail: fmt.Sprintf("blob %s missing from pack %s footer", id, otherPack),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newTestVerifyState(t, r, true)
+			st.known[id] = tc.entry
+			for range 2 {
+				_, ok := st.blob(id, "snapshot", false)
+				assert.Equal(t, tc.detail == "", ok)
+			}
+			assert.Equal(t, tc.checked, st.result.BlobsChecked)
+			if tc.detail == "" {
+				assert.Empty(t, st.result.Problems)
+			} else {
+				assert.Equal(t, []Problem{
+					{SnapshotID: "snapshot", Detail: tc.detail},
+					{SnapshotID: "snapshot", Detail: tc.detail},
+				}, st.result.Problems)
+			}
+		})
+	}
 }
 
 func distinctPackIDs(t *testing.T, r *Repo) []string {
@@ -395,15 +459,15 @@ func TestVerifyReaderCacheEvictsAndReopens(t *testing.T) {
 	assert.False(present, "LRU evicted the least-recently-used reader")
 
 	// The evicted reader was closed: reading through the stale handle fails.
-	entries := p0.Entries()
+	entries := p0.reader.Entries()
 	require.NotEmpty(entries)
-	_, err = p0.ReadBlob(entries[0])
+	_, err = p0.reader.ReadBlob(entries[0])
 	require.Error(err, "evicted reader must be closed")
 
 	// Re-requesting the evicted pack reopens a fresh reader.
 	p0b, err := st.reader(packs[0])
 	require.NoError(err)
-	assert.NotSame(p0, p0b, "re-request reopened a new reader instance")
+	assert.NotSame(p0.reader, p0b.reader, "re-request reopened a new reader instance")
 	assert.Len(st.readers, 2)
 	_, present = st.readers[packs[1]]
 	assert.False(present, "reopening evicted the next least-recently-used reader")
@@ -439,6 +503,58 @@ func TestVerifyMemoizesSharedContentReads(t *testing.T) {
 	require.Empty(st2.result.Problems)
 	assert.Equal(st1.contentReads, st2.contentReads,
 		"snapshot 2 shares all content, so memoization adds no new full reads")
+}
+
+func TestQuickVerifyReusesCheckedListsManifestsAndBlobs(t *testing.T) {
+	for _, mechanism := range []string{"lists", "manifests", "blobs"} {
+		t.Run(mechanism, func(t *testing.T) {
+			r := buildMultiPackRepo(t, 2)
+			manifests, err := r.ListSnapshots()
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, len(manifests), 2)
+			m1, m2 := manifests[0], manifests[1]
+			require.Equal(t, m1.SnapshotID, m2.ParentID)
+			require.Positive(t, m2.DB.MapChainDepth)
+			require.NotEmpty(t, m1.Attachments.Lists)
+			require.Subset(t, m2.Attachments.Lists, m1.Attachments.Lists)
+			st := newTestVerifyState(t, r, true)
+			st.verifySnapshot(m1)
+			require.Empty(t, st.result.Problems)
+
+			switch mechanism {
+			case "lists":
+				id, err := pack.ParseBlobID(m1.Attachments.Lists[0])
+				require.NoError(t, err)
+				corruptStoredBlob(t, r, st.known, id)
+			case "manifests":
+				require.NoError(t, os.WriteFile(r.Path(snapshotsDirName, m1.SnapshotID+manifestExt), []byte("broken"), 0o600))
+			case "blobs":
+				listID, err := pack.ParseBlobID(m1.Attachments.Lists[0])
+				require.NoError(t, err)
+				refs := st.attachmentLists[listID]
+				require.NotEmpty(t, refs)
+				id, err := pack.ParseBlobID(refs[0].Hash)
+				require.NoError(t, err)
+				delete(st.known, id)
+				st.verifySnapshot(m2)
+				assert.Empty(t, st.result.Problems)
+
+				// Start a fresh run with the shared content missing before its first check.
+				st = newTestVerifyState(t, r, true)
+				delete(st.known, id)
+				st.verifySnapshot(m1)
+				st.verifySnapshot(m2)
+				assert.Equal(t, []Problem{
+					{SnapshotID: m1.SnapshotID, Detail: fmt.Sprintf("blob %s not present in any index", id)},
+					{SnapshotID: m2.SnapshotID, Detail: fmt.Sprintf("blob %s not present in any index", id)},
+				}, st.result.Problems)
+				return
+			}
+
+			st.verifySnapshot(m2)
+			assert.Empty(t, st.result.Problems)
+		})
+	}
 }
 
 // TestVerifyFlagsForgedAttachmentListSize pins that full verify compares each

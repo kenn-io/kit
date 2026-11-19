@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -19,26 +22,26 @@ import (
 // seedBackupFixture builds a WAL sqlite DB (frozenTestSchema from
 // frozen_test.go) plus a matching loose attachments dir, and returns
 // (dbPath, attachmentsDir, dataDir, writer).
-func seedBackupFixture(t *testing.T) (string, string, string, *sql.DB) {
-	t.Helper()
-	require := require.New(t)
-	t.Helper()
-	dataDir := t.TempDir()
+func seedBackupFixture(tb testing.TB) (string, string, string, *sql.DB) {
+	tb.Helper()
+	require := require.New(tb)
+	tb.Helper()
+	dataDir := tb.TempDir()
 	attachmentsDir := filepath.Join(dataDir, "content")
 	contentA := []byte("first attachment content")
 	contentB := []byte("second attachment content, longer")
-	refA := writeLooseAttachment(t, attachmentsDir, contentA)
-	refB := writeLooseAttachment(t, attachmentsDir, contentB)
+	refA := writeLooseAttachment(tb, attachmentsDir, contentA)
+	refB := writeLooseAttachment(tb, attachmentsDir, contentB)
 
 	dbPath := filepath.Join(dataDir, "app.db")
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	require.NoError(err)
-	t.Cleanup(func() { _ = db.Close() })
-	_, err = db.ExecContext(t.Context(), frozenTestSchema)
+	tb.Cleanup(func() { _ = db.Close() })
+	_, err = db.ExecContext(tb.Context(), frozenTestSchema)
 	require.NoError(err)
-	_, err = db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-01-01T00:00:00Z')`)
+	_, err = db.ExecContext(tb.Context(), `INSERT INTO notes (created_at) VALUES ('2026-01-01T00:00:00Z')`)
 	require.NoError(err)
-	_, err = db.ExecContext(t.Context(),
+	_, err = db.ExecContext(tb.Context(),
 		`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
 		 VALUES (?, ?, ?, '', ''), (?, ?, ?, '', '')`,
 		refA.Hash, refA.Hash[:2]+"/"+refA.Hash, refA.Size,
@@ -55,6 +58,36 @@ func createOpts(dbPath, attachmentsDir, dataDir string, cacheDir string) CreateO
 		Extras:     ExtrasSpec{Dirs: []ExtrasDirSpec{{Name: "deletions"}}},
 		CacheDir:   cacheDir,
 	}
+}
+
+func buildAttachmentHistory(tb testing.TB, base, count int) (*Repo, CreateOptions, func()) {
+	tb.Helper()
+	r, err := Init(filepath.Join(tb.TempDir(), "repo"))
+	require.NoError(tb, err)
+	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(tb)
+	opts := createOpts(dbPath, attachmentsDir, dataDir, tb.TempDir())
+	next := 0
+	add := func() {
+		ref := writeLooseAttachment(tb, attachmentsDir, []byte(fmt.Sprintf("attachment %d", next)))
+		next++
+		_, err := db.ExecContext(tb.Context(),
+			`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path) VALUES (?, ?, ?, '', '')`,
+			ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
+		require.NoError(tb, err)
+	}
+	if base > 0 {
+		for range base {
+			add()
+		}
+		_, err := Create(tb.Context(), r, newTestApp(), opts)
+		require.NoError(tb, err)
+	}
+	for range count {
+		add()
+		_, err := Create(tb.Context(), r, newTestApp(), opts)
+		require.NoError(tb, err)
+	}
+	return r, opts, add
 }
 
 // TestCreateManifestReaderVersionTracksStoragePaths pins the compatibility
@@ -266,6 +299,126 @@ func TestVerifyScanFileIdentityDetectsReplacement(t *testing.T) {
 	require.ErrorContains(verifyScanFileIdentity(f, path), "was replaced")
 }
 
+func TestCreateReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		replacements int
+		cancel       bool
+	}{
+		{name: "retry succeeds", replacements: 1},
+		{name: "both attempts replaced", replacements: 2},
+		{name: "canceled before retry", replacements: 1, cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := initTestRepo(t)
+			path, content, data, writer := seedBackupFixture(t)
+			require.NoError(t, writer.Close())
+			var replacements []string
+			for range tc.replacements {
+				replacement, _, _, db := seedBackupFixture(t)
+				_, err := db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-02-01'), ('2026-03-01')`)
+				require.NoError(t, err)
+				require.NoError(t, db.Close())
+				replacements = append(replacements, replacement)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			coordinator := &recordingCoordinator{}
+			if tc.cancel {
+				coordinator.onEnd = cancel
+			}
+			opens := 0
+			var first *sql.DB
+			var renameErr error
+			opts := createOpts(path, content, data, t.TempDir())
+			opts.Freezer = coordinator
+			opts.SQLiteOpener = SQLiteOpenFunc(func(path string, opts SQLiteOpenOptions) (*sql.DB, error) {
+				if opens == 1 {
+					require.Error(t, first.PingContext(t.Context()), "first connection should be closed")
+				}
+				if opens < len(replacements) {
+					if renameErr = os.Rename(replacements[opens], path); renameErr != nil {
+						return nil, renameErr
+					}
+				}
+				opens++
+				db, err := (DefaultSQLiteOpener{}).OpenSQLite(path, opts)
+				if opens == 1 {
+					first = db
+				}
+				return db, err
+			})
+			m, err := Create(ctx, r, newTestApp(), opts)
+			if renameErr != nil && runtime.GOOS == "windows" {
+				t.Skip("cannot replace an open file on this platform")
+			}
+			require.NoError(t, renameErr)
+			list, listErr := r.ListSnapshots()
+			require.NoError(t, listErr)
+			if tc.cancel {
+				require.ErrorIs(t, err, context.Canceled)
+				require.Equal(t, 1, coordinator.begins)
+				require.Empty(t, list)
+				return
+			}
+			require.Equal(t, 2, opens)
+			require.Equal(t, 2, coordinator.begins)
+			if tc.replacements == 2 {
+				require.ErrorContains(t, err, "was replaced")
+				require.Empty(t, list)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, list, 1)
+			require.Equal(t, int64(3), mustParseStats(t, m.Stats).Notes)
+			target := filepath.Join(t.TempDir(), "restored")
+			_, err = Restore(t.Context(), r, newTestApp(), RestoreOptions{TargetDir: target})
+			require.NoError(t, err)
+			db, err := sql.Open("sqlite3", filepath.Join(target, "app.db"))
+			require.NoError(t, err)
+			defer func() { _ = db.Close() }()
+			var count int
+			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT count(*) FROM notes").Scan(&count))
+			require.Equal(t, 3, count)
+		})
+	}
+}
+
+func TestCreateReplacementTerminalErrors(t *testing.T) {
+	for _, tc := range []string{"freezer", "opener", "opener canceled"} {
+		t.Run(tc, func(t *testing.T) {
+			r := initTestRepo(t)
+			path, content, data, _ := seedBackupFixture(t)
+			failure := errors.New("test failure")
+			coordinator := &recordingCoordinator{}
+			opens := 0
+			if tc == "freezer" {
+				coordinator.beginErr = failure
+			}
+			opts := createOpts(path, content, data, t.TempDir())
+			opts.Freezer = coordinator
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			opts.SQLiteOpener = SQLiteOpenFunc(func(string, SQLiteOpenOptions) (*sql.DB, error) {
+				opens++
+				if tc == "opener canceled" {
+					cancel()
+				}
+				return nil, failure
+			})
+			_, err := Create(ctx, r, newTestApp(), opts)
+			require.ErrorIs(t, err, failure)
+			require.NotErrorIs(t, err, context.Canceled)
+			require.Equal(t, 1, coordinator.begins)
+			if tc != "freezer" {
+				require.Equal(t, 1, opens)
+			} else {
+				require.Zero(t, opens)
+			}
+		})
+	}
+}
+
 // TestCreateSameSecondChainOrder covers the bug where two Create calls
 // landing in the same wall-clock second produce snapshot IDs whose
 // timestamp prefixes tie, leaving lexicographic order (what
@@ -404,6 +557,91 @@ func TestCreateAttachmentDeletionKeepsVerifyClean(t *testing.T) {
 	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{All: true})
 	require.NoError(err)
 	assert.Empty(res.Problems, "both snapshots verify cleanly after a deletion")
+}
+
+func TestKeptListSegments(t *testing.T) {
+	thousands := func(n int) []int {
+		sizes := make([]int, n)
+		for i := range sizes {
+			sizes[i] = 1000
+		}
+		return sizes
+	}
+	tests := []struct {
+		name    string
+		sizes   []int
+		newRefs int
+		want    int
+	}{
+		{"first snapshot", nil, 5, 0},
+		{"small growth keeps a large list", []int{100}, 1, 1},
+		{"equal sizes carry", []int{2, 1}, 1, 0},
+		{"carry stops at a larger segment", []int{8, 2, 1}, 1, 1},
+		{"no new refs keeps every segment", []int{8, 4}, 0, 2},
+		{"no new refs at the bound keeps every segment", thousands(30), 0, 30},
+		{"bound forces a merge without a carry", append(thousands(29), 5), 1, 29},
+		{
+			"over-bound parent merges its small tail",
+			append([]int{1000}, slices.Repeat([]int{1}, 39)...), 0, 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, keptListSegments(tt.sizes, tt.newRefs))
+		})
+	}
+}
+
+func TestCreateMergesAttachmentListSegments(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := t.Context()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
+	opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
+	addAttachment := func(content string) ContentRef {
+		ref := writeLooseAttachment(t, attachmentsDir, []byte(content))
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
+			 VALUES (?, ?, ?, '', '')`,
+			ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
+		require.NoError(err)
+		return ref
+	}
+
+	// The fixture's two attachments plus 62 more make a 64-entry base list.
+	for i := range 62 {
+		addAttachment(fmt.Sprintf("base attachment %d", i))
+	}
+	first, err := Create(ctx, r, newTestApp(), opts)
+	require.NoError(err)
+	require.Len(first.Attachments.Lists, 1)
+	base := first.Attachments.Lists[0]
+	expected := listUnion(t, r, first)
+	require.Len(expected, 64)
+
+	// Segment counts after n one-attachment snapshots: the base plus one
+	// segment per set bit of n, until n reaches the base size.
+	wantSegments := map[int]int{1: 2, 2: 2, 3: 3, 31: 6, 32: 2, 63: 7}
+	for n := 1; n <= 64; n++ {
+		expected = append(expected, addAttachment(fmt.Sprintf("attachment %d", n)))
+		m, err := Create(ctx, r, newTestApp(), opts)
+		require.NoError(err)
+		require.ElementsMatch(expected, listUnion(t, r, m), "snapshot %d union", n)
+		if n < 64 {
+			require.Equal(base, m.Attachments.Lists[0], "snapshot %d rewrote the base list", n)
+		}
+		if want, ok := wantSegments[n]; ok {
+			assert.Len(m.Attachments.Lists, want, "snapshot %d segments", n)
+		}
+		if n == 64 {
+			assert.Len(m.Attachments.Lists, 1, "growth equal to the base merges into one list")
+		}
+	}
+
+	res, err := Verify(ctx, r, newTestApp(), VerifyOptions{All: true})
+	require.NoError(err)
+	assert.Empty(res.Problems)
 }
 
 func TestNextCreatedAt(t *testing.T) {
@@ -725,6 +963,36 @@ func TestCreateHoldsExclusiveLock(t *testing.T) {
 
 	_, err = Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
 	require.ErrorIs(err, ErrRepoLocked)
+}
+
+func TestCreateCancelsWhileWaitingForSharedLock(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	shared, err := r.AcquireSharedLock("verify", false)
+	require.NoError(err)
+	defer func() { require.NoError(shared.Release()) }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+		done <- err
+	}()
+	require.Eventually(func() bool {
+		_, err := os.Stat(r.Path(locksDirName, exclusiveLockName))
+		return err == nil
+	}, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		require.FailNow("create did not cancel while the shared lock remained held")
+	}
+	_, err = os.Stat(r.Path(locksDirName, exclusiveLockName))
+	require.ErrorIs(err, os.ErrNotExist, "the canceled create must release its exclusive claim")
 }
 
 // TestCreatePhasesHonorCancellation pins that the long capture phases

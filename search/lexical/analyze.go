@@ -293,3 +293,12 @@ func containsScript(text string, tables ...*unicode.RangeTable) bool {
 func isCJK(r rune) bool {
 	return unicode.In(r, unicode.Han, unicode.Hangul, unicode.Hiragana, unicode.Katakana)
 }
+
+// IsStopWord reports whether a lowercase word is a common English stop word.
+func IsStopWord(word string) bool {
+	switch word {
+	case "a", "an", "the", "and", "or", "of", "to", "for", "from", "in", "on", "at", "by", "with", "as", "is", "are", "be", "i", "me", "my", "it", "this", "that", "how", "do", "does", "can", "please":
+		return true
+	}
+	return false
+}

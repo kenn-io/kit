@@ -3,14 +3,58 @@ package pack
 import (
 	"bytes"
 	"crypto/rand"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestReaderRejectsOversized32BitWindow(t *testing.T) {
+	if strconv.IntSize != 32 {
+		t.Skip("32-bit decoder window limit")
+	}
+	// Only the header and an empty final block are needed: the window must be
+	// rejected before the codec calculates an overflowing history-buffer size.
+	header := zstd.Header{SingleSegment: true, HasFCS: true, FrameContentSize: math.MaxInt32}
+	frame, err := header.AppendTo(nil)
+	require.NoError(t, err)
+	frame = append(frame, 1, 0, 0)
+	dir := t.TempDir()
+	writer, err := NewWriter(dir, WriterOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, writer.Abort()) })
+	_, err = writer.AppendEncoded(BlobID{}, frame, math.MaxInt32, true)
+	require.NoError(t, err)
+	path := filepath.Join(dir, writer.ID()+".pack")
+	_, err = writer.Seal(path)
+	require.NoError(t, err)
+	reader, err := OpenReader(path, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, reader.Close()) })
+	entry := reader.Entries()[0]
+
+	t.Run("ReadBlob", func(t *testing.T) {
+		_, err := reader.ReadBlob(entry)
+		require.ErrorIs(t, err, zstd.ErrWindowSizeExceeded)
+	})
+	t.Run("OpenBlob", func(t *testing.T) {
+		stream, err := reader.OpenBlob(t.Context(), entry)
+		if stream != nil {
+			t.Cleanup(func() { _ = stream.Close() })
+		}
+		var limitErr *StreamLimitError
+		require.ErrorAs(t, err, &limitErr)
+		assert.Equal(t, StreamLimitWindowBytes, limitErr.Dimension)
+		assert.Equal(t, uint64(math.MaxInt32), limitErr.Actual)
+		assert.Equal(t, uint64(512<<20), limitErr.Limit)
+	})
+}
 
 // buildTestPack writes a pack with the given blobs and returns its final path
 // and entries. crypter may be nil for a plain pack.

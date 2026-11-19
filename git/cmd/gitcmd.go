@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -48,9 +49,9 @@ type Runner struct {
 	StripEnv bool
 	// TerminalPrompt allows interactive git prompts when true.
 	TerminalPrompt bool
-	// NullGlobalConfig makes git read an empty global config when true, by
-	// pointing GIT_CONFIG_GLOBAL at an empty file (not os.DevNull, which is the
-	// unreadable "NUL" device on some Windows builds).
+	// NullGlobalConfig makes git read no global config and refuse global
+	// config writes when true, by pointing GIT_CONFIG_GLOBAL at a path that
+	// cannot exist.
 	NullGlobalConfig bool
 	// NoSystemConfig sets GIT_CONFIG_NOSYSTEM=1 when true.
 	NoSystemConfig bool
@@ -61,18 +62,45 @@ type Runner struct {
 	// repositories owned by another user ("detected dubious ownership"), even
 	// though plain git works for the same user.
 	DisableSafeDirectoryForward bool
+	// WaitDelay bounds pipe draining after Git exits or is canceled. Zero
+	// preserves the default of one second.
+	WaitDelay time.Duration
+	// StdoutLimit and StderrLimit bound captured output in Run and Output.
+	// Nonpositive values are unlimited. Excess bytes are drained and discarded;
+	// the result includes the corresponding limit error even if Git succeeds.
+	StdoutLimit int
+	StderrLimit int
+	// AcceptSuccessfulWaitDelay accepts a successful Git exit whose inherited
+	// output pipes did not close before WaitDelay. Cancellation and nonzero
+	// process exits still fail. This does not affect Command's caller-owned Wait.
+	AcceptSuccessfulWaitDelay bool
 
 	basicAuth *basicAuth
+	trust     *safeDirectoryCache
 }
 
 // New returns a Runner with safe automation defaults.
+// Trust reuse is pinned to the first observed environment and Git executable
+// for the lifetime of this runner and its copies. Other identities always read
+// fresh config. Edits affect the next command in either case.
 func New() Runner {
 	return Runner{
 		Env:              os.Environ(),
 		StripEnv:         true,
 		NullGlobalConfig: true,
 		NoSystemConfig:   true,
+		trust:            &safeDirectoryCache{},
 	}
+}
+
+// WithEnv returns a copy of r with a snapshot of env and an independent trust
+// cache. Use it when changing the environment of an already-used runner so the
+// new environment can reuse trust reads without affecting the original runner.
+// A nil env retains the default of using os.Environ when each command runs.
+func (r Runner) WithEnv(env []string) Runner {
+	r.Env = slices.Clone(env)
+	r.trust = &safeDirectoryCache{}
+	return r
 }
 
 // WithConfig returns a copy of r with an additional temporary git config value.
@@ -98,6 +126,9 @@ func (r Runner) Command(ctx context.Context, dir string, args ...string) *exec.C
 		panic("gitcmd: Command cannot be used with WithBasicAuth; use Run or Output so credentials can be cleaned up")
 	}
 	cmd := gitCommand(ctx, !r.TerminalPrompt, args...)
+	if r.WaitDelay != 0 {
+		cmd.WaitDelay = r.WaitDelay
+	}
 	cmd.Dir = dir
 	cmd.Env, _ = r.commandEnv(ctx, dir)
 	return cmd
@@ -112,31 +143,80 @@ func (r Runner) Output(ctx context.Context, dir string, args ...string) ([]byte,
 // Run runs git and returns stdout, stderr, and a *GitError on failure.
 func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) ([]byte, []byte, error) {
 	cmd := gitCommand(ctx, !r.TerminalPrompt, args...)
+	if r.WaitDelay != 0 {
+		cmd.WaitDelay = r.WaitDelay
+	}
 	cmd.Dir = dir
 	var cleanup func()
 	cmd.Env, cleanup = r.commandEnv(ctx, dir)
 	defer cleanup()
 	cmd.Stdin = stdin
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	stdout := outputBuffer{limit: r.StdoutLimit}
+	stderr := outputBuffer{limit: r.StderrLimit}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// bytes.Buffer.ReadFrom avoids io.Copy's 32 KiB scratch allocation for
+	// each pipe. Only use it when there is no capture limit to enforce.
+	if r.StdoutLimit <= 0 {
+		cmd.Stdout = &stdout.buffer
+	}
+	if r.StderrLimit <= 0 {
+		cmd.Stderr = &stderr.buffer
+	}
 
 	err := cmd.Run()
+	if err != nil && ctx.Err() != nil {
+		err = errors.Join(err, ctx.Err())
+	} else if r.AcceptSuccessfulWaitDelay && errors.Is(err, exec.ErrWaitDelay) &&
+		cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		err = nil
+	}
+	if stdout.exceeded {
+		err = errors.Join(err, ErrStdoutLimitExceeded)
+	}
+	if stderr.exceeded {
+		err = errors.Join(err, ErrStderrLimitExceeded)
+	}
 	if err != nil {
-		return stdout.Bytes(), stderr.Bytes(), &GitError{
-			Dir:    dir,
-			Args:   append([]string(nil), args...),
-			Stderr: strings.TrimSpace(stderr.String()),
-			Err:    err,
+		return stdout.buffer.Bytes(), stderr.buffer.Bytes(), &GitError{
+			Dir:          dir,
+			Args:         append([]string(nil), args...),
+			Stderr:       strings.TrimSpace(stderr.buffer.String()),
+			Err:          err,
+			processState: cmd.ProcessState,
 		}
 	}
-	return stdout.Bytes(), stderr.Bytes(), nil
+	return stdout.buffer.Bytes(), stderr.buffer.Bytes(), nil
+}
+
+var (
+	// ErrStdoutLimitExceeded reports truncated captured standard output.
+	ErrStdoutLimitExceeded = errors.New("git stdout limit exceeded")
+	// ErrStderrLimitExceeded reports truncated captured standard error.
+	ErrStderrLimitExceeded = errors.New("git stderr limit exceeded")
+)
+
+// outputBuffer keeps a prefix while continuing to drain a subprocess pipe.
+// Do not embed bytes.Buffer: its promoted ReadFrom would bypass the limit.
+type outputBuffer struct {
+	buffer   bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (b *outputBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if b.limit > 0 && n > b.limit-b.buffer.Len() {
+		b.exceeded = true
+		p = p[:b.limit-b.buffer.Len()]
+	}
+	_, err := b.buffer.Write(p)
+	return n, err
 }
 
 func gitCommand(ctx context.Context, hideConsoleWindow bool, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:forbidigo // prepareGitCommand hides it unless a credential prompt needs the console
 	cmd.WaitDelay = gitCommandWaitDelay
 	prepareGitCommand(cmd, hideConsoleWindow)
 	return cmd
@@ -203,23 +283,33 @@ var (
 
 var safeDirectoryProbeTimeout = 2 * time.Second
 
-// nullGlobalConfigPath returns a path suitable for GIT_CONFIG_GLOBAL that makes
-// git read an empty (no-op) global config.
+// nullGlobalConfigPath returns a GIT_CONFIG_GLOBAL value that makes git read
+// no global config and refuse to write one.
 //
-// It must not be os.DevNull. On Windows os.DevNull is "NUL", the null device,
-// and some Git for Windows builds — notably on ARM64 — fail with
-// "fatal: unable to access 'NUL': Invalid argument" when told to read their
-// global config from that device, which breaks every git invocation. An empty
-// regular file is an equivalent no-op global config on every platform. The file
-// is created once per process and reused; it is intentionally not removed so the
-// path stays valid for the process lifetime (the OS reclaims the temp dir). If
-// the file cannot be created, fall back to os.DevNull, which still works on
-// platforms where the device is readable.
+// The value is a path beneath a file that is not a directory, so the path can
+// never exist. git treats a global config it cannot find as absent, and a
+// "git config --global" write fails because git cannot create its lock file
+// there. No file is created, so short-lived processes leave nothing behind.
+//
+// Pointing at the null device itself is not safe: git writes config by
+// renaming "<path>.lock" over "<path>", so a write run as root would replace
+// /dev/null. Outside Windows the parent is os.DevNull. On Windows os.DevNull is
+// "NUL", and some Git for Windows builds — notably on ARM64 — fail with
+// "fatal: unable to access 'NUL': Invalid argument", so the parent is the
+// running executable instead. If the executable path is unknown, a
+// process-private empty temporary file is used.
 func nullGlobalConfigPath() string {
+	if runtime.GOOS != "windows" {
+		return filepath.Join(os.DevNull, "gitconfig")
+	}
 	emptyGlobalConfigOnce.Do(func() {
+		if executable, err := os.Executable(); err == nil {
+			emptyGlobalConfigPath = filepath.Join(executable, "gitconfig")
+			return
+		}
+		emptyGlobalConfigPath = os.DevNull
 		f, err := os.CreateTemp("", "gitcmd-empty-global-*.gitconfig")
 		if err != nil {
-			emptyGlobalConfigPath = os.DevNull
 			return
 		}
 		emptyGlobalConfigPath = f.Name()
@@ -232,12 +322,9 @@ func nullGlobalConfigPath() string {
 // config using env, in git's evaluation order. git only honors safe.directory
 // from protected configuration (system, global, and command scope), so these
 // are the entries the sanitized environment would otherwise hide. Entries are
-// read fresh on every call, like git itself reads config on every invocation:
-// no cache means no stale trust entries in long-lived processes and no
-// retained copies of caller environments. Best effort: scopes that are unset
-// or unreadable contribute nothing. Empty values are kept because an empty
-// safe.directory resets the list, and replaying entries in order preserves
-// that semantic at command scope.
+// read fresh on every call. Unset or unreadable scopes contribute nothing.
+// Empty values are kept because an empty safe.directory resets the list.
+// Replaying entries in order preserves that semantic at command scope.
 //
 // The probes run in dir, the same directory as the git command being built,
 // so conditional includes (includeIf "gitdir:...") resolve exactly as they
@@ -249,24 +336,13 @@ func nullGlobalConfigPath() string {
 // system scope is skipped here explicitly: git running with this env would
 // not honor those entries, and they must not be forwarded on its behalf.
 func readSafeDirectories(ctx context.Context, env []string, dir string) []string {
-	scopes := []string{"--system", "--global"}
-	if gitEnvBool(env, "GIT_CONFIG_NOSYSTEM") {
-		scopes = scopes[1:]
-	}
 	var dirs []string
-	for _, scope := range scopes {
-		// --includes is required for explicit-scope reads to honor include.path
-		// and includeIf directives the way git's default config sequence does.
-		probeCtx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
-		cmd := gitCommand(probeCtx, true, "config", scope, "--includes", "-z", "--get-all", "safe.directory")
-		cmd.Dir = dir
-		cmd.Env = env
-		out, err := cmd.Output()
-		cancel()
-		if err != nil || len(out) == 0 {
+	for _, scope := range safeDirectoryScopes(env) {
+		entries, _, err := readSafeDirectoryScope(ctx, env, dir, scope)
+		if err != nil {
 			continue
 		}
-		dirs = append(dirs, strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")...)
+		dirs = append(dirs, entries...)
 	}
 	return dirs
 }
@@ -332,7 +408,7 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		// Read from the runner's base env before stripping, so the entries come
 		// from the configuration this runner's environment would see, not from
 		// the process environment.
-		for _, trusted := range readSafeDirectories(ctx, base, dir) {
+		for _, trusted := range r.trust.read(ctx, base, dir) {
 			config = append(config, Config{Key: "safe.directory", Value: trusted})
 		}
 	}
@@ -410,8 +486,10 @@ type GitError struct {
 	Args []string
 	// Stderr is the trimmed stderr captured from git.
 	Stderr string
-	// Err is the underlying process error.
+	// Err is the underlying execution or output-capture error.
 	Err error
+
+	processState *os.ProcessState
 }
 
 func (e *GitError) Error() string {
@@ -425,8 +503,12 @@ func (e *GitError) Unwrap() error {
 	return e.Err
 }
 
-// ExitCode returns git's process exit code when available.
+// ExitCode returns git's process exit code when available, including zero when
+// Git succeeded but output capture reported an error.
 func (e *GitError) ExitCode() (int, bool) {
+	if e.processState != nil {
+		return e.processState.ExitCode(), true
+	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](e.Err); ok {
 		return exitErr.ExitCode(), true
 	}

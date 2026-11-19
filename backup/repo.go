@@ -58,8 +58,9 @@ const (
 	// deliberately distinct from FormatVersion ("what we write"): a future
 	// release may read formats newer than the one it writes, or vice versa.
 	// Repo.Open and LoadManifest refuse anything whose min_reader_version
-	// exceeds this.
-	SupportedReaderVersion = 6
+	// exceeds this. Version 7 is a repository gate an application can raise
+	// with Repo.RequireReaderVersion; it changes no layout.
+	SupportedReaderVersion = 7
 
 	// dbPathManifestVersion marks snapshots whose attachment population
 	// records storage paths beyond the canonical loose "<aa>/<hash>"
@@ -135,7 +136,7 @@ func Init(root string) (*Repo, error) {
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 	r := &Repo{root: root, cfg: cfg}
-	if err := r.writeConfig(); err != nil {
+	if err := r.writeConfig(r.cfg); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -217,18 +218,80 @@ func validatePackExtension(ext string) error {
 	return nil
 }
 
-// SetPageSize records the DB page size after the first backup.
+// SetPageSize records the DB page size after the first backup. The caller
+// must hold the exclusive repo lock. It re-reads config.toml first, so it
+// fails on a repository this build cannot open.
 func (r *Repo) SetPageSize(pageSize int) error {
-	if r.cfg.PageSize == pageSize {
-		return nil
-	}
-	r.cfg.PageSize = pageSize
-	return r.writeConfig()
+	return r.updateConfig(func(cfg *RepoConfig) bool {
+		if cfg.PageSize == pageSize {
+			return false
+		}
+		cfg.PageSize = pageSize
+		return true
+	})
 }
 
-func (r *Repo) writeConfig() error {
+// RequireReaderVersion raises the repository's min_reader_version to v so
+// that builds whose SupportedReaderVersion is below v refuse the repository
+// at Open. It never lowers the value and returns nil when the recorded one is
+// already at least v. It errors when v exceeds SupportedReaderVersion, since
+// this build could not open the repository afterwards. The gate applies at
+// Open only: a build that already holds a handle keeps using it, and an
+// older build's SetPageSize may write its cached, lower value back. The
+// caller must hold
+// the exclusive repo lock. It re-reads config.toml first, so it fails on a
+// repository this build cannot open.
+func (r *Repo) RequireReaderVersion(v int) error {
+	if v > SupportedReaderVersion {
+		return fmt.Errorf(
+			"backup: cannot require reader version %d: this reader "+
+				"supports %d", v, SupportedReaderVersion)
+	}
+	return r.updateConfig(func(cfg *RepoConfig) bool {
+		if cfg.MinReaderVersion >= v {
+			return false
+		}
+		cfg.MinReaderVersion = v
+		return true
+	})
+}
+
+// updateConfig reloads the config from disk, so a field another handle
+// changed since this one was opened is not written back from a stale copy,
+// then applies change to a copy and publishes it when change reports true.
+// The handle takes the changed config only after the write succeeds, so a
+// failed write leaves it at what was last read from disk. It refuses a config
+// whose repo_id differs from the handle's: the directory now holds another
+// repository, and adopting its ID would key local caches to the wrong one.
+func (r *Repo) updateConfig(change func(*RepoConfig) bool) error {
+	fresh, err := Open(r.root)
+	if err != nil {
+		return err
+	}
+	if fresh.cfg.RepoID != r.cfg.RepoID {
+		return fmt.Errorf(
+			"backup: repository at %s is now %s, not %s; reopen it",
+			r.root, fresh.cfg.RepoID, r.cfg.RepoID)
+	}
+	// Assign only on change so an unchanged config, the common case on
+	// every Create, does not write the handle.
+	if fresh.cfg != r.cfg {
+		r.cfg = fresh.cfg
+	}
+	next := r.cfg
+	if !change(&next) {
+		return nil
+	}
+	if err := r.writeConfig(next); err != nil {
+		return err
+	}
+	r.cfg = next
+	return nil
+}
+
+func (r *Repo) writeConfig(cfg RepoConfig) error {
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(r.cfg); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
 		return fmt.Errorf("backup: encoding repository config: %w", err)
 	}
 	return writeFileAtomic(r, repoConfigName, buf.Bytes())

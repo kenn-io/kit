@@ -138,11 +138,11 @@ func (sn *Snapshot[K, G]) CoveredDocs(ctx context.Context, q DocQuery) (*sql.Row
 	query := fmt.Sprintf(`
 SELECT %s
   FROM %s d
-  LEFT JOIN %s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%s
+  LEFT JOIN %s stamp ON stamp.ordinal = ? AND %s
  WHERE %s
  ORDER BY %s`,
 		qualify(append([]string{schema.IDColumn}, q.Columns...)), schema.DocsTable, sn.store.stampsTable(),
-		schema.IDColumn, where, qualify(orderBy))
+		sn.store.docKeyMatch("stamp", "d"), where, qualify(orderBy))
 	rows, err := sn.tx.QueryContext(ctx, query, append([]any{sn.ordinal}, q.Args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("covered documents: %w", err)
@@ -164,9 +164,9 @@ func (sn *Snapshot[K, G]) UncoveredCount(ctx context.Context, where string, args
 	query := fmt.Sprintf(`
 SELECT COUNT(*)
   FROM %s d
-  LEFT JOIN %s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%s
+  LEFT JOIN %s stamp ON stamp.ordinal = ? AND %s
  WHERE %s`,
-		schema.DocsTable, sn.store.stampsTable(), schema.IDColumn, predicate)
+		schema.DocsTable, sn.store.stampsTable(), sn.store.docKeyMatch("stamp", "d"), predicate)
 	var n int64
 	if err := sn.tx.QueryRowContext(ctx, query, append([]any{sn.ordinal}, args...)...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count uncovered documents: %w", err)

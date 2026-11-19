@@ -1,3 +1,9 @@
+---
+title: "Adopting packed content storage"
+description: "Integrate packed content storage and maintain its publication and recovery guarantees."
+last_edited: 2026-11-10
+---
+
 # Adopting packed content storage
 
 This guide is for applications moving a content-addressed file tree onto
@@ -52,7 +58,6 @@ coordinator := packstore.NewCoordinator()
 maintainer, err := packstore.NewMaintainer(catalog, layout, packstore.MaintainerOptions{
 	Limits:      limits,
 	Coordinator: coordinator,
-	Store:       packstore.StoreOptions{ReaderSlots: 16},
 })
 if err != nil {
 	return err
@@ -141,8 +146,7 @@ objects the same ceiling.
 ## Buffered and streaming reads
 
 Existing callers can retain `Store.Open` when they need a seekable result, or
-`Store.ReadBounded` when they need an all-or-nothing byte slice. Those APIs
-verify complete packed content before returning it.
+`Store.ReadBounded` when they need an all-or-nothing byte slice. Both APIs verify complete packed content before returning it.
 
 Use `Store.OpenStream` for incremental consumption. A successful read of a
 prefix is not verification. Trust the complete object only after terminal
@@ -193,7 +197,8 @@ required. Opt into bounded-memory writing with `Writer.AppendStream`, or
 prepare entries concurrently with `PrepareBlob` and append the resulting
 `PreparedBlob` values in deterministic order with `AppendPrepared`.
 
-Use `Reader.OpenBlob` for bounded-memory plain reads. The supplied `Entry` must
+Use `Reader.OpenBlob` for streaming plain reads. Legacy single-segment frames
+can still require a decoder window as large as the blob. The supplied `Entry` must
 come from that reader's immutable `Entries` result; caller-constructed offsets
 are rejected. `BlobReader` has the same terminal verification and early-close
 contract as `Store.OpenStream`. Use `ReaderOptions` and `BlobReaderOptions` to
@@ -220,6 +225,27 @@ budget was or was not crossed.
 
 Use finite budgets for scheduled work and inspect all returned statistics
 instead of assuming every eligible object was processed.
+
+Frequent passes need two more settings, or each pass seals the few objects
+written since the last one into a new small pack and the pack count grows
+without bound. Set `PackOptions.MinSealBytes` so `Pack` leaves loose objects in
+place until enough bytes accumulate or the oldest reaches `MaxLooseAge`
+(24 hours when zero). Set `RepackSelection.MergeBelowStored` so `Repack`
+merges live packs smaller than that, once they are `MinAge` old, into packs of
+up to `TargetSize`. A quarter of `TargetSize` suits both. `RepackOptions.MaxBytes`
+admits whole merge groups, so a store with many small packs converges over
+successive passes. Merging only rewrites live entries through `CommitRepack`,
+so it needs no catalog changes.
+
+`Repack` copies each live entry's stored frame into the replacement pack
+without recompressing it, after checking the frame's CRC32C and decoding it to
+check its length and SHA-256. It holds one frame of up to 16 MiB in memory at a
+time; larger entries are recompressed through disk scratch.
+
+A pass that fails or reaches its deadline keeps the verification progress it
+made, so a bounded sweep with `MaxVerifyBytes` moves forward across passes even
+when later steps time out. The progress is held by the `Maintainer`, so a new
+`Maintainer` starts a fresh sweep.
 
 Maintenance preserves authority ordering:
 
@@ -259,12 +285,17 @@ overhead. Scratch use and codec buffers multiply with concurrent preparation.
 Place scratch on storage with an explicit capacity policy and include cleanup
 of exact-owned staging files in recovery.
 
-`ReaderSlots` bounds idle cached descriptors, not all live descriptors. Each
-active stream holds a lease even after eviction, so budget file descriptors as
-`ReaderSlots + maximum concurrent streams`, plus unrelated application use.
-Compressed reads also enforce a decoder-window limit. A legacy format-v1 frame
-whose declared window exceeds policy fails with a typed limit error rather
-than increasing memory implicitly.
+`ReaderSlots` defaults to 64 and bounds idle cached descriptors, not all live
+descriptors. Each active stream holds a lease even after eviction, so budget
+file descriptors as `ReaderSlots + maximum concurrent streams`, plus unrelated
+application use.
+Packed `OpenStream` and `ReadBounded` reads also enforce a decoder-window limit
+derived from the blob policy. A legacy format-v1 frame whose declared window
+exceeds that limit fails with a typed limit error. Direct `pack` readers with
+zero `ReaderLimits.WindowBytes` allow windows up to 4 GiB on 64-bit systems,
+so a legacy single-segment frame can require memory proportional to its full
+raw size. The decoder window ceiling remains 512 MiB on 32-bit systems.
+The buffered compatibility path `Store.Open` uses that default as well.
 
 Format v1 represents raw lengths up to 4 GiB. Its encrypted frames use
 whole-entry authenticated encryption and cannot safely expose streamed

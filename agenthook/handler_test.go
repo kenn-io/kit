@@ -70,6 +70,46 @@ func TestHandleNormalizesAndDispatchesTypedPostToolUse(t *testing.T) {
 	assert.JSONEq(`{}`, output.String())
 }
 
+func TestHandleDispatchesMusePostToolUse(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	handler := &selectiveHandler{postOutput: PostToolUseOutput{
+		Decision: DecisionBlock, Reason: "output rejected",
+	}}
+	var output bytes.Buffer
+
+	// Captured from Muse Code 1.4.7.
+	err := Handle(
+		t.Context(),
+		AgentMuse,
+		strings.NewReader(`{
+  "cwd":"/work",
+  "hook_event_name":"PostToolUse",
+  "model":"muse-spark-1.2",
+  "model_provider":"meta",
+  "permission_mode":"bypassPermissions",
+  "session_id":"01a13a7d-6d3f-7723-befd-b8d654f1e738",
+  "tool_input":{"command":"echo hookprobe","description":"Echo hookprobe text","workdir":"/work"},
+  "tool_name":"bash",
+  "tool_response":"{\n  \"exit_code\": 0,\n  \"output\": \"hookprobe\\n\"\n}",
+  "tool_use_id":"call_01a13a7d86c576e5803275c90658e469",
+  "transcript_path":null,
+  "turn_id":"9cf6732f-d150-43e5-b962-cb4ca4d72b3b"
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(err)
+	require.NotNil(handler.postToolUse)
+	input := handler.postToolUse
+	assert.Equal(ToolBash, input.ToolName)
+	assert.Equal(PermissionModeBypassPermissions, input.PermissionMode)
+	assert.Equal("9cf6732f-d150-43e5-b962-cb4ca4d72b3b", input.TurnID)
+	assert.Contains(string(input.Raw), `"model_provider":"meta"`)
+	assert.JSONEq(`{"decision":"block","reason":"output rejected"}`, output.String())
+}
+
 func TestHandleDispatchesTypedStop(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -628,6 +668,16 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 			},
 		},
 		{
+			name:    "Pi reload without Claude source",
+			agent:   AgentPi,
+			payload: `{"session_id":"p1","hook_event_name":"session_start","reason":"reload"}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
+				require.NotNil(t, handler.sessionStart)
+				assert.Empty(t, handler.sessionStart.Source)
+			},
+		},
+		{
 			name:  "Hermes session end without Claude reason",
 			agent: AgentHermes,
 			payload: `{
@@ -642,6 +692,21 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 				assert.Empty(t, handler.sessionEnd.Reason)
 			},
 		},
+		{
+			name:    "OpenCode session start without source",
+			agent:   AgentOpenCode,
+			payload: `{"session_id":"ses_1","hook_event_name":"SessionStart","cwd":"/work"}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
+				require.NotNil(t, handler.sessionStart)
+				assert.Empty(t, handler.sessionStart.Source)
+			},
+		},
+		{
+			name:    "OpenCode user prompt without prompt",
+			agent:   AgentOpenCode,
+			payload: `{"session_id":"ses_1","hook_event_name":"UserPromptSubmit"}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -655,7 +720,9 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 			)
 
 			require.NoError(t, err)
-			tt.check(t, handler)
+			if tt.check != nil {
+				tt.check(t, handler)
+			}
 			assert.JSONEq(t, `{}`, output.String())
 		})
 	}
@@ -847,4 +914,35 @@ func TestHandleRejectsOversizedPayload(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "hook payload exceeds")
+}
+
+func TestHandleDispatchesPiSessionEnd(t *testing.T) {
+	var output bytes.Buffer
+	handler := &lifecycleHandler{}
+
+	err := Handle(
+		t.Context(), AgentPi,
+		strings.NewReader(`{"session_id":"pi-1","hook_event_name":"session_shutdown","reason":"new"}`),
+		&output, handler,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, handler.sessionEnd)
+	assert.Equal(t, "pi-1", handler.sessionEnd.SessionID)
+	assert.Equal(t, SessionEndClear, handler.sessionEnd.Reason)
+	assert.JSONEq(t, `{}`, output.String())
+}
+
+func TestHandleRejectsPiControlOutput(t *testing.T) {
+	var output bytes.Buffer
+	handler := stopHandler{output: StopOutput{Decision: DecisionBlock, Reason: "work remains"}}
+
+	err := Handle(
+		t.Context(), AgentPi,
+		strings.NewReader(`{"session_id":"pi-1","hook_event_name":"agent_settled"}`),
+		&output, handler,
+	)
+
+	require.ErrorContains(t, err, "does not support Stop control output")
+	assert.Empty(t, output.String())
 }

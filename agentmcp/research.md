@@ -1,3 +1,9 @@
+---
+title: "MCP registration research"
+description: "Research on MCP server registration formats and discovery across agent tools."
+last_edited: 2026-11-13
+---
+
 # MCP registration research
 
 Checked primary sources on 2026-09-26. This note informs the eight clients already
@@ -82,9 +88,21 @@ formatting can change. It contains no custom parser.
 Explicit SSE uses the mappings below. Project files can be selected by path;
 automatic scope discovery and alternate nested layouts remain outside this API.
 
+## Authentication
+
+Literal headers remain supported. `BearerTokenEnvVar` references a variable
+without reading its value. For Claude, it emits `headers.Authorization` as
+`Bearer ${NAME}`, using [Claude's environment expansion](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson).
+For Codex, it emits the native [`bearer_token_env_var` field](https://github.com/openai/codex/blob/main/codex-rs/config/src/mcp_types.rs).
+This field supports Claude and Codex remote servers and rejects stdio,
+conflicting Authorization headers, and other clients.
+The referenced variable must be present in the client's environment.
+When authentication is disabled, `PreviousBearerTokenEnvVar` identifies the
+previously supplied bearer setting to remove. Other credentials are preserved.
+
 ## Optional additions
 
-- Authentication can use literal headers today. [Claude](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication)
+- [Claude](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication)
   also supports dynamic `headersHelper`; [Droid](https://docs.factory.ai/cli/configuration/mcp#add-servers-from-the-cli)
   supports `oauth: false` for header-authenticated servers. These are distinct
   capabilities, not fields that should be copied to every client. Token-file
@@ -132,3 +150,44 @@ reading `package/cli.js` without executing it. Its global config resolver joins
 `CLAUDE_CONFIG_DIR || homedir()` with `.claude${suffix}.json`. For the ordinary
 empty suffix, `CLAUDE_CONFIG_DIR/.claude.json` is correct. This is versioned
 implementation evidence, not a current public stability guarantee.
+
+## Native checks and manual commands
+
+`Check` compares the active user registration before asking the agent to start
+one named server. Missing and changed entries return `missing` and `outdated`
+without launching an agent. Other profiles, incomplete status replies, missing
+agents, and ten-second probe limits return `unknown`. Checks write no config
+through kit, but agents can launch server processes and update runtime state.
+
+Codex's [app-server contract](https://developers.openai.com/codex/app-server)
+provides `mcpServerStatus/list`, whose `serverName` parameter restricts
+discovery to the requested server. `toolsError` is the agent's failure reason;
+a tool catalog, including an empty one, reports success with its count. With
+[`startup_readiness = "catalog"`](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/mcp_types.rs#L247-L255),
+Codex may return a cached catalog, so the result is `unknown`. Without a thread,
+status loads system, user, and runtime settings
+[without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
+Check compares only the connection fields represented by `Server`, plus
+`enabled = false`; explicit `enabled = true`, empty `args`, and empty `env` match
+their defaults. Check and `Install` share one merge: extra user settings, env
+keys, and headers do not make an entry outdated or get removed. The app owns
+the env and header keys it supplies; a wrong value for one makes an entry
+outdated. Keys the app stops supplying stay until removed. Args follow the
+app, so a hand-added argument makes Check report outdated.
+
+Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
+`Status`, and, when present, `Issue`, as Claude Code 2.1.301 confirms. Only a
+connected user entry with no issue reports `ok`; a same-name project or local
+entry returns `unknown` with its scope, and one registered only there is
+`missing` because Check reads the user config first. The probe inherits the caller's
+environment, so Claude safe mode, which hides MCP registrations, returns
+`unknown`.
+
+`Command` renders `claude mcp add --scope user` and `codex mcp add` for POSIX
+shells and PowerShell. Options precede a single `--`, then the name and any
+stdio command and arguments; Claude's native check likewise uses
+`mcp get -- NAME`. Claude names accept ASCII letters, digits, underscores, and
+hyphens; Codex also accepts `.`, `:`, `@`, and `/`. Codex 0.166.0's `mcp add`
+has no arbitrary-header flag, so literal headers return a renderer error. These
+limits don't apply to config writing or native checks. Command strings can
+contain credentials and need the same care as config files.

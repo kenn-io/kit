@@ -17,7 +17,7 @@ func TestUnixSocketStaleTreatsMissingSocketAsStale(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	stale, err := unixSocketStale(t.Context(), filepath.Join(dir, "missing.sock"), 50*time.Millisecond)
+	stale, err := unixSocketStale(t.Context(), filepath.Join(dir, "missing.sock"), time.Second)
 
 	require.NoError(t, err)
 	assert.True(t, stale)

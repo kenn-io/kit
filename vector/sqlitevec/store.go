@@ -13,17 +13,21 @@ import (
 // stamp does not yet match gen, ordered by primary key for stable paging.
 // When the schema names a revision column, each row's revision is returned
 // so SaveVectors can stamp optimistically.
-func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, limit int) ([]vector.Pending[K], error) {
+func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, after *K, limit int) ([]vector.Pending[K], error) {
 	ordinal, _, err := s.lookupGeneration(ctx, gen)
 	if err != nil {
 		return nil, err
 	}
 	columns := fmt.Sprintf("d.%s, d.%s", s.schema.IDColumn, s.schema.ContentColumn)
-	args := []any{ordinal, limit}
+	args := []any{ordinal}
+	if after != nil {
+		args = append(args, *after)
+	}
+	args = append(args, limit)
 	if s.schema.RevisionColumn != "" {
 		columns = fmt.Sprintf("d.%s, d.%s, d.%s", s.schema.IDColumn, s.schema.ContentColumn, s.schema.RevisionColumn)
 	}
-	rows, err := s.db.QueryContext(ctx, s.pendingQuery(columns), args...)
+	rows, err := s.db.QueryContext(ctx, s.pendingQuery(columns, after != nil), args...)
 	if err != nil {
 		return nil, fmt.Errorf("scan pending: %w", err)
 	}
@@ -70,15 +74,31 @@ func (s *Store[K, G]) coveredPredicate(docAlias, stampAlias string) string {
 	return "(" + predicate + ")"
 }
 
-func (s *Store[K, G]) pendingQuery(columns string) string {
+func numericDocKey(key string) string {
+	return fmt.Sprintf("CASE WHEN typeof(%[1]s)='text' AND CAST(%[1]s AS NUMERIC)=%[1]s THEN CAST(%[1]s AS NUMERIC) ELSE %[1]s END", key)
+}
+
+// docKeyMatch probes the expression index and retains the original comparison
+// for SQLite's affinity and collation rules.
+func (s *Store[K, G]) docKeyMatch(alias, docAlias string) string {
+	key := alias + ".doc_key"
+	id := docAlias + "." + s.schema.IDColumn
+	return "(" + numericDocKey(key) + " = " + numericDocKey(id) + " AND " + key + " = " + id + ")"
+}
+
+func (s *Store[K, G]) pendingQuery(columns string, cursor bool) string {
+	after := ""
+	if cursor {
+		after = fmt.Sprintf(" AND d.%s > ?", s.schema.IDColumn)
+	}
 	return fmt.Sprintf(`
 SELECT %s
   FROM %s d
-  LEFT JOIN %s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%s
- WHERE NOT %s
+  LEFT JOIN %s stamp ON stamp.ordinal = ? AND %s
+ WHERE NOT %s%s
  ORDER BY d.%s LIMIT ?`,
-		columns, s.schema.DocsTable, s.stampsTable(), s.schema.IDColumn,
-		s.coveredPredicate("d", "stamp"), s.schema.IDColumn)
+		columns, s.schema.DocsTable, s.stampsTable(), s.docKeyMatch("stamp", "d"),
+		s.coveredPredicate("d", "stamp"), after, s.schema.IDColumn)
 }
 
 // SaveVectors replaces doc's chunk vectors for gen and stamps the document
@@ -225,11 +245,11 @@ func (s *Store[K, G]) docInvalidated(ctx context.Context, tx *sql.Tx, doc K) (bo
 SELECT CASE WHEN %s THEN 0 ELSE 1 END
   FROM %s d
   LEFT JOIN %s gen ON gen.gen_key = d.%s
-  LEFT JOIN %s stamp ON stamp.ordinal = gen.ordinal AND stamp.doc_key = d.%s
+  LEFT JOIN %s stamp ON stamp.ordinal = gen.ordinal AND %s
  WHERE d.%s = ?`,
 		s.coveredPredicate("d", "stamp"),
 		s.schema.DocsTable, s.generationsTable(), s.schema.EmbedGenColumn,
-		s.stampsTable(), s.schema.IDColumn, s.schema.IDColumn)
+		s.stampsTable(), s.docKeyMatch("stamp", "d"), s.schema.IDColumn)
 	var invalidated int
 	err := tx.QueryRowContext(ctx, query, doc).Scan(&invalidated)
 	if err == sql.ErrNoRows {

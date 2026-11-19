@@ -86,6 +86,13 @@ func Probe(ctx context.Context, ep Endpoint, opts ProbeOptions) (PingInfo, error
 	return ProbeHTTP(ctx, client, ep.BaseURL(), opts)
 }
 
+func probeRecordEndpoint(ctx context.Context, rec RuntimeRecord, proof *Proof, opts ProbeOptions) (PingInfo, error) {
+	if proof != nil {
+		return proof.Probe(ctx, rec, opts)
+	}
+	return Probe(ctx, rec.Endpoint(), opts)
+}
+
 // ProbeHTTP checks that baseURL answers its ping endpoint.
 func ProbeHTTP(ctx context.Context, client *http.Client, baseURL string, opts ProbeOptions) (PingInfo, error) {
 	info, _, err := probeHTTP(ctx, client, baseURL, opts, "")
@@ -135,10 +142,11 @@ type DiscoverOptions struct {
 	// Proof enables proof-of-possession probing for each runtime record.
 	Proof *Proof
 	// RequirePIDAlive rejects dead processes and definite process-identity
-	// mismatches. It also makes failed probes indeterminate: Discover returns an
-	// UnreachableError when no later record succeeds. The false zero value keeps
-	// the earlier compatibility behavior, where failed probes are skipped and
-	// discovery can report definite absence.
+	// mismatches. A record whose identity this caller can't judge is kept and
+	// probed (see AGENTS.md). It also makes failed probes indeterminate:
+	// Discover returns an UnreachableError when no later record succeeds. The
+	// false zero value keeps the earlier compatibility behavior, where failed
+	// probes are skipped and discovery can report definite absence.
 	RequirePIDAlive bool
 	Accept          func(RuntimeRecord, PingInfo) bool
 }
@@ -185,18 +193,12 @@ func Discover(ctx context.Context, store RuntimeStore, opts DiscoverOptions) (Ru
 			return RuntimeRecord{}, PingInfo{}, false, err
 		}
 		if opts.RequirePIDAlive {
-			if !ProcessAlive(rec.PID) ||
-				CompareRuntimeProcessIdentity(rec) == ProcessIdentityMismatch {
+			if !runtimeRecordLive(rec) {
 				continue
 			}
 		}
 		ep := rec.Endpoint()
-		var info PingInfo
-		if opts.Proof == nil {
-			info, err = Probe(ctx, ep, opts.Probe)
-		} else {
-			info, err = opts.Proof.Probe(ctx, rec, opts.Probe)
-		}
+		info, err := probeRecordEndpoint(ctx, rec, opts.Proof, opts.Probe)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return RuntimeRecord{}, PingInfo{}, false, ctxErr

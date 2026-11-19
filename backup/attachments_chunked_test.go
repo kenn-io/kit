@@ -16,12 +16,14 @@ import (
 )
 
 func TestCaptureReusesStoredWholeBlob(t *testing.T) {
+	t.Parallel()
 	for _, source := range []bool{false, true} {
 		name := "directory"
 		if source {
 			name = "source"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			repo := initTestRepo(t)
 			db, dir, data, writer := seedBackupFixture(t)
 			ref := writeLargeAttachment(t, dir, 64<<20+1, true)
@@ -71,12 +73,9 @@ func TestCaptureReusesStoredWholeBlob(t *testing.T) {
 			assert.Equal(t, ref.Size, size)
 			assert.Equal(t, ref.Hash, hash)
 
-			file, err = os.OpenFile(filepath.Join(dir, ref.StoragePath), os.O_WRONLY, 0)
-			require.NoError(t, err)
-			_, writeErr := file.WriteAt([]byte("changed"), 0)
-			closeErr = file.Close()
-			require.NoError(t, writeErr)
-			require.NoError(t, closeErr)
+			replacement := t.TempDir()
+			changed := writeLargeAttachment(t, replacement, ref.Size, false)
+			require.NoError(t, os.Rename(filepath.Join(replacement, changed.StoragePath), filepath.Join(dir, ref.StoragePath)))
 			_, err = Create(t.Context(), repo, newTestApp(), opts)
 			require.ErrorContains(t, err, "does not match its hash", "reuse must still verify the live source")
 		})
@@ -112,10 +111,12 @@ func TestChunkedCaptureLetsSmallSourcesStart(t *testing.T) {
 }
 
 func TestCaptureChunkedSource(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ref := writeLargeAttachment(t, dir, 64<<20+1, false)
 	for _, mode := range []string{"declared size", "size hint", "wrong hash"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			input := ref
 			switch mode {
 			case "size hint":
@@ -157,10 +158,12 @@ func TestCaptureChunkedSource(t *testing.T) {
 }
 
 func TestCaptureExactlyOneChunk(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ref := writeLargeAttachment(t, dir, 64<<20, true)
 	for _, mode := range []string{"content", "metadata"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			appender, repo, known := newTestAppenderForSource(t)
 			defer appender.Abort()
 			id, err := pack.ParseBlobID(ref.Hash)

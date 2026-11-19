@@ -30,7 +30,7 @@ func TestPluginIsRegistered(t *testing.T) {
 	require.NoError(t, err)
 	p, err := newPlugin(nil)
 	require.NoError(t, err)
-	assert.Equal([]string{"errtext", "nohttpmux", "sleeptest", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
+	assert.Equal([]string{"errtext", "interfacecheck", "nohttpmux", "sleeptest", "deadlinetest", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
 	assert.Equal(register.LoadModeTypesInfo, p.GetLoadMode())
 	assert.False(errtext.IncludeTests)
 	assert.True(sleeptest.HelperPackages)
@@ -45,12 +45,12 @@ func TestPluginSettings(t *testing.T) {
 		sleeptest.Eventually = false
 	})
 	p, err := New(map[string]any{
-		"disable":   []any{"sleeptest", "nohttpmux"},
+		"disable":   []any{"sleeptest", "nohttpmux", "deadlinetest"},
 		"errtext":   map[string]any{"include-tests": true},
 		"sleeptest": map[string]any{"helper-packages": false, "eventually": true},
 	})
 	require.NoError(t, err)
-	assert.Equal([]string{"errtext", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
+	assert.Equal([]string{"errtext", "interfacecheck", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
 	assert.True(errtext.IncludeTests)
 	assert.False(sleeptest.HelperPackages)
 	assert.True(sleeptest.Eventually)
@@ -89,4 +89,12 @@ func TestTestifyHelperSettings(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDirectivePluginIsRegistered(t *testing.T) {
+	newPlugin, err := register.GetPlugin("kennnolint")
+	require.NoError(t, err)
+	p, err := newPlugin(nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"kennnolint"}, analyzerNames(t, p))
 }

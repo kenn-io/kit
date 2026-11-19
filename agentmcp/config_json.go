@@ -2,6 +2,7 @@ package agentmcp
 
 import (
 	"bytes"
+	stdjson "encoding/json"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -10,7 +11,7 @@ import (
 	"github.com/tailscale/hujson"
 )
 
-func planJSON(agent Agent, original []byte, name string, entry map[string]any) ([]byte, bool, error) {
+func planJSON(agent Agent, original []byte, name string, entry map[string]any, owned string) ([]byte, bool, bool, error) {
 	input := original
 	var bom []byte
 	if agent == AgentGemini && len(input) >= 3 && bytes.HasPrefix(input, []byte{0xef, 0xbb, 0xbf}) {
@@ -21,55 +22,71 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 	}
 	root, err := hujson.Parse(input)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	if agent != AgentGemini && agent != AgentQwen && agent != AgentCursor && !root.IsStandard() {
-		return nil, false, errors.New("MCP config must use standard JSON")
+		return nil, false, false, errors.New("MCP config must use standard JSON")
 	}
 	standard := root.Clone()
 	standard.Standardize()
 	var doc map[string]jsontext.Value
 	if err := json.Unmarshal(standard.Pack(), &doc); err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	if doc == nil {
-		return nil, false, errors.New("MCP config must be an object")
+		return nil, false, false, errors.New("MCP config must be an object")
 	}
 	servers := map[string]jsontext.Value{}
 	if raw, ok := doc["mcpServers"]; ok {
 		if err := json.Unmarshal(raw, &servers); err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 		if servers == nil {
-			return nil, false, errors.New("mcpServers must be an object")
+			return nil, false, false, errors.New("mcpServers must be an object")
 		}
 	}
-	encoded, err := json.Marshal(entry, json.Deterministic(true))
+	previous, present := servers[name]
+	encoded, err := encodeJSON(entry)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
-	if previous, ok := servers[name]; ok {
-		if err := previous.Canonicalize(); err != nil {
-			return nil, false, err
+	if present {
+		var fields map[string]any
+		decoder := stdjson.NewDecoder(bytes.NewReader(previous))
+		decoder.UseNumber()
+		if agent == AgentClaude && decoder.Decode(&fields) == nil && fields != nil {
+			dropEmptyFields(fields)
+			entry = mergeEntry(agent, fields, entry, owned)
+			previous, err = encodeJSON(fields)
+			if err != nil {
+				return nil, false, false, err
+			}
+			encoded, err = encodeJSON(entry)
+			if err != nil {
+				return nil, false, false, err
+			}
 		}
-		canonical := jsontext.Value(encoded)
+		if err := previous.Canonicalize(); err != nil {
+			return nil, false, false, err
+		}
+		canonical := jsontext.Value(bytes.Clone(encoded))
 		if err := canonical.Canonicalize(); err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 		if bytes.Equal(previous, canonical) {
-			return original, false, nil
+			return original, false, true, nil
 		}
 	}
 	if _, ok := doc["mcpServers"]; !ok {
 		if err := root.Patch([]byte(`[{"op":"add","path":"/mcpServers","value":{}}]`)); err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 	}
 	pointer := "/mcpServers/" + strings.ReplaceAll(strings.ReplaceAll(name, "~", "~0"), "/", "~1")
 	if target := root.Find(pointer); target != nil {
 		replacement, err := hujson.Parse(encoded)
 		if err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 		inner := *target
 		inner.BeforeExtra, inner.AfterExtra = nil, nil
@@ -79,12 +96,12 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		}
 		target.Value = replacement.Value
 	} else {
-		patch, err := json.Marshal([]map[string]any{{"op": "add", "path": pointer, "value": entry}})
+		patch, err := json.Marshal([]map[string]any{{"op": "add", "path": pointer, "value": entry}}, json.Deterministic(true))
 		if err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 		if err := root.Patch(patch); err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 	}
 	// HuJSON formatting adds trailing commas to commented documents, while
@@ -92,7 +109,15 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 	if root.IsStandard() {
 		root.Format()
 	}
-	return append(bom, root.Pack()...), true, nil
+	return append(bom, root.Pack()...), true, present, nil
+}
+
+func encodeJSON(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := stdjson.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(value)
+	return bytes.TrimSpace(buf.Bytes()), err
 }
 
 // Extra contains only whitespace and comments already identified by HuJSON.

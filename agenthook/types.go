@@ -59,6 +59,7 @@ const (
 // UserPromptSubmitInput is the typed Claude UserPromptSubmit payload.
 type UserPromptSubmitInput struct {
 	CommonInput
+	// Prompt is empty when the harness reports a running turn without its text, as OpenCode does.
 	Prompt string `json:"prompt"`
 }
 

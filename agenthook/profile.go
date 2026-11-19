@@ -14,14 +14,17 @@ import (
 type Agent string
 
 const (
-	AgentClaude  Agent = "claude"
-	AgentCodex   Agent = "codex"
-	AgentCopilot Agent = "copilot"
-	AgentCursor  Agent = "cursor"
-	AgentDroid   Agent = "droid"
-	AgentGemini  Agent = "gemini"
-	AgentHermes  Agent = "hermes"
-	AgentQwen    Agent = "qwen"
+	AgentClaude   Agent = "claude"
+	AgentCodex    Agent = "codex"
+	AgentCopilot  Agent = "copilot"
+	AgentCursor   Agent = "cursor"
+	AgentDroid    Agent = "droid"
+	AgentGemini   Agent = "gemini"
+	AgentHermes   Agent = "hermes"
+	AgentMuse     Agent = "muse"
+	AgentOpenCode Agent = "opencode"
+	AgentPi       Agent = "pi"
+	AgentQwen     Agent = "qwen"
 )
 
 // Event is a Claude Code lifecycle event name. Profiles translate events to
@@ -42,7 +45,8 @@ const (
 
 // ToolBash is the Claude Code tool name for shell execution. Profiles map this
 // exact matcher to the corresponding native tool name, such as terminal in
-// Hermes, Execute in Factory Droid, and run_shell_command in Gemini and Qwen.
+// Hermes, Execute in Factory Droid, bash in Muse Code, and run_shell_command
+// in Gemini and Qwen.
 const ToolBash = "Bash"
 
 // Profile describes the stable, user-visible properties of an agent hook
@@ -61,6 +65,8 @@ const (
 	formatNestedJSON configFormat = iota
 	formatDirectJSON
 	formatHermesYAML
+	// formatScript writes a kit-owned JavaScript module the harness loads.
+	formatScript
 )
 
 type windowsCommandStyle uint8
@@ -69,6 +75,9 @@ const (
 	windowsCommandNone windowsCommandStyle = iota
 	windowsCommandNested
 	windowsCommandPowerShell
+	// windowsCommandExec writes an executable and its arguments as separate
+	// fields on Windows, so no shell parses them.
+	windowsCommandExec
 )
 
 type responseFormat uint8
@@ -98,6 +107,8 @@ type profileSpec struct {
 	shellToolName               string
 	defaultDir                  func() (string, error)
 	configEnvSubdir             string
+	configEnvDir                func(string) (string, error)
+	newConfigFields             map[string]any
 	eventName                   func(Event) string
 	timeoutUnit                 time.Duration
 	timeoutField                string
@@ -106,7 +117,9 @@ type profileSpec struct {
 	failClosedEvents            []Event
 	requireVersion              bool
 	sessionSourceRequirement    inputRequirement
+	userPromptRequirement       inputRequirement
 	sessionEndReasonRequirement inputRequirement
+	script                      string
 }
 
 var profileOrder = []Agent{
@@ -117,18 +130,24 @@ var profileOrder = []Agent{
 	AgentDroid,
 	AgentGemini,
 	AgentHermes,
+	AgentMuse,
+	AgentOpenCode,
+	AgentPi,
 	AgentQwen,
 }
 
 var profiles = map[Agent]profileSpec{
-	AgentClaude:  claudeProfile(),
-	AgentCodex:   codexProfile(),
-	AgentCopilot: copilotProfile(),
-	AgentCursor:  cursorProfile(),
-	AgentDroid:   droidProfile(),
-	AgentGemini:  geminiProfile(),
-	AgentHermes:  hermesProfile(),
-	AgentQwen:    qwenProfile(),
+	AgentClaude:   claudeProfile(),
+	AgentCodex:    codexProfile(),
+	AgentCopilot:  copilotProfile(),
+	AgentCursor:   cursorProfile(),
+	AgentDroid:    droidProfile(),
+	AgentGemini:   geminiProfile(),
+	AgentHermes:   hermesProfile(),
+	AgentMuse:     museProfile(),
+	AgentOpenCode: openCodeProfile(),
+	AgentPi:       piProfile(),
+	AgentQwen:     qwenProfile(),
 }
 
 func newProfileSpec(
@@ -139,8 +158,9 @@ func newProfileSpec(
 ) profileSpec {
 	return profileSpec{
 		profile: profile, format: format, shellTool: shellTool,
-		shellToolName: shellTool,
-		defaultDir:    defaultDir, timeoutUnit: time.Second, timeoutField: "timeout",
+		shellToolName:         shellTool,
+		userPromptRequirement: inputRequired,
+		defaultDir:            defaultDir, timeoutUnit: time.Second, timeoutField: "timeout",
 	}
 }
 
@@ -186,6 +206,12 @@ func ConfigPath(agent Agent) (string, error) {
 		dir = strings.TrimSpace(os.Getenv(spec.profile.ConfigEnvironment))
 		if dir != "" && spec.configEnvSubdir != "" {
 			dir = filepath.Join(dir, spec.configEnvSubdir)
+		}
+		if dir != "" && spec.configEnvDir != nil {
+			var err error
+			if dir, err = spec.configEnvDir(dir); err != nil {
+				return "", fmt.Errorf("resolve %s config directory: %w", spec.profile.DisplayName, err)
+			}
 		}
 	}
 	if dir == "" {

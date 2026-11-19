@@ -33,10 +33,12 @@ func TestDecodeObjectRecipeStopsAtInvalidChunk(t *testing.T) {
 }
 
 func TestDecodeObjectRecipeChunkLimit(t *testing.T) {
+	t.Parallel()
 	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const chunk = `{"blob":"` + hash + `","bytes":1}`
 	for _, count := range []int{maxObjectChunks, maxObjectChunks + 1} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			t.Parallel()
 			var raw bytes.Buffer
 			raw.Grow(count*(len(chunk)+1) + 160)
 			fmt.Fprintf(&raw, `{"version":1,"blob":"%s","bytes":%d,"chunks":[`, hash, count)

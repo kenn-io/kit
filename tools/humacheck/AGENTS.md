@@ -107,6 +107,11 @@ rewrite is already visible, even when its durability could not be confirmed.
 - Requesters and registrars are flow sets of parameter indexes: a string
   parameter is interesting only when it reaches a URL or path position. Only
   those argument positions are inspected at call sites.
+- A requester with `//huma-check:external` in its declaration's doc comment
+  targets a separate API whose paths may overlap the module's routes. Its
+  parameters do not enter the requester flow set. This declaration applies
+  only to that function; neighboring methods, direct request builders in its
+  body, and all other rules remain checked.
 - Inside Git, every rule judges the index. Repository rules read file
   contents through `indexFS`, and `Run` feeds `go/packages` an overlay with
   the index content of every tracked Go, go.mod, go.sum, or go.work file

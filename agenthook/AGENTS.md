@@ -30,6 +30,31 @@
   timeout units, timeout fields, failure policy, and cross-platform command
   fields. Decision-bearing Cursor registrations are fail-closed because Cursor
   otherwise allows the operation when a hook crashes or emits invalid JSON.
+- Script profiles (Pi, OpenCode) own one kit-named module. Edit only its delimited
+  registration block, refuse a file without that block, rewrite the runtime
+  on every write, delete the module when uninstall removes its last hook, and
+  spawn registered argv without a shell on every OS. The runtime stops waiting
+  for a command shortly after it exits even when a process it started still
+  holds stderr, and keeps draining that pipe without holding the harness open.
+  The Pi module reports only from Pi's interactive terminal (`ctx.mode` is
+  `tui`), so print, json, and rpc runs, subagents included, stay silent. It
+  needs Pi 0.80.4 or later (`ctx.mode` 0.78.1, `agent_settled` 0.80.4).
+  A script profile must run its hook commands from the process the user's
+  terminal started, never from a shared server, so each report carries that
+  terminal's environment.
+  The OpenCode module retires its reported root with SessionEnd as soon as
+  its terminal shows a session with another root or that root is deleted,
+  and never from cleanup, which also runs on hot reload and reinstall. Setup
+  re-sends SessionStart for a tracked root with a record, even on the home route,
+  then reports UserPromptSubmit if it's running, or Stop if a previously running
+  turn became idle during reload. A missing record sends SessionEnd.
+  The plugin sends UserPromptSubmit, without a prompt, when the shown root starts
+  running, including a turn already running when the terminal adopts it.
+  Working state follows OpenCode's running state; a transition to idle sends
+  Stop, including shutdown interrupts.
+  Cwd is the TUI's launch directory. Each report comes from one terminal process.
+  Several terminals can report the same session_id, so hosts should keep one
+  record per terminal rather than one per session ID.
 - Keep each harness profile in its own agent-named file (`claude.go`,
   `codex.go`, and so on). `profile.go` owns only the shared vocabulary,
   registry, and lookup behavior.
@@ -37,6 +62,14 @@
   identifies application-owned commands. Install and uninstall may replace or
   remove only matching commands and must preserve unrelated hooks and top-level
   config.
+- Claude exec-form hooks store the executable in `command` and its arguments
+  in `args`. Install validation and removal must both match the marker against
+  `command` and `args` joined by single spaces; changing one join without the
+  other leaves installed hooks that uninstall cannot find.
+- A profile whose harness refuses to start without certain top-level config
+  fields declares them in `newConfigFields`; install seeds them only when it
+  creates the config or finds it empty. Muse Code needs `schema_version`, and
+  it rejects Claude's exec form, so its Windows commands use `commandWindows`.
 - Do not silently enable an agent's hook auto-approval setting. Installation
   writes registrations; the harness remains responsible for user consent.
 - JSON and YAML writes must preserve symlinked config paths and existing file

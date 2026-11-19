@@ -128,3 +128,36 @@ func benchVector(seed, dimensions int) vector.Vector {
 	}
 	return out
 }
+
+func BenchmarkSQLiteDriverPendingCursor(b *testing.B) {
+	for _, driver := range sqliteDriverBenches {
+		b.Run(driver.name, func(b *testing.B) {
+			for _, covered := range []int{1000, 10000, 100000} {
+				b.Run(fmt.Sprintf("covered=%d", covered), func(b *testing.B) {
+					ctx := b.Context()
+					db, store := setupBenchmarkStore(b, driver, 0, 3)
+					_, err := db.ExecContext(ctx, `WITH RECURSIVE ids(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM ids WHERE id < ?) INSERT INTO messages (id, body, embed_gen) SELECT id, 'document', 1 FROM ids`, covered+128)
+					require.NoError(b, err)
+					_, err = db.ExecContext(ctx, `INSERT INTO message_vectors_stamps (ordinal, doc_key) SELECT 1, id FROM messages WHERE id <= ?`, covered)
+					require.NoError(b, err)
+					for _, cursor := range []bool{false, true} {
+						b.Run(fmt.Sprintf("cursor=%t", cursor), func(b *testing.B) {
+							var after *int64
+							if cursor {
+								after = new(int64(covered))
+							}
+							b.ReportAllocs()
+							b.ResetTimer()
+							for range b.N {
+								pending, err := store.PendingForGeneration(ctx, int64(1), after, 128)
+								require.NoError(b, err)
+								require.Len(b, pending, 128)
+								require.Equal(b, int64(covered+1), pending[0].Doc)
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}

@@ -19,7 +19,7 @@ func TestCancellationHelperProcess(t *testing.T) {
 	if err := os.WriteFile(marker, nil, 0o600); err != nil {
 		os.Exit(2)
 	}
-	time.Sleep(time.Minute) //nolint:kennlint // helper process must stay alive until it is killed
+	time.Sleep(time.Minute) //nolint:kennlint // sleeptest: helper process must stay alive until it is killed
 }
 
 func TestRunOutputPreservesContextCancellation(t *testing.T) {

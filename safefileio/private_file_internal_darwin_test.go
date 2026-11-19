@@ -2,6 +2,7 @@ package safefileio
 
 import (
 	"os"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -12,5 +13,5 @@ func TestValidateDarwinExtendedACLRejectsFailedInspection(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, file.Close())
 
-	require.Error(t, validateDarwinExtendedACL(file))
+	require.ErrorIs(t, validateDarwinExtendedACL(file), syscall.EBADF)
 }

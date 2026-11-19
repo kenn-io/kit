@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore/internal/packvalidate"
 	"go.kenn.io/kit/pathresolve"
@@ -232,6 +233,8 @@ func (s *physicalVerifiedStream) Close() error {
 	return classifyPhysicalError(s.stream.Close())
 }
 
+// OpenSeekableLoose returns raw loose files directly without hash verification.
+// Zstd locations are verified and materialized into temporary storage.
 func (b *FilesystemBackend) OpenSeekableLoose(
 	ctx context.Context,
 	hash Hash,
@@ -239,6 +242,19 @@ func (b *FilesystemBackend) OpenSeekableLoose(
 ) (io.ReadSeekCloser, int64, error) {
 	if err := location.validate(); err != nil {
 		return nil, 0, err
+	}
+	if location.Encoding == LooseEncodingRaw {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		object, err := b.reader.openLooseObjectAtLocation(hash, location)
+		if err != nil {
+			return nil, 0, classifyPhysicalError(err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, 0, errors.Join(err, object.file.Close())
+		}
+		return object.file, object.logicalSize, nil
 	}
 	if location.Encoding != 0 {
 		stream, size, err := b.OpenLoose(ctx, hash, location)
@@ -325,7 +341,7 @@ func (b *FilesystemBackend) PublishLoose(
 	if err != nil {
 		return LooseReceipt{}, err
 	}
-	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, false)
+	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, loosePublish)
 	if err != nil {
 		return LooseReceipt{}, err
 	}
@@ -386,7 +402,7 @@ func (b *FilesystemBackend) RepairLoose(
 	if err != nil {
 		return LooseReceipt{}, err
 	}
-	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, true)
+	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, looseRepair)
 	if err != nil {
 		return LooseReceipt{}, err
 	}
@@ -576,7 +592,7 @@ func copyBoundedContext(
 	src io.Reader,
 	maxBytes int64,
 ) (int64, error) {
-	reader := io.Reader(&contextReader{ctx: ctx, reader: src})
+	reader := io.Reader(&contextio.Reader{Context: ctx, Reader: src})
 	if maxBytes == 0 || maxBytes == math.MaxInt64 {
 		return io.CopyBuffer(dst, reader, make([]byte, 64<<10))
 	}
@@ -644,7 +660,7 @@ func verifyFilesystemPack(
 	hasher := sha256.New()
 	if _, err := io.CopyBuffer(
 		hasher,
-		&contextReader{ctx: ctx, reader: file},
+		&contextio.Reader{Context: ctx, Reader: file},
 		make([]byte, 64<<10),
 	); err != nil {
 		return 0, errors.Join(err, file.Close())

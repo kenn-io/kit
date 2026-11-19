@@ -3,6 +3,7 @@ package s3store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -974,5 +975,72 @@ func xmlResponse(
 		Header:     header,
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Request:    request,
+	}
+}
+
+// errorWithFinalBytes returns its data in one read together with err.
+type errorWithFinalBytes struct {
+	data []byte
+	err  error
+}
+
+func (s *errorWithFinalBytes) Read(p []byte) (int, error) {
+	if len(s.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, s.data)
+	s.data = s.data[n:]
+	if len(s.data) == 0 {
+		return n, s.err
+	}
+	return n, nil
+}
+
+func TestMultipartPublishRejectsSourceErrorWithFinalBytes(t *testing.T) {
+	errSource := errors.New("source failed")
+	// The test backend uses 5-byte parts, so "hello" fills the part buffer
+	// exactly and "hi" leaves it short.
+	for name, tt := range map[string]struct {
+		data  string
+		final error
+		cause error
+	}{
+		"full part":                     {data: "hello", final: errSource, cause: errSource},
+		"full part joined to EOF":       {data: "hello", final: errors.Join(io.EOF, errSource), cause: errSource},
+		"full part reports truncation":  {data: "hello", final: io.ErrUnexpectedEOF, cause: io.ErrUnexpectedEOF},
+		"short read":                    {data: "hi", final: errSource, cause: errSource},
+		"short read joined to EOF":      {data: "hi", final: errors.Join(io.EOF, errSource), cause: errSource},
+		"short read reports truncation": {data: "hi", final: io.ErrUnexpectedEOF, cause: io.ErrUnexpectedEOF},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var completes int
+			backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+				query := request.URL.Query()
+				switch {
+				case request.Method == http.MethodPost && query.Has("uploads"):
+					return xmlResponse(request, http.StatusOK,
+						`<InitiateMultipartUploadResult><Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+							`<UploadId>upload-1</UploadId></InitiateMultipartUploadResult>`), nil
+				case request.Method == http.MethodPut && query.Get("uploadId") == "upload-1":
+					response := xmlResponse(request, http.StatusOK, "")
+					response.Header.Set("ETag", `"part-etag"`)
+					return response, nil
+				case request.Method == http.MethodPost && query.Get("uploadId") == "upload-1":
+					completes++
+					return xmlResponse(request, http.StatusOK,
+						`<CompleteMultipartUploadResult><Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+							`<ETag>&quot;complete-etag&quot;</ETag></CompleteMultipartUploadResult>`), nil
+				case request.Method == http.MethodDelete && query.Get("uploadId") == "upload-1":
+					return xmlResponse(request, http.StatusNoContent, ""), nil
+				default:
+					return xmlResponse(request, http.StatusInternalServerError,
+						`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+				}
+			})
+			_, err := backend.multipartPublish(t.Context(), "packs/test",
+				&errorWithFinalBytes{data: []byte(tt.data), err: tt.final}, multipartPublishOptions{})
+			require.ErrorIs(t, err, tt.cause)
+			assert.Zero(t, completes)
+		})
 	}
 }

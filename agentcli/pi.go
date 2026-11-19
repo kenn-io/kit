@@ -126,8 +126,5 @@ func validatePiRequest(mode Mode, request Request) error {
 	} else if request.Schema.Extension != "" || request.Schema.OutputPath != "" || request.Schema.Fallback != "" {
 		return fmt.Errorf("agent %q schema extension options require Schema.Inline", Pi)
 	}
-	if mode == Interactive && request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
-		return unsupported(Pi, mode, "output format", string(request.OutputFormat), "use noninteractive mode for jsonl")
-	}
 	return nil
 }

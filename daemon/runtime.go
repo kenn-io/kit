@@ -99,12 +99,19 @@ func (s RuntimeStore) validatePrefix() (string, error) {
 	return prefix, nil
 }
 
-func (s RuntimeStore) prepareDir() error {
+func (s RuntimeStore) validateDir() error {
 	if s.Dir == "" {
 		return errors.New("runtime dir is empty")
 	}
 	if !filepath.IsAbs(s.Dir) {
 		return fmt.Errorf("runtime dir %q must be absolute", s.Dir)
+	}
+	return nil
+}
+
+func (s RuntimeStore) prepareDir() error {
+	if err := s.validateDir(); err != nil {
+		return err
 	}
 	if err := ensurePrivateRuntimeDir(s.Dir); err != nil {
 		return fmt.Errorf("prepare runtime dir: %w", err)
@@ -152,11 +159,22 @@ func (s RuntimeStore) Path(pid int) (string, error) {
 
 // LockPath returns the path used to serialize daemon auto-starts for the store.
 func (s RuntimeStore) LockPath() (string, error) {
-	prefix, err := s.validatePrefix()
+	path, err := s.startLockPath()
 	if err != nil {
 		return "", err
 	}
 	if err := s.prepareDir(); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s RuntimeStore) startLockPath() (string, error) {
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return "", err
+	}
+	if err := s.validateDir(); err != nil {
 		return "", err
 	}
 	return filepath.Join(s.Dir, prefix+".lock"), nil
@@ -278,8 +296,9 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 }
 
 // CleanupDead removes runtime files whose filename PID matches the record PID
-// and the process is no longer alive. Malformed and PID-mismatched files are
-// left in place for human inspection.
+// and whose process is no longer alive (see RuntimeProcessAlive). Records this
+// caller can't judge (see AGENTS.md), malformed files, and PID-mismatched files
+// are left in place for human inspection.
 func (s RuntimeStore) CleanupDead() (int, error) {
 	prefix, err := s.validatePrefix()
 	if err != nil {
@@ -307,7 +326,7 @@ func (s RuntimeStore) CleanupDead() (int, error) {
 		}
 		path := filepath.Join(s.Dir, name)
 		rec, err := s.readPrepared(path)
-		if err != nil || rec.PID != filenamePID || ProcessAlive(filenamePID) {
+		if err != nil || rec.PID != filenamePID || RuntimeProcessAlive(rec) {
 			continue
 		}
 		if err := os.Remove(path); err == nil {

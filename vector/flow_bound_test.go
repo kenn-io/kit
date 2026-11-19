@@ -204,8 +204,8 @@ type cancelOnPendingScan struct {
 	cancel context.CancelFunc
 }
 
-func (s cancelOnPendingScan) PendingForGeneration(ctx context.Context, gen int, limit int) ([]vector.Pending[int64], error) {
-	pending, err := s.memStore.PendingForGeneration(ctx, gen, limit)
+func (s cancelOnPendingScan) PendingForGeneration(ctx context.Context, gen int, after *int64, limit int) ([]vector.Pending[int64], error) {
+	pending, err := s.memStore.PendingForGeneration(ctx, gen, after, limit)
 	s.cancel()
 	return pending, err
 }

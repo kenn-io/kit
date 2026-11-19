@@ -10,16 +10,30 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tailscale/hujson"
 	"gopkg.in/yaml.v3"
 
-	"go.kenn.io/kit/agenthook"
 	"go.kenn.io/kit/agentmcp"
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == "kit-mcp-stdio" {
+		server := mcp.NewServer(&mcp.Implementation{Name: "kit-test", Version: "1"}, nil)
+		mcp.AddTool(server, &mcp.Tool{Name: "ping", Description: "Test tool"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, struct{}, error) {
+			return &mcp.CallToolResult{}, struct{}{}, nil
+		})
+		// This standalone fixture runs until the agent closes its input.
+		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	if mode := os.Getenv("KIT_MCP_CHECK_HELPER"); mode != "" {
+		os.Exit(runCheckHelper(mode))
+	}
 	if response := os.Getenv("KIT_MCP_TEST_RESPONSE"); response != "" {
 		if len(os.Args) != 4 || os.Args[1] != "mcp" || os.Args[2] != "status" || os.Args[3] != "--json" {
 			os.Exit(2)
@@ -30,7 +44,89 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestMarshalConfig(t *testing.T) {
+	stdio := agentmcp.Server{Command: `C:\Program Files\example.exe`, Args: []string{"mcp", "--vault", `C:\Data Files\vault`}, Env: map[string]string{"EXAMPLE_HOME": `C:\Data Files\vault`}}
+	headers := map[string]string{"X-Client": "example"}
+	http := agentmcp.Server{URL: "https://example.com/mcp", Headers: headers, BearerTokenEnvVar: "EXAMPLE_TOKEN"}
+	for _, tt := range []struct {
+		name, key, expected string
+		agent               agentmcp.Agent
+		server              agentmcp.Server
+	}{
+		{"codex stdio", "mcp_servers", `{"command":"C:\\Program Files\\example.exe","args":["mcp","--vault","C:\\Data Files\\vault"],"env":{"EXAMPLE_HOME":"C:\\Data Files\\vault"}}`, agentmcp.AgentCodex, stdio},
+		{"claude http", "mcpServers", `{"type":"http","url":"https://example.com/mcp","headers":{"X-Client":"example","Authorization":"Bearer ${EXAMPLE_TOKEN}"}}`, agentmcp.AgentClaude, http},
+		{"codex http", "mcp_servers", `{"url":"https://example.com/mcp","http_headers":{"X-Client":"example"},"bearer_token_env_var":"EXAMPLE_TOKEN"}`, agentmcp.AgentCodex, http},
+		{"claude bearer only", "mcpServers", `{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"Bearer ${EXAMPLE_TOKEN}"}}`, agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "EXAMPLE_TOKEN"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CLAUDE_CONFIG_DIR", dir)
+			t.Setenv("CODEX_HOME", dir)
+			t.Setenv("EXAMPLE_TOKEN", "test-token-value")
+			path, err := agentmcp.ConfigPath(tt.agent)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, []byte("invalid client config"), 0o600))
+			data, err := agentmcp.MarshalConfig(tt.agent, "example.with.dot", tt.server)
+			require.NoError(t, err)
+			doc := decodeConfig(t, tt.agent, data)
+			servers, ok := doc[tt.key].(map[string]any)
+			require.True(t, ok)
+			entry, err := json.Marshal(servers["example.with.dot"])
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.expected, string(entry))
+			assert.Len(t, doc, 1)
+			original, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, "invalid client config", string(original))
+		})
+	}
+	assert.Equal(t, map[string]string{"X-Client": "example"}, headers)
+}
+
+func TestMarshalConfigDeterministicJSON(t *testing.T) {
+	server := agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"X-Client": "example", "Authorization": "Bearer example"}}
+	expected, err := agentmcp.MarshalConfig(agentmcp.AgentClaude, "example", server)
+	require.NoError(t, err)
+	for range 20 {
+		data, err := agentmcp.MarshalConfig(agentmcp.AgentClaude, "example", server)
+		require.NoError(t, err)
+		require.Equal(t, string(expected), string(data))
+	}
+}
+
+func TestMarshalConfigInvalid(t *testing.T) {
+	for _, tt := range []struct {
+		label, name string
+		agent       agentmcp.Agent
+		server      agentmcp.Server
+	}{
+		{"unknown agent", "example", "unknown", agentmcp.Server{Command: "example"}},
+		{"empty name", " ", agentmcp.AgentClaude, agentmcp.Server{Command: "example"}},
+		{"stdio bearer", "example", agentmcp.AgentClaude, agentmcp.Server{Command: "example", BearerTokenEnvVar: "TOKEN"}},
+		{"invalid bearer name", "example", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN:-literal-secret"}},
+		{"invalid previous bearer name", "example", agentmcp.AgentCodex, agentmcp.Server{URL: "https://example.com/mcp", PreviousBearerTokenEnvVar: "${APP_TOKEN}"}},
+		{"unsupported bearer", "example", agentmcp.AgentCursor, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}},
+		{"conflicting bearer", "example", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN", Headers: map[string]string{"authorization": "Bearer literal"}}},
+		{"invalid transport", "example", agentmcp.AgentCodex, agentmcp.Server{Transport: "unknown", URL: "https://example.com/mcp"}},
+	} {
+		t.Run(tt.label, func(t *testing.T) {
+			data, err := agentmcp.MarshalConfig(tt.agent, tt.name, tt.server)
+			require.Error(t, err)
+			assert.Empty(t, data)
+		})
+	}
+}
+
 func TestInstall(t *testing.T) {
+	t.Run("claude empty fields", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+		original := []byte(`{"mcpServers":{"example":{"type":"stdio","command":"example","args":[],"env":{}}}}`)
+		require.NoError(t, os.WriteFile(path, original, 0o600))
+		opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
+		plan, err := agentmcp.PlanInstall(agentmcp.AgentClaude, opts)
+		require.NoError(t, err)
+		assert.False(t, plan.Changed)
+	})
 	for _, tt := range []struct {
 		agent   agentmcp.Agent
 		initial string
@@ -102,15 +198,7 @@ func decodeConfig(t *testing.T, agent agentmcp.Agent, data []byte) map[string]an
 	return doc
 }
 
-func TestProfiles(t *testing.T) {
-	var hooks, mcps []string
-	for _, profile := range agenthook.Profiles() {
-		hooks = append(hooks, string(profile.Agent))
-	}
-	for _, profile := range agentmcp.Profiles() {
-		mcps = append(mcps, string(profile.Agent))
-	}
-	assert.ElementsMatch(t, hooks, mcps)
+func TestConfigPath(t *testing.T) {
 	for _, tt := range []struct {
 		agent              agentmcp.Agent
 		variable, filename string

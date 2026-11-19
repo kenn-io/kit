@@ -5,32 +5,26 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"go.kenn.io/kit/vector"
 )
 
-// ErrUncovered reports that Activate refused to publish a generation
-// because at least one document is not covered at its current revision.
-// The state change is not committed. Callers retry after a later fill.
-var ErrUncovered = errors.New("generation has uncovered documents")
-
-// ErrGenerationNotFound reports a generation key that EnsureGeneration never
-// registered.
-var ErrGenerationNotFound = errors.New("generation not ensured")
-
-// ErrRetired reports a retired generation used where only a building or
-// active one is allowed. A retired generation never becomes live again.
-var ErrRetired = errors.New("generation is retired")
+var (
+	// ErrUncovered reports that Activate refused to publish a generation
+	// because at least one document is not covered at its current revision.
+	// The state change is not committed. Callers retry after a later fill.
+	ErrUncovered = vector.ErrUncovered
+	// ErrGenerationNotFound reports a generation key that EnsureGeneration never
+	// registered.
+	ErrGenerationNotFound = vector.ErrGenerationNotFound
+	// ErrRetired reports a retired generation used where only a building or
+	// active one is allowed. A retired generation never becomes live again.
+	ErrRetired = vector.ErrRetired
+)
 
 // UncoveredError is the Activate failure for an incomplete generation.
 // Backlog is the number of documents that still need a current stamp.
-type UncoveredError struct {
-	Backlog int64
-}
-
-func (e *UncoveredError) Error() string {
-	return fmt.Sprintf("generation has %d uncovered documents", e.Backlog)
-}
-
-func (e *UncoveredError) Unwrap() error { return ErrUncovered }
+type UncoveredError = vector.UncoveredError
 
 // Coverage counts documents in the caller's table for one generation.
 // Embedded documents have a current stamp and at least one chunk.
@@ -72,8 +66,8 @@ func (s *Store[K, G]) coverageOn(ctx context.Context, q rowQueryer, ordinal int6
 
 func (s *Store[K, G]) coverageQuery(where string) string {
 	covered := s.coveredPredicate("d", "stamp")
-	hasChunks := fmt.Sprintf(`EXISTS (SELECT 1 FROM %s c WHERE c.ordinal = stamp.ordinal AND c.doc_key = d.%s)`,
-		s.chunksTable(), s.schema.IDColumn)
+	hasChunks := fmt.Sprintf(`EXISTS (SELECT 1 FROM %s c WHERE c.ordinal = stamp.ordinal AND %s)`,
+		s.chunksTable(), s.docKeyMatch("c", "d"))
 	filter := ""
 	if where != "" {
 		filter = " WHERE (" + where + ")"
@@ -84,8 +78,8 @@ SELECT
   COALESCE(SUM(CASE WHEN %[1]s AND NOT %[2]s THEN 1 ELSE 0 END), 0),
   COALESCE(SUM(CASE WHEN NOT %[1]s THEN 1 ELSE 0 END), 0)
   FROM %[3]s d
-  LEFT JOIN %[4]s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%[5]s%[6]s`,
-		covered, hasChunks, s.schema.DocsTable, s.stampsTable(), s.schema.IDColumn, filter)
+  LEFT JOIN %[4]s stamp ON stamp.ordinal = ? AND %[5]s%[6]s`,
+		covered, hasChunks, s.schema.DocsTable, s.stampsTable(), s.docKeyMatch("stamp", "d"), filter)
 }
 
 // Activate publishes gen as the active generation when every document is

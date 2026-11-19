@@ -17,6 +17,10 @@ callers responsible for their own file formats and higher-level policy.
 - Runtime directory validation should judge the directory entry the caller
   supplied, not a symlink target reached after traversal.
 - `EnsurePrivateDir` may repair a real directory's permissions when that is safe.
+  On Windows, it always rewrites the DACL and repairs inherited child
+  permissions.
+  `EnsurePrivateDirShallow` skips writes only on an exact protected DACL match;
+  use it for directories whose children hold no data.
   `ValidatePrivateDir` must report problems without repairing them.
 - Keep file ownership checks tied to current-user-only runtime state. On
   Windows, private directories may also be owned by LocalSystem or built-in
@@ -27,6 +31,8 @@ callers responsible for their own file formats and higher-level policy.
 - Private-file validation must inspect the same open handle used by the caller
   and must never mutate permissions. Existing broad access may already have
   produced handles that no in-place repair can revoke.
+- On macOS, capture ACL errno before returning to Go; locking an OS thread
+  does not prevent the runtime from overwriting errno.
 - On supported Unix platforms, require exact mode 0600 and no access ACL.
   Reject Linux network and user-space filesystems whose effective access policy
   cannot be verified through local mode and access-ACL operations, using
@@ -56,6 +62,11 @@ callers responsible for their own file formats and higher-level policy.
   another user could swap the entry between the check and the removal.
 - Platforms that cannot validate private files refuse in `CreatePrivateFile`
   before creating anything, since every create would fail validation.
+- `OpenSecretFile(path)` is a separate read-only policy: current euid
+  0400/0600 or root-owned without group/other write, trusted ancestor/link
+  traversal, same opened regular handle, no repair. Linux ACL/filesystem checks
+  still apply; macOS parents may have deny-only ACLs, never allowing entries.
+  Keep existing runtime-state APIs strict and Windows DACL/reparse checks intact.
 
 ## Tests
 

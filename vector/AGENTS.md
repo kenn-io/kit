@@ -16,6 +16,11 @@ pipeline. Preserve these invariants when changing it.
   `vec0 MATCH`, pgvector `<=>`, and duckdb `array_distance` belong behind
   `QueryGeneration`, never in the core flows.
 
+- `sqlitevec` never imports a SQLite driver or extension binding. Callers
+  register the extension for their chosen driver; CGO settings do not choose
+  a driver. Keep the modernc consumer test in a separate package so a mattn
+  test import cannot conceal a link dependency.
+
 ## Encoded vectors must be usable for cosine distance
 
 - Blank text is never sent to an encoder. `Split` omits blank windows so `Fill`
@@ -96,11 +101,17 @@ pipeline. Preserve these invariants when changing it.
 
 ## Keys and generations are opaque
 
+- In `sqlitevec`, use `docKeyMatch` for joins between documents and stamps or
+  chunks that look up a stamp or chunk by document ID. Bare comparisons lose
+  index lookups for numeric IDs.
 - Document identity is the caller's type `K` and generation identity its
   type `G`. msgvault uses `int64`; kata uses UUIDs. Compare them for
   equality only; never assume a type, a single id namespace, or an
   ordering. Backends additionally require `K`/`G` to be types
   `database/sql` can bind and scan.
+
+- Stores own a stable total order on unique document keys and apply the
+  `PendingForGeneration` cursor in that order.
 
 ## The stamp is conditional
 
@@ -111,8 +122,7 @@ pipeline. Preserve these invariants when changing it.
   document stays pending and the next fill re-reads it.
 - `Fill` treats `ErrStale` as "leave it for the next run", not a failure:
   the document is excluded for the rest of the run so an actively edited
-  document cannot starve the loop, and the scan limit is widened past
-  excluded documents so fresh work stays visible.
+  document cannot starve the loop. The cursor passes excluded documents.
 - An empty vectors slice is a stamp-only save: the document is marked
   handled for the generation without storing vectors. Fill relies on this
   both for empty content and for documents `OnEncodeError` elects to
@@ -168,9 +178,8 @@ pipeline. Preserve these invariants when changing it.
 - Lifecycle errors wrap `ErrGenerationNotFound` for a key never ensured and
   `ErrRetired` for a retired generation used as live, so callers match them
   with `errors.Is`.
-- A retired generation never leaves retired. `SetGenerationState` and
-  `EnsureGeneration` refuse any other state, and ensuring it as retired does
-  not recreate reclaimed storage.
+- In default storage, retired generations stay retired. `SetGenerationState` and
+  `EnsureGeneration` refuse to restore them; `Reclaim` leaves their storage gone.
 - `ActiveGeneration` returns the newest active generation by ordinal.
   `LiveGenerations` still returns building generations ahead of active ones.
   Callers that serve only the active generation select it themselves.
@@ -184,6 +193,11 @@ pipeline. Preserve these invariants when changing it.
   freshness checks. Raw probes survive source filtering; an empty result
   window can still have more raw neighbors. Candidate limits precede source
   filters; result limits follow them.
+- `BuildFilteredQuery` is the exact alternative to raw KNN windows: apply
+  source eligibility and the shared freshness predicate before scoring, select
+  the best chunk per optional source group, then limit results. Its work scales
+  with eligible chunks; a result limit is not a work bound. Keep ties stable by
+  document key and chunk index and preserve the winning evidence identity.
 - Backends must not return hits whose source row no longer exists; the
   caller may delete documents without telling the store, so
   `QueryGeneration` joins back to the documents table.
@@ -203,3 +217,30 @@ pipeline. Preserve these invariants when changing it.
   KNN slots; replacement happens at the next `SaveVectors`, and deletion
   cleanup (`sqlitevec.DeleteVectors`) is the caller's responsibility
   when removing documents.
+
+## PostgreSQL storage
+
+- `pgvector.New` attaches without DDL; `Install` owns setup. Source keys must
+  be unique, and revisions must change when content is replaced. Deleting a
+  source row cascades to its stamps and vectors; `TRUNCATE` requires `CASCADE`.
+- Default storage uses a chunk table and HNSW index per generation.
+  `EnsureGeneration` refuses retired generations, `Reclaim` drops their table,
+  and queries hold an access-share lock until they finish.
+- Shared storage uses a caller-installed chunk table with `generation_id bigint`,
+  `doc_key` matching the document key and cascading on delete, `chunk_index`
+  integer or bigint, unbounded halfvec `embedding`, and primary key
+  `(generation_id, doc_key, chunk_index)`. Without an app-installed vector
+  index, searches are exact. Apps own any index they add and its search
+  behavior. Kit creates or tunes none. `EnsureGeneration` restores retired
+  generations only as building; `SetGenerationState` cannot restore them.
+  `Reclaim` deletes their rows.
+- `PendingForGeneration` and `SaveVectors` return `ErrRetired` for retired
+  generations. `SaveVectors` and `QueryGeneration` reject non-finite or
+  zero-norm vectors before PostgreSQL converts them to halfvec.
+- The default candidate query orders by distance alone so the HNSW index is used.
+  Freshness is checked during the index scan; do not add a tie-break to that
+  inner `ORDER BY`.
+- `Activate` counts uncovered documents and publishes in one transaction. An
+  edit that lands after the count leaves that document pending in the new
+  generation until the next fill, exactly as an edit just after activation
+  does; search never returns its stale vector.

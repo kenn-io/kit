@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 )
 
@@ -56,8 +55,8 @@ func WithStaleSocketProbeTimeout(timeout time.Duration) ListenOption {
 //
 // For Unix sockets, Listen serializes stale socket probing/removal and the
 // subsequent bind under an inter-process lock. Existing live sockets and
-// non-socket paths are rejected. TCP endpoints and Windows retain Endpoint's
-// normal Listen behavior.
+// non-socket paths are rejected. TCP endpoints retain Endpoint's normal Listen
+// behavior.
 func Listen(ctx context.Context, ep Endpoint, options ...ListenOption) (net.Listener, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -66,7 +65,7 @@ func Listen(ctx context.Context, ep Endpoint, options ...ListenOption) (net.List
 	for _, option := range options {
 		option(&opts)
 	}
-	if !ep.IsUnix() || runtime.GOOS == "windows" {
+	if !ep.IsUnix() {
 		return ep.ListenContext(ctx)
 	}
 	if err := prepareUnixListenEndpoint(ep); err != nil {

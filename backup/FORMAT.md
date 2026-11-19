@@ -1,3 +1,9 @@
+---
+title: "Backup Repository Format"
+description: "On-disk layout and interoperability rules for backup repositories."
+last_edited: 2026-11-11
+---
+
 # Backup Repository Format
 
 On-disk format reference for repositories created by the `backup` and `pack`
@@ -45,7 +51,7 @@ All multi-byte integers in every binary object are **little-endian**. All timest
 
 Compatibility is enforced at three levels, all of which must pass:
 
-1. **Repository level.** `config.toml` records `repo_id` (a lowercase-hex UUID; readers refuse any other shape, because the ID is embedded verbatim in local cache filenames), `format_version` (what wrote it), and `min_reader_version` (the oldest format a reader must understand). `Open` refuses a repository whose `min_reader_version` exceeds the reader's supported version, with an explicit error telling the caller to upgrade the reader. A future format change that old readers can safely ignore bumps only `format_version`; a change they cannot safely ignore also bumps `min_reader_version`.
+1. **Repository level.** `config.toml` records `repo_id` (a lowercase-hex UUID; readers refuse any other shape, because the ID is embedded verbatim in local cache filenames), `format_version` (what wrote it), and `min_reader_version` (the oldest format a reader must understand). `Open` refuses a repository whose `min_reader_version` exceeds the reader's supported version, with an explicit error telling the caller to upgrade the reader. A future format change that old readers can safely ignore bumps only `format_version`; a change they cannot safely ignore also bumps `min_reader_version`. An application may also raise a repository's `min_reader_version`, up to the supported version, to keep older builds from opening that repository; reader version 7 is a repository gate only and carries no layout, so a later layout change needs a higher version.
 2. **Object level.** Every binary object begins with a 4-byte magic and a version field, and every decoder rejects an unknown magic or version. A reader can therefore never misparse an object from a future format as if it were current.
 3. **Snapshot level.** Each manifest records its own `format_version`, `min_reader_version`, and the application version string that wrote it (wire key `msgvault_version`, frozen for compatibility across every application built on this engine), so compatibility can evolve per-snapshot within one repository (for example, when a future version introduces encrypted snapshots alongside existing plaintext ones). Version 2 marks snapshots whose attachment population records storage paths beyond the canonical `<aa>/<hash>` derivation: version-1 readers placed every restored attachment at the canonical path and would materialize a database pointing at files that do not exist, so they must refuse these snapshots. Snapshots whose recorded paths are all canonical keep version 1. Version 3 marks snapshots whose application metadata is a portable logical blob rather than SQLite page-map chains. Version 4 marks snapshots with application-defined auxiliary artifacts. Version 5 adds chunk recipes for content and portable metadata; version 6 extends recipes to operational extras (see [Large Logical Objects](#large-logical-objects)). A manifest whose `min_reader_version` a reader accepts must contain only fields that reader knows: the content-derived ID covers only known fields, so an unknown field would otherwise ride along in an authenticated manifest, and readers refuse it as forged rather than ignore it.
 
@@ -260,6 +266,9 @@ extras requires reader version 6, since older readers do not follow
 snapshots, create backups, prune, or select the latest snapshot for restore or
 verification; verifying all snapshots also fails. Restore and verification of
 an older supported snapshot still work when its ID is supplied explicitly.
+Current readers select the latest snapshot by validating only its manifest,
+plus any ancestors needed for recovery; listing, prune, forget, and verification
+of all snapshots check the whole history.
 Upgrade every reader before writing chunked extras to a shared repository.
 
 Restore stages each extra as a complete temporary file before replacing its
@@ -280,7 +289,64 @@ entries: content SHA-256 [32] | size u64   (40 bytes, first-seen order)
 SHA-256 trailer
 ```
 
-A snapshot's manifest references one or more list blobs whose union is exactly the attachment population of that snapshot. In the common append-only case, a snapshot inherits its parent's list blobs and adds one new segment; when the live set has shrunk (attachments were deleted), the snapshot writes one fresh full list instead, so the union invariant holds in both directions. Attachment content is re-read and re-hashed at every capture — from the attachments directory, or from an application-supplied `ContentSource` when `CreateOptions.ContentSource` is set — and content whose bytes no longer match the recorded hash fails the backup rather than being stored wrong. The wire format is identical either way; the source only changes where capture acquires bytes.
+A snapshot's manifest references one or more list blobs whose union is exactly the attachment population of that snapshot. In the common append-only case, a snapshot inherits a prefix of its parent's list blobs and writes one new segment holding every other current ref; when the live set has shrunk (attachments were deleted), the snapshot writes one fresh full list instead, so the union invariant holds in both directions. Create keeps the parent's segments until the new segment would be at least as large as the last kept one, then merges that segment into the new one, like a binary counter carrying. Each merge at least doubles the segment an entry sits in, so an entry is rewritten at most log2(population) times and a large settled list is not rewritten for small growth. Create also merges as needed to name at most 30 segments. Readers must not assume either bound: snapshots from older writers can name any number of segments, and every list layout uses the same wire format. Attachment content is re-read and re-hashed at every capture — from the attachments directory, or from an application-supplied `ContentSource` when `CreateOptions.ContentSource` is set — and content whose bytes no longer match the recorded hash fails the backup rather than being stored wrong. The wire format is identical either way; the source only changes where capture acquires bytes.
+
+## Reading selected snapshot files
+
+`Repo.OpenSnapshot(ctx, snapshotID, packExtension)` reads an exact snapshot
+without restoring its database or content store. `Object(hash)` and
+`Extra(name)` return the logical hash and size of files listed in that snapshot.
+Objects found only in another snapshot or an orphaned pack are not members.
+Recipe records, chunks, and portable metadata are not separate members unless
+an attachment list or extras tree also lists them as files.
+
+Opening a reader loads the repository-wide blob index, the snapshot's complete
+file lists, and all chunk recipes, even when copying one file. Each new reader
+repeats this metadata work.
+
+`CopyObject` and `CopyExtra` stream and verify the complete file, including every
+chunk and the whole-file hash and length. A failure can leave partial bytes in
+the destination: discard all output unless the copy and destination close
+succeed. These methods do not publish or remove the caller's output files.
+
+A reader holds a shared repository lease and caches at most 64 open packs and
+their verified footers. Use it sequentially and close it promptly, preferably
+after copying one group of files and before parsing them. Metadata lookups still
+work after close; copying requires an open reader. A fresh reader reloads pack
+placement because prune can relocate objects between reads.
+
+Backups and ordinary maintenance need an exclusive lease. Opening a reader
+during either operation returns `ErrRepoLocked`; retry later. A backup waits up
+to 60 seconds for existing readers, then returns the same retryable error.
+Forced maintenance can invalidate reader leases. A lease also becomes stale
+after 30 minutes without a heartbeat, for example while the machine sleeps,
+allowing backups and maintenance to proceed. Missing or damaged files fail the
+copy. Never switch snapshots or force access in response to a read failure.
+Lease heartbeat files require a writable repository even when only reading
+archive payloads. Attaching a reader does not retain a snapshot against future
+forget operations.
+
+For example, copy one extra to a private temporary file, release the lease,
+then pass that file to the application for inspection:
+
+```go
+func copyExtra(ctx context.Context, repo *backup.Repo, snapshotID, ext, name string) (string, error) {
+    reader, err := repo.OpenSnapshot(ctx, snapshotID, ext)
+    if err != nil {
+        return "", err
+    }
+    file, err := os.CreateTemp("", "snapshot-extra-*")
+    if err != nil {
+        return "", errors.Join(err, reader.Close())
+    }
+    _, copyErr := reader.CopyExtra(ctx, name, file)
+    if err := errors.Join(copyErr, file.Close(), reader.Close()); err != nil {
+        return "", errors.Join(err, os.Remove(file.Name()))
+    }
+    // The caller can inspect the verified file now, then remove it.
+    return file.Name(), nil
+}
+```
 
 ## Snapshot Manifests
 
@@ -325,7 +391,7 @@ To capture a transactionally consistent database image while the application's d
 2. It opens its own SQLite connection, runs `PRAGMA wal_checkpoint(TRUNCATE)` (with bounded retries) until the WAL is empty, then pins a read transaction — from this point the main database file bytes cannot change under it.
 3. It immediately calls `FreezeCoordinator.End`. The gate is released and normal writes resume; the pinned transaction alone keeps the file image stable for the page scan. Database geometry, statistics, and content locators are all read inside the pinned transaction (`App.FrozenView`).
 
-The freeze window is therefore milliseconds-to-seconds regardless of archive size. `Create` refuses to run unfrozen against a live database owner: an application whose `FreezeCoordinator.Begin` cannot resolve the owner should fail rather than risk a torn read.
+The freeze window is therefore milliseconds-to-seconds regardless of archive size. If the scan file no longer matches the database path after the freeze, `Create` releases the session and repeats the freeze once, with writes able to resume between attempts. `Create` refuses to run unfrozen against a live database owner: an application whose `FreezeCoordinator.Begin` cannot resolve the owner should fail rather than risk a torn read.
 
 For portable metadata capture, Kit holds the same coordinator gate while
 `MetadataSource.OpenSnapshot` establishes an application-defined stable view,
@@ -352,6 +418,19 @@ exact closed regular file back through the held target-root descriptor, then
 runs the normal integrity and statistics proof before canonical publication. A
 callback error or invalid output therefore leaves the canonical database
 unpublished.
+
+`RestoreOptions.LooseCompression` opts into Kit's canonical loose-file
+encoding for every attachment that is not imported as a pack, including
+chunked objects. It requires one `<hash[:2]>/<hash>` path per object and a
+`BeforePublication` callback. The callback receives verified `LooseContent`
+receipts and must record their encoding and stored length in the unpublished
+catalog. Compressible content uses the existing `.zst` representation; the
+backup format and reader version do not change. Extras and the database are
+unaffected. Existing verified objects are reused without changing encoding.
+Overwrite repair removes damaged alternates. Valid alternate encodings remain
+until the new catalog is durably published, then Restore removes and syncs them.
+Memory is bounded while streaming, but each in-flight loose write temporarily
+stages both raw bytes and a compressed candidate before keeping one.
 
 ### Optional packed-content restore
 

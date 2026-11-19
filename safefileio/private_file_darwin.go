@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 )
@@ -17,10 +18,10 @@ const (
 )
 
 type darwinACLAPI struct {
-	getFD    func(int32, int32) uintptr
-	getEntry func(uintptr, int32, *uintptr) int32
+	getFD    uintptr
+	getEntry uintptr
+	getTag   uintptr
 	free     func(uintptr) int32
-	errno    func() *int32
 }
 
 var (
@@ -35,31 +36,49 @@ func ValidatePrivateCurrentUserFile(file *os.File) error {
 	return validatePrivateCurrentUserFile(file, validateDarwinExtendedACL)
 }
 
-func validateDarwinExtendedACL(file *os.File) error {
+func validateDarwinExtendedACL(file *os.File) error { return validateDarwinACL(file, false) }
+
+func validateDarwinACL(file *os.File, allowDeny bool) error {
 	darwinACLOnce.Do(loadDarwinACL)
 	if errDarwinACL != nil {
 		return errDarwinACL
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	errno := darwinACL.errno()
-	*errno = 0
-	acl := darwinACL.getFD(int32(file.Fd()), darwinACLExtended)
+	// Capture errno before resuming Go: even a locked thread's errno can be
+	// changed by the runtime between the native call and a later read.
+	acl, _, errno := purego.SyscallN(darwinACL.getFD, file.Fd(), darwinACLExtended)
+	runtime.KeepAlive(file)
 	if acl == 0 {
-		callErr := syscall.Errno(*errno)
+		// Darwin errno is a C int; the native trampoline returns a word.
+		callErr := syscall.Errno(uint32(errno))
 		if callErr == syscall.ENOENT {
 			return nil
 		}
 		return fmt.Errorf("read extended ACL: %w", callErr)
 	}
 	defer func() { _ = darwinACL.free(acl) }()
-	var entry uintptr
-	result := darwinACL.getEntry(acl, darwinACLFirstEntry, &entry)
-	switch result {
-	case 0:
-		return errors.New("safefileio: file has a macOS extended ACL")
-	default:
-		return errors.New("read extended ACL entry failed")
+	entryID := uintptr(darwinACLFirstEntry)
+	for {
+		var entry uintptr
+		result, _, errno := purego.SyscallN(darwinACL.getEntry, acl, entryID, uintptr(unsafe.Pointer(&entry)))
+		if int32(result) != 0 {
+			if allowDeny && syscall.Errno(uint32(errno)) == syscall.EINVAL {
+				return nil
+			}
+			return errors.New("read extended ACL entry failed")
+		}
+		if !allowDeny {
+			return errors.New("safefileio: file has a macOS extended ACL")
+		}
+		var tag int32
+		result, _, _ = purego.SyscallN(darwinACL.getTag, entry, uintptr(unsafe.Pointer(&tag)))
+		if int32(result) != 0 {
+			return errors.New("read extended ACL tag failed")
+		}
+		// Darwin ACL_EXTENDED_DENY is 2; only restrictive entries can pass.
+		if tag != 2 {
+			return errors.New("safefileio: secret parent has an allowing ACL")
+		}
+		entryID = ^uintptr(0) // Darwin ACL_NEXT_ENTRY is -1.
 	}
 }
 
@@ -72,11 +91,20 @@ func loadDarwinACL() {
 		errDarwinACL = fmt.Errorf("load macOS ACL API: %w", err)
 		return
 	}
+	darwinACL.getFD, err = purego.Dlsym(handle, "acl_get_fd_np")
+	if err != nil {
+		errDarwinACL = fmt.Errorf("load macOS ACL function acl_get_fd_np: %w", err)
+		return
+	}
+	for name, target := range map[string]*uintptr{"acl_get_entry": &darwinACL.getEntry, "acl_get_tag_type": &darwinACL.getTag} {
+		*target, err = purego.Dlsym(handle, name)
+		if err != nil {
+			errDarwinACL = fmt.Errorf("load macOS ACL function %s: %w", name, err)
+			return
+		}
+	}
 	for name, target := range map[string]any{
-		"acl_get_fd_np": &darwinACL.getFD,
-		"acl_get_entry": &darwinACL.getEntry,
-		"acl_free":      &darwinACL.free,
-		"__error":       &darwinACL.errno,
+		"acl_free": &darwinACL.free,
 	} {
 		symbol, symbolErr := purego.Dlsym(handle, name)
 		err = symbolErr

@@ -50,14 +50,27 @@ func (s *LooseStore) Repair(
 	return s.backend.loose.Repair(ctx, src, expected, opts)
 }
 
-// Verify checks one canonical loose object.
+// Verify checks one canonical loose object. It cannot be canceled; prefer
+// VerifyContext when a context is available.
 func (s *LooseStore) Verify(
 	hash Hash,
 	size int64,
 	verification DedupVerification,
 	durability Durability,
 ) (WriteResult, bool, error) {
-	return s.backend.loose.Verify(hash, size, verification, durability)
+	return s.VerifyContext(context.Background(), hash, size, verification, durability)
+}
+
+// VerifyContext checks one canonical loose object. Cancellation stops the
+// verification read.
+func (s *LooseStore) VerifyContext(
+	ctx context.Context,
+	hash Hash,
+	size int64,
+	verification DedupVerification,
+	durability Durability,
+) (WriteResult, bool, error) {
+	return s.backend.loose.Verify(ctx, hash, size, verification, durability)
 }
 
 // Remove deletes both canonical loose representations.

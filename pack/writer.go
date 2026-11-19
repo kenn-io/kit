@@ -367,7 +367,7 @@ func publishNoClobber(staging, finalPath string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("checking final path: %w", err)
 	}
-	return os.Rename(staging, finalPath)
+	return atomicfile.Replace(staging, finalPath)
 }
 
 // Abort discards the staging file. Safe to call after a failed Seal.

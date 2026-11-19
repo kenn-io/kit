@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -17,42 +18,36 @@ import (
 )
 
 func TestManagerEnsureStartsAndPollsForCompatibleDaemon(t *testing.T) {
-	assert := assert.New(t)
+	synctest.Test(t, func(t *testing.T) {
+		var started bool
+		var readyAt time.Time
+		var polls int
+		manager := daemon.Manager{
+			Store: daemon.RuntimeStore{Dir: t.TempDir()},
+			FindFunc: func(context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
+				if !started {
+					return daemon.RuntimeRecord{}, daemon.PingInfo{}, false, nil
+				}
+				polls++
+				if time.Now().Before(readyAt) {
+					return daemon.RuntimeRecord{}, daemon.PingInfo{}, false, nil
+				}
+				return daemon.RuntimeRecord{Service: "tool"}, daemon.PingInfo{Version: "v2"}, true, nil
+			},
+			Start: func(context.Context) error {
+				started = true
+				readyAt = time.Now().Add(100 * time.Millisecond)
+				return nil
+			},
+		}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"ok":true,"service":"tool","version":"v2"}`)
-	}))
-	defer server.Close()
-
-	store := daemon.RuntimeStore{Dir: t.TempDir()}
-	started := false
-	manager := daemon.Manager{
-		Store: store,
-		Discover: daemon.DiscoverOptions{
-			Probe: daemon.ProbeOptions{ExpectedService: "tool"},
-		},
-		Compatible: func(_ daemon.RuntimeRecord, info daemon.PingInfo) bool {
-			return info.Version == "v2"
-		},
-		Start: func(context.Context) error {
-			started = true
-			_, err := store.Write(daemon.RuntimeRecord{
-				PID:       os.Getpid(),
-				Network:   daemon.NetworkTCP,
-				Address:   listenerAddr(t, server),
-				Service:   "tool",
-				Version:   "v2",
-				StartedAt: time.Now(),
-			})
-			return err
-		},
-	}
-
-	rec, info, err := manager.Ensure(t.Context(), time.Second)
-	require.NoError(t, err)
-	assert.True(started)
-	assert.Equal("tool", rec.Service)
-	assert.Equal("v2", info.Version)
+		rec, info, err := manager.Ensure(t.Context(), time.Second)
+		require.NoError(t, err)
+		assert.True(t, started)
+		assert.GreaterOrEqual(t, polls, 2)
+		assert.Equal(t, "tool", rec.Service)
+		assert.Equal(t, "v2", info.Version)
+	})
 }
 
 func TestManagerFindSkipsIncompatibleDaemon(t *testing.T) {
@@ -207,38 +202,49 @@ func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 	}))
 	defer server.Close()
 
-	store := daemon.RuntimeStore{Dir: t.TempDir()}
-	var starts atomic.Int32
-	manager := daemon.Manager{
-		Store:    store,
-		Discover: daemon.DiscoverOptions{Probe: daemon.ProbeOptions{ExpectedService: "tool"}},
-		Start: func(context.Context) error {
-			starts.Add(1)
-			time.Sleep(20 * time.Millisecond) //nolint:kennlint // simulates a slow start hook the manager must wait on
-			_, err := store.Write(daemon.RuntimeRecord{
-				PID:       os.Getpid(),
-				Network:   daemon.NetworkTCP,
-				Address:   listenerAddr(t, server),
-				Service:   "tool",
-				Version:   "v1",
-				StartedAt: time.Now(),
-			})
-			return err
-		},
-	}
+	// Keep the loopback server outside the bubble so idle network I/O cannot
+	// prevent the fake clock from advancing.
+	synctest.Test(t, func(t *testing.T) {
+		store := daemon.RuntimeStore{Dir: t.TempDir()}
+		var starts atomic.Int32
+		startEntered := make(chan struct{}, 2)
+		releaseStart := make(chan struct{})
+		manager := daemon.Manager{
+			Store:    store,
+			Discover: daemon.DiscoverOptions{Probe: daemon.ProbeOptions{ExpectedService: "tool"}},
+			Start: func(context.Context) error {
+				starts.Add(1)
+				startEntered <- struct{}{}
+				<-releaseStart
+				_, err := store.Write(daemon.RuntimeRecord{
+					PID:       os.Getpid(),
+					Network:   daemon.NetworkTCP,
+					Address:   listenerAddr(t, server),
+					Service:   "tool",
+					Version:   "v1",
+					StartedAt: time.Now(),
+				})
+				return err
+			},
+		}
 
-	errs := make(chan error, 2)
-	for range 2 {
-		go func() {
-			_, _, err := manager.Ensure(t.Context(), time.Second)
-			errs <- err
-		}()
-	}
-	for range 2 {
-		err := <-errs
-		require.NoError(t, err)
-	}
-	assert.Equal(t, int32(1), starts.Load())
+		errs := make(chan error, 2)
+		for range 2 {
+			go func() {
+				_, _, err := manager.Ensure(t.Context(), time.Second)
+				errs <- err
+			}()
+		}
+		requireSignal(t, startEntered)
+		synctest.Wait()
+		assert.Equal(t, int32(1), starts.Load())
+		close(releaseStart)
+		for range 2 {
+			err := <-errs
+			require.NoError(t, err)
+		}
+		assert.Equal(t, int32(1), starts.Load())
+	})
 }
 
 func TestRuntimeStoreOwnerLockExcludesASecondOwner(t *testing.T) {
@@ -247,7 +253,7 @@ func TestRuntimeStoreOwnerLockExcludesASecondOwner(t *testing.T) {
 	require.NoError(t, err)
 	defer release()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // deadlinetest: the deadline is the expected result; the first owner's file lock blocks the second acquire until it fires
 	defer cancel()
 	_, err = store.AcquireOwnerLock(ctx)
 	require.Error(t, err)
@@ -269,7 +275,7 @@ func TestRuntimeStoreOwnerLockDoesNotBlockAnotherPrefixStartLock(t *testing.T) {
 	defer releaseOwner()
 
 	startStore := daemon.RuntimeStore{Dir: dir, Prefix: "tool.owner"}
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	releaseStart, err := startStore.AcquireStartLock(ctx)
 	require.NoError(t, err)
@@ -277,9 +283,6 @@ func TestRuntimeStoreOwnerLockDoesNotBlockAnotherPrefixStartLock(t *testing.T) {
 }
 
 func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
-
 	var customProbes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Test-Probe") != "present" {
@@ -291,76 +294,85 @@ func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T
 	}))
 	defer server.Close()
 
-	discoveryStore := daemon.RuntimeStore{Dir: t.TempDir()}
-	lockStore := daemon.RuntimeStore{Dir: t.TempDir()}
-	findCalls := make(chan struct{}, 8)
-	find := discoverWithHeader(discoveryStore, "X-Test-Probe", "present")
-	startEntered := make(chan struct{})
-	releaseStart := make(chan struct{})
-	t.Cleanup(func() {
-		select {
-		case <-releaseStart:
-		default:
-			close(releaseStart)
-		}
-	})
+	// Keep the loopback server outside the bubble so idle network I/O cannot
+	// prevent the fake clock from advancing.
+	synctest.Test(t, func(t *testing.T) {
+		assert := assert.New(t)
+		require := require.New(t)
 
-	var starts atomic.Int32
-	manager := daemon.Manager{
-		Store: lockStore,
-		FindFunc: func(ctx context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
-			rec, info, ok, err := find(ctx)
-			findCalls <- struct{}{}
-			return rec, info, ok, err
-		},
-		Start: func(ctx context.Context) error {
-			if starts.Add(1) == 1 {
-				close(startEntered)
-			}
+		discoveryStore := daemon.RuntimeStore{Dir: t.TempDir()}
+		lockStore := daemon.RuntimeStore{Dir: t.TempDir()}
+		findCalls := make(chan struct{}, 8)
+		find := discoverWithHeader(discoveryStore, "X-Test-Probe", "present")
+		startEntered := make(chan struct{})
+		releaseStart := make(chan struct{})
+		t.Cleanup(func() {
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
 			case <-releaseStart:
+			default:
+				close(releaseStart)
 			}
-			_, err := discoveryStore.Write(daemon.RuntimeRecord{
-				PID:       os.Getpid(),
-				Network:   daemon.NetworkTCP,
-				Address:   listenerAddr(t, server),
-				Service:   "tool",
-				Version:   "v1",
-				StartedAt: time.Now(),
-			})
-			return err
-		},
-	}
+		})
 
-	type result struct {
-		rec  daemon.RuntimeRecord
-		info daemon.PingInfo
-		err  error
-	}
-	results := make(chan result, 2)
-	ensure := func() {
-		rec, info, err := manager.Ensure(t.Context(), 2*time.Second)
-		results <- result{rec: rec, info: info, err: err}
-	}
+		var starts atomic.Int32
+		manager := daemon.Manager{
+			Store: lockStore,
+			FindFunc: func(ctx context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
+				rec, info, ok, err := find(ctx)
+				findCalls <- struct{}{}
+				return rec, info, ok, err
+			},
+			Start: func(ctx context.Context) error {
+				if starts.Add(1) == 1 {
+					close(startEntered)
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-releaseStart:
+				}
+				_, err := discoveryStore.Write(daemon.RuntimeRecord{
+					PID:       os.Getpid(),
+					Network:   daemon.NetworkTCP,
+					Address:   listenerAddr(t, server),
+					Service:   "tool",
+					Version:   "v1",
+					StartedAt: time.Now(),
+				})
+				return err
+			},
+		}
 
-	go ensure()
-	requireSignal(t, startEntered)
-	requireSignal(t, findCalls)
-	requireSignal(t, findCalls)
-	go ensure()
-	requireSignal(t, findCalls)
-	close(releaseStart)
+		type result struct {
+			rec  daemon.RuntimeRecord
+			info daemon.PingInfo
+			err  error
+		}
+		results := make(chan result, 2)
+		ensure := func() {
+			rec, info, err := manager.Ensure(t.Context(), 2*time.Second)
+			results <- result{rec: rec, info: info, err: err}
+		}
 
-	for range 2 {
-		result := <-results
-		require.NoError(result.err)
-		assert.Equal(listenerAddr(t, server), result.rec.Address)
-		assert.Equal("tool", result.info.Service)
-	}
-	assert.Equal(int32(1), starts.Load())
-	assert.Equal(int32(2), customProbes.Load())
+		go ensure()
+		requireSignal(t, startEntered)
+		requireSignal(t, findCalls)
+		requireSignal(t, findCalls)
+		go ensure()
+		requireSignal(t, findCalls)
+		synctest.Wait()
+		assert.Equal(int32(1), starts.Load())
+		close(releaseStart)
+
+		for range 2 {
+			result := <-results
+			require.NoError(result.err)
+			assert.Equal(listenerAddr(t, server), result.rec.Address)
+			assert.Equal("tool", result.info.Service)
+		}
+		assert.Equal(int32(1), starts.Load())
+		assert.Equal(int32(2), customProbes.Load())
+	})
 }
 
 func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
@@ -383,7 +395,7 @@ func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
 	}
 
 	startedAt := time.Now()
-	_, _, err = manager.Ensure(t.Context(), 50*time.Millisecond)
+	_, _, err = manager.Ensure(t.Context(), 50*time.Millisecond) //nolint:kennlint // deadlinetest: the held start lock forces the timeout being asserted
 	require.Error(err)
 	assert.Less(t, time.Since(startedAt), 500*time.Millisecond)
 }

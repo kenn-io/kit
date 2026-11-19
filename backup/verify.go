@@ -95,9 +95,10 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		app:              app,
 		repo:             r,
 		known:            known,
+		manifests:        map[string]*Manifest{},
 		quick:            opts.Quick,
 		jobs:             jobs,
-		readers:          map[string]*pack.Reader{},
+		readers:          map[string]*cachedPack{},
 		readerErrs:       map[string]error{},
 		checked:          map[pack.BlobID]bool{},
 		readDone:         map[pack.BlobID]bool{},
@@ -179,17 +180,18 @@ func selectManifests(r *Repo, opts VerifyOptions) ([]*Manifest, error) {
 	return []*Manifest{latest}, nil
 }
 
-// maxOpenPackReaders bounds how many pack.Readers Verify keeps open at once.
+// maxOpenPackReaders bounds how many pack.Readers Verify or a SnapshotReader keeps open at once.
 // A repository can reference thousands of packs; without a bound the reader
 // cache would exhaust the process file-descriptor limit (macOS defaults to
-// 256). It is a var, not a const, only so tests can lower it. Reader errors
-// stay cached forever regardless of eviction.
+// 256). It is a var, not a const, only so tests can lower it. Verify keeps
+// reader errors cached for the rest of its run, regardless of eviction.
 var maxOpenPackReaders = 64
 
 // verifyState holds the cross-manifest resources a Verify run shares: the
 // index map, a bounded LRU open-pack.Reader cache (closed before Verify
-// returns), the set of already-checked blobs, and per-blob full-read verdicts
-// so a content blob shared by several snapshots is read and hashed only once.
+// returns), successful per-blob quick checks, and per-blob full-read verdicts.
+// Manifests are loaded once, and clean attachment lists from the previous
+// snapshot are reused. Shared content is read and hashed only once.
 //
 // Concurrency model: each snapshot's structural walk (chains, lists, extras,
 // metadata reads) runs serially and enqueues its content blobs into
@@ -199,6 +201,9 @@ var maxOpenPackReaders = 64
 // readVerdict, readerErrs, contentReads, progress emission); the serial
 // phases run alone and need no locking.
 type verifyState struct {
+	manifests       map[string]*Manifest
+	attachmentLists map[pack.BlobID][]ContentRef
+
 	recipes        map[pack.BlobID]objectRecipe
 	recipeVerdicts map[pack.BlobID]error
 	ctx            context.Context
@@ -207,7 +212,7 @@ type verifyState struct {
 	known          map[pack.BlobID]IndexEntry
 	quick          bool
 	jobs           int
-	readers        map[string]*pack.Reader
+	readers        map[string]*cachedPack
 	readerOrder    []string // LRU order, least-recently-used first
 	readerErrs     map[string]error
 	checked        map[pack.BlobID]bool
@@ -279,7 +284,7 @@ type pageRunCheck struct {
 
 func (s *verifyState) closeReaders() {
 	for _, pr := range s.readers {
-		_ = pr.Close()
+		_ = pr.reader.Close()
 	}
 }
 
@@ -290,7 +295,7 @@ func (s *verifyState) problem(snapshotID, detail string) {
 // reader opens (or reuses) a cached pack.Reader for packID. OpenReader
 // validates the footer checksum, so a damaged footer is caught here; failures
 // are cached too, so a pack broken beyond repair is only opened once.
-func (s *verifyState) reader(packID string) (*pack.Reader, error) {
+func (s *verifyState) reader(packID string) (*cachedPack, error) {
 	if pr, ok := s.readers[packID]; ok {
 		s.touchReader(packID)
 		return pr, nil
@@ -306,9 +311,10 @@ func (s *verifyState) reader(packID string) (*pack.Reader, error) {
 	if len(s.readers) >= maxOpenPackReaders {
 		s.evictOldestReader()
 	}
-	s.readers[packID] = pr
+	cached := newCachedPack(pr)
+	s.readers[packID] = cached
 	s.readerOrder = append(s.readerOrder, packID)
-	return pr, nil
+	return cached, nil
 }
 
 // touchReader moves packID to the most-recently-used end of the LRU order.
@@ -330,7 +336,7 @@ func (s *verifyState) evictOldestReader() {
 	oldest := s.readerOrder[0]
 	s.readerOrder = s.readerOrder[1:]
 	if pr, ok := s.readers[oldest]; ok {
-		_ = pr.Close()
+		_ = pr.reader.Close()
 		delete(s.readers, oldest)
 	}
 }
@@ -343,6 +349,9 @@ func (s *verifyState) evictOldestReader() {
 // snapshot, blob, and pack, and returns ok=false so the caller can skip any
 // references that blob would otherwise have named.
 func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) ([]byte, bool) {
+	if !readContent && s.checked[id] {
+		return nil, true
+	}
 	ie, ok := s.known[id]
 	if !ok {
 		s.problem(snapshotID, fmt.Sprintf("blob %s not present in any index", id))
@@ -353,15 +362,8 @@ func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) 
 		s.problem(snapshotID, fmt.Sprintf("opening pack %s for blob %s: %v", ie.PackID, id, err))
 		return nil, false
 	}
-	entries := pr.Entries()
-	var entry *pack.Entry
-	for i := range entries {
-		if entries[i].ID == id {
-			entry = &entries[i]
-			break
-		}
-	}
-	if entry == nil {
+	entry, ok := pr.entries[id]
+	if !ok {
 		s.problem(snapshotID, fmt.Sprintf("blob %s missing from pack %s footer", id, ie.PackID))
 		return nil, false
 	}
@@ -378,7 +380,7 @@ func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) 
 	if !readContent {
 		return nil, true
 	}
-	raw, err := pr.ReadBlob(*entry)
+	raw, err := pr.reader.ReadBlob(entry)
 	if err != nil {
 		s.problem(snapshotID, fmt.Sprintf("reading blob %s from pack %s: %v", id, ie.PackID, err))
 		return nil, false
@@ -395,8 +397,8 @@ func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) 
 // read-and-hash verdict across snapshots: the first snapshot that references a
 // blob reads and hashes it, and later snapshots reuse the verdict. A cached
 // failure is still re-reported as a Problem naming the referencing snapshot,
-// so per-snapshot attribution is preserved. Quick mode does the per-snapshot
-// structural check only and never memoizes.
+// so per-snapshot attribution is preserved. Quick mode reuses successful
+// structural checks per blob; failures are reported for every snapshot.
 //
 // In full mode the read itself is deferred: the blob is queued for
 // drainContentReads, which runs after the snapshot's structural walk with a
@@ -512,11 +514,7 @@ func (s *verifyState) verifyPackGroup(packID string, reads []pendingRead) {
 		return
 	}
 	defer func() { _ = pr.Close() }()
-	entries := pr.Entries()
-	entryByID := make(map[pack.BlobID]*pack.Entry, len(entries))
-	for i := range entries {
-		entryByID[entries[i].ID] = &entries[i]
-	}
+	entryByID := newCachedPack(pr).entries
 	for _, rd := range reads {
 		s.verifyGroupBlob(pr, packID, entryByID, rd)
 	}
@@ -548,7 +546,7 @@ func (s *verifyState) openGroupReader(packID string) (*pack.Reader, error) {
 // consistency, then a full read whose decode path verifies CRC and the
 // content hash against the blob ID.
 func (s *verifyState) verifyGroupBlob(
-	pr *pack.Reader, packID string, entryByID map[pack.BlobID]*pack.Entry, rd pendingRead,
+	pr *pack.Reader, packID string, entryByID map[pack.BlobID]pack.Entry, rd pendingRead,
 ) {
 	fail := func(detail string) {
 		s.mu.Lock()
@@ -581,17 +579,13 @@ func (s *verifyState) verifyGroupBlob(
 	var raw []byte
 	if len(checks) != 0 {
 		var err error
-		raw, err = pr.ReadBlob(*entry)
+		raw, err = pr.ReadBlob(entry)
 		if err != nil {
 			fail(fmt.Sprintf("reading blob %s from pack %s: %v", rd.id, packID, err))
 			return
 		}
 	} else {
-		ctx := s.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		stream, err := pr.OpenBlob(ctx, *entry)
+		stream, err := pr.OpenBlob(s.ctx, entry)
 		if err != nil {
 			fail(fmt.Sprintf("opening blob %s from pack %s: %v", rd.id, packID, err))
 			return
@@ -769,11 +763,24 @@ func (s *verifyState) fetcher(snapshotID string) func(pack.BlobID) ([]byte, erro
 	}
 }
 
+func (s *verifyState) manifest(id string) (*Manifest, error) {
+	if m, ok := s.manifests[id]; ok {
+		return m, nil
+	}
+	m, err := s.repo.LoadManifest(id)
+	if err != nil {
+		return nil, err
+	}
+	s.manifests[id] = m
+	return m, nil
+}
+
 // verifySnapshot enumerates and checks every blob one manifest references
 // (FORMAT.md, Verification Model): the page-hash-map and page-map chains, the materialized page
 // map's blob table, attachment lists and the content blobs they name, and
 // the extras tree and the blobs it names.
 func (s *verifyState) verifySnapshot(m *Manifest) {
+	s.manifests[m.SnapshotID] = m
 	recipesOK := s.checkObjectRecipes(m)
 	if m.Metadata == nil {
 		hashMap := s.checkHashMapChain(m)
@@ -844,7 +851,7 @@ func (s *verifyState) checkPortableMetadata(m *Manifest) {
 // chain, returning the materialized map so queuePageRunChecks can compare page
 // blob bytes against it, or nil when the chain failed.
 func (s *verifyState) checkHashMapChain(m *Manifest) *PageHashMap {
-	chain, err := s.repo.HashMapChain(m)
+	chain, err := mapChainWith(m, s.manifest, manifestPageHashMap)
 	if err != nil {
 		s.problem(m.SnapshotID, fmt.Sprintf("page-hash-map chain: %v", err))
 		return nil
@@ -875,7 +882,7 @@ func (s *verifyState) checkHashMapChain(m *Manifest) *PageHashMap {
 // mode, its coverage). It returns nil when the chain or any of its blobs
 // failed, since downstream checks have nothing usable to work from.
 func (s *verifyState) checkPageMapChain(m *Manifest) *PageMap {
-	chain, err := s.repo.PageMapChain(m)
+	chain, err := mapChainWith(m, s.manifest, manifestPageMap)
 	if err != nil {
 		s.problem(m.SnapshotID, fmt.Sprintf("page-map chain: %v", err))
 		return nil
@@ -917,21 +924,26 @@ func (s *verifyState) checkPageMapCoverage(m *Manifest, pm *PageMap) {
 // refs for the full-mode consistency check even when content cannot be resolved.
 func (s *verifyState) checkAttachmentLists(m *Manifest, recipesOK bool) []ContentRef {
 	var refs []ContentRef
+	lists := make(map[pack.BlobID][]ContentRef, len(m.Attachments.Lists))
 	for _, listBlob := range m.Attachments.Lists {
 		id, err := pack.ParseBlobID(listBlob)
 		if err != nil {
 			s.problem(m.SnapshotID, fmt.Sprintf("attachment list blob id %q: %v", listBlob, err))
 			continue
 		}
-		raw, ok := s.blob(id, m.SnapshotID, true)
+		segment, ok := s.attachmentLists[id]
 		if !ok {
-			continue
+			raw, ok := s.blob(id, m.SnapshotID, true)
+			if !ok {
+				continue
+			}
+			segment, err = DecodeAttachmentList(raw)
+			if err != nil {
+				s.problem(m.SnapshotID, fmt.Sprintf("attachment list %s: %v", id, err))
+				continue
+			}
 		}
-		segment, err := DecodeAttachmentList(raw)
-		if err != nil {
-			s.problem(m.SnapshotID, fmt.Sprintf("attachment list %s: %v", id, err))
-			continue
-		}
+		lists[id] = segment
 		for _, ref := range segment {
 			refs = append(refs, ref)
 			contentID, err := pack.ParseBlobID(ref.Hash)
@@ -955,6 +967,8 @@ func (s *verifyState) checkAttachmentLists(m *Manifest, recipesOK bool) []Conten
 			}
 		}
 	}
+	// Keep only this snapshot's decoded lists, bounding the memo to adjacent snapshots.
+	s.attachmentLists = lists
 	return refs
 }
 

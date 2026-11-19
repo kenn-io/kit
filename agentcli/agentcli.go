@@ -29,9 +29,12 @@ const (
 	Kilo     Name = "kilo"
 	Kiro     Name = "kiro"
 	Droid    Name = "droid"
+	Hermes   Name = "hermes"
+	Muse     Name = "muse"
+	Qwen     Name = "qwen"
 )
 
-var supportedNames = []Name{Codex, Claude, Gemini, Copilot, OpenCode, Cursor, Kiro, Kilo, Droid, Pi}
+var supportedNames = []Name{Codex, Claude, Gemini, Copilot, OpenCode, Cursor, Kiro, Kilo, Droid, Pi, Hermes, Qwen, Muse}
 
 // Names returns the CLI families with concrete adapters.
 func Names() []Name {
@@ -61,6 +64,12 @@ func New(name Name, command Command) (Adapter, error) {
 		return NewDroid(command)
 	case Pi:
 		return NewPi(command)
+	case Hermes:
+		return NewHermes(command)
+	case Qwen:
+		return NewQwen(command)
+	case Muse:
+		return NewMuse(command)
 	default:
 		return nil, fmt.Errorf("unsupported agent CLI %q", name)
 	}
@@ -322,6 +331,9 @@ func (a *adapter) invoke(sessionID string, request Request) (Invocation, error) 
 	if err := validateSupportedRequest(a.name, mode, request, a.capabilities); err != nil {
 		return Invocation{}, err
 	}
+	if mode == Interactive && request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
+		return Invocation{}, unsupported(a.name, mode, "output format", string(request.OutputFormat), "use noninteractive mode for machine-readable output")
+	}
 	for _, values := range []struct {
 		name   string
 		values []string
@@ -382,6 +394,15 @@ func reasoningValue(level ReasoningLevel) string {
 
 func unsupported(name Name, mode Mode, option, value, hint string) error {
 	return &UnsupportedOptionError{Agent: name, Option: option, Value: value, Mode: mode, Hint: hint}
+}
+
+// rejectInteractivePrompt keeps a prompt out of adapters that build no
+// interactive prompt transport, where it would select noninteractive mode.
+func rejectInteractivePrompt(name Name, request Request) error {
+	if request.Prompt.Text != "" {
+		return unsupported(name, Interactive, "prompt", "", "omit the prompt, or use noninteractive mode where Capabilities lists it")
+	}
+	return nil
 }
 
 func validateSupportedRequest(name Name, mode Mode, request Request, capabilities Capabilities) error {

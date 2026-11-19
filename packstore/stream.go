@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 )
 
@@ -234,23 +235,9 @@ func (s *Store) openLooseStreamAt(
 	contentHash Hash,
 	location LooseLocation,
 ) (VerifiedReadCloser, int64, error) {
-	object, err := s.openLooseObjectAt(contentHash, location.Encoding)
+	object, err := s.openLooseObjectAtLocation(contentHash, location)
 	if err != nil {
 		return nil, 0, err
-	}
-	if object.logicalSize != location.LogicalSize ||
-		object.storedSize != location.StoredSize {
-		return nil, 0, errors.Join(
-			ErrPhysicalCorrupt,
-			fmt.Errorf(
-				"packstore: loose authority is logical=%d stored=%d, found logical=%d stored=%d",
-				location.LogicalSize,
-				location.StoredSize,
-				object.logicalSize,
-				object.storedSize,
-			),
-			object.file.Close(),
-		)
 	}
 	stream, err := newLooseVerifiedStream(ctx, contentHash, object)
 	if err != nil {
@@ -277,8 +264,9 @@ func newLooseVerifiedStreamWithDurability(
 	if err != nil {
 		return nil, errors.Join(err, object.file.Close())
 	}
+	file := looseFileReader{readLooseFile(object.file)}
 	stream := &looseVerifiedStream{
-		ctx: ctx, object: object, reader: object.file,
+		ctx: ctx, object: object, reader: file,
 		expected: id, size: uint64(object.logicalSize), digest: sha256.New(), durable: durable,
 	}
 	if object.encoding == LooseEncodingZstd {
@@ -290,7 +278,7 @@ func newLooseVerifiedStreamWithDurability(
 			)
 		}
 		stream.payload = &io.LimitedReader{
-			R: &contextReader{ctx: ctx, reader: object.file},
+			R: &contextio.Reader{Context: ctx, Reader: file},
 			N: payloadSize,
 		}
 		decoder, decoderErr := newLooseZstdReader(newSingleZstdFrameReader(stream.payload))
@@ -304,6 +292,34 @@ func newLooseVerifiedStreamWithDurability(
 		stream.reader = decoder
 	}
 	return stream, nil
+}
+
+// readLooseFile returns the reader for a loose file's bytes. Tests replace it
+// to fail reads without changing the file.
+var readLooseFile = func(file *os.File) io.Reader { return file }
+
+// looseReadError marks a failure to read a loose file, as opposed to bytes
+// that were read and found wrong. The decoder and verifier wrap it as a content
+// mismatch, so callers that care must look for it first.
+type looseReadError struct {
+	err error
+}
+
+func (e *looseReadError) Error() string { return e.err.Error() }
+
+func (e *looseReadError) Unwrap() error { return e.err }
+
+// looseFileReader reports every read failure except EOF as a looseReadError.
+type looseFileReader struct {
+	reader io.Reader
+}
+
+func (r looseFileReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		err = &looseReadError{err: err}
+	}
+	return n, err
 }
 
 type looseVerifiedStream struct {

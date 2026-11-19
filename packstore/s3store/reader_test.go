@@ -544,3 +544,19 @@ func (r *memoryVerifiedReader) Close() error {
 	}
 	return pack.ErrVerificationIncomplete
 }
+
+func TestDownloadPackRangesClassifiesShortResponse(t *testing.T) {
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		if request.Method == http.MethodHead {
+			header.Set("Content-Length", "2")
+			return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(bytes.NewReader(nil)), ContentLength: 2, Request: request}, nil
+		}
+		header.Set("Content-Length", "1")
+		header.Set("Content-Range", "bytes 0-1/2")
+		return &http.Response{StatusCode: http.StatusPartialContent, Header: header, Body: io.NopCloser(bytes.NewReader([]byte("x"))), ContentLength: 1, Request: request}, nil
+	})
+	_, _, err := backend.downloadPackRanges(t.Context(), "0123456789abcdef0123456789abcdef")
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	require.NotErrorIs(t, err, packstore.ErrStoreUnavailable)
+}

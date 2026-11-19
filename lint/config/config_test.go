@@ -55,8 +55,9 @@ func TestRenderWithoutOverlayIsCanonical(t *testing.T) {
 	got := decode(t, out)
 	assert.Equal(canonical, got)
 	assert.Contains(got.Linters.Enable, "kennlint")
+	assert.NotContains(got.Linters.Enable, "kennnolint")
 	assert.Contains(got.Linters.Enable, "testifylint")
-	assert.Equal([]string{"gofmt", "goimports", "gofumpt"}, got.Formatters.Enable)
+	assert.Equal([]string{"gofmt", "gofumpt"}, got.Formatters.Enable)
 }
 
 func TestRenderMergesOverlay(t *testing.T) {
@@ -101,7 +102,7 @@ formatters:
 	assert.Contains(got.Linters.Enable, "gosec")
 	assert.NotContains(got.Linters.Enable, "nolintlint")
 	assert.Equal(1, countOf(got.Linters.Enable, "errcheck"), "existing entries are not duplicated")
-	assert.Equal([]string{"gofmt", "goimports"}, got.Formatters.Enable)
+	assert.Equal([]string{"gofmt"}, got.Formatters.Enable)
 
 	var aliasPkgs []string
 	for _, a := range got.Linters.Settings.Importas.Alias {

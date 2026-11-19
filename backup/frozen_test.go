@@ -162,14 +162,20 @@ type recordingCoordinator struct {
 	endErr   error
 	began    bool
 	ended    bool
+	begins   int
+	onEnd    func()
 }
 
 func (c *recordingCoordinator) Begin(context.Context) error {
 	c.began = true
+	c.begins++
 	return c.beginErr
 }
 
 func (c *recordingCoordinator) End(context.Context) error {
 	c.ended = true
+	if c.onEnd != nil {
+		c.onEnd()
+	}
 	return c.endErr
 }

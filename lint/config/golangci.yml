@@ -100,6 +100,8 @@ linters:
           msg: Use testify assert/require helpers in tests.
         - pattern: '^exec\.Command$'
           msg: Use exec.CommandContext so subprocesses honor cancellation.
+        - pattern: '^exec\.CommandContext$'
+          msg: Use consolewindow.CommandContext from go.kenn.io/kit so a non-interactive child opens no console window on Windows; use exec.CommandContext with a nolint reason only when the child needs the console.
         - pattern: '^http\.(Get|Post|Head|PostForm)$'
           msg: Build the request with http.NewRequestWithContext and a client with timeouts.
         - pattern: '^http\.DefaultClient$'
@@ -112,7 +114,13 @@ linters:
           msg: Use errors.AsType[E] for typed error extraction.
         - pattern: '^ioutil\..*$'
           msg: io/ioutil is deprecated; use io and os.
+        - pattern: '^os\.Rename$'
+          msg: Use atomicfile.Replace from go.kenn.io/kit, or atomicfile.RenameNoReplace when the target must not exist, so a Windows reader that opened the target with share-delete can't block the rename.
     custom:
+      kennnolint:
+        type: module
+        description: Require a kit analyzer and reason in suppressions.
+        original-url: go.kenn.io/kit/lint/nolintdirective
       kennlint:
         type: module
         description: kit analyzers for test discipline, error identity, and route registration.
@@ -137,11 +145,16 @@ linters:
           - forbidigo
         path: _test\.go
         text: (exec\.Command|http\.(Get|Post|Head|PostForm)|http\.DefaultClient)
+      # Tests stage fixtures with plain renames.
+      - linters:
+          - forbidigo
+        path: _test\.go
+        text: atomicfile\.Replace
       # A main package owns process exit and may work without a caller context.
       - linters:
           - forbidigo
         path: ^(cmd/|main\.go)
-        text: exec\.Command
+        text: use of `exec\.Command`
     paths:
       - third_party$
       - builtin$
@@ -151,9 +164,12 @@ issues:
   max-issues-per-linter: 0
   max-same-issues: 0
 formatters:
+  # No goimports: gofumpt already enforces its std-first import grouping, and
+  # missing or unused imports fail type checking. golangci-lint's goimports
+  # rereads the whole module cache index for every file, and with it enabled
+  # unchanged re-runs re-analyzed everything; it was most of a lint run.
   enable:
     - gofmt
-    - goimports
     - gofumpt
   exclusions:
     generated: lax

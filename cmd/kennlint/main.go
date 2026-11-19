@@ -2,20 +2,26 @@
 // golangci-lint configuration.
 //
 //	kennlint run [analysis flags] ./...
+//	kennlint workflow-retries [path ...]
 //	kennlint sql [path ...]
+//	kennlint frontmatter [-changed REF] [-fix] [-exclude GLOB] [path ...]
 //	kennlint config [-overlay FILE] [-out FILE] [-check]
+//	kennlint profile [-tags LIST] [-disable LIST] [-parallel] [-cpuprofile FILE] [packages]
 //	kennlint analyzers
 package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis/multichecker"
@@ -27,8 +33,11 @@ import (
 
 const usage = `usage:
   kennlint run [analysis flags] [packages]   run the kit analyzers (go vet style)
+  kennlint workflow-retries [path ...]       report downloads missing retries in workflow YAML (default: .github)
   kennlint sql [path ...]                    report CHECK constraints and enum types in .sql files (default: .)
+  kennlint frontmatter [flags] [path ...]    check tracked Markdown frontmatter and last_edited dates
   kennlint config [flags]                    render .golangci.yml from the canonical config and an overlay
+  kennlint profile [flags] [packages]        time each analyzer, split between packages and dependencies
   kennlint analyzers                         list the analyzers and their documentation
 `
 
@@ -51,9 +60,34 @@ func main() {
 		if n > 0 {
 			os.Exit(1)
 		}
+	case "workflow-retries":
+		n, err := runWorkflowRetries(os.Args[2:], os.Stdout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kennlint workflow-retries: %v\n", err)
+			os.Exit(2)
+		}
+		if n > 0 {
+			os.Exit(1)
+		}
+	case "frontmatter":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		n, err := runFrontmatter(ctx, os.Args[2:], os.Stdout, os.Stderr)
+		stop()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kennlint frontmatter: %v\n", err)
+			os.Exit(2)
+		}
+		if n > 0 {
+			os.Exit(1)
+		}
 	case "config":
 		if err := runConfig(os.Args[2:], os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintf(os.Stderr, "kennlint config: %v\n", err)
+			os.Exit(1)
+		}
+	case "profile":
+		if err := runProfile(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "kennlint profile: %v\n", err)
 			os.Exit(1)
 		}
 	case "analyzers":
@@ -119,6 +153,17 @@ func runSQL(paths []string, stdout io.Writer) (int, error) {
 	if len(paths) == 0 {
 		paths = []string{"."}
 	}
+	return scanFiles(paths, []string{".sql"}, func(path string, src []byte) (int, error) {
+		findings := sqlcheck.Scan(string(src))
+		for _, f := range findings {
+			fmt.Fprintf(stdout, "%s:%d:%d: %s\n", filepath.ToSlash(path), f.Line, f.Column, f.Message())
+		}
+		return len(findings), nil
+	})
+}
+
+// scanFiles shares path selection and error handling for non-Go checks.
+func scanFiles(paths, extensions []string, scan func(string, []byte) (int, error)) (int, error) {
 	total := 0
 	for _, root := range paths {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -131,16 +176,17 @@ func runSQL(paths []string, stdout io.Writer) (int, error) {
 				}
 				return nil
 			}
-			if !strings.EqualFold(filepath.Ext(path), ".sql") {
+			if !slices.Contains(extensions, strings.ToLower(filepath.Ext(path))) {
 				return nil
 			}
 			src, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}
-			for _, f := range sqlcheck.Scan(string(src)) {
-				total++
-				fmt.Fprintf(stdout, "%s:%d:%d: %s\n", filepath.ToSlash(path), f.Line, f.Column, f.Message())
+			n, err := scan(path, src)
+			total += n
+			if err != nil {
+				return fmt.Errorf("%s: %w", filepath.ToSlash(path), err)
 			}
 			return nil
 		})

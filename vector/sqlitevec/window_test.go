@@ -104,6 +104,46 @@ func TestBuildCandidateQueryComposesAndAppliesFilterBeforeResultLimit(t *testing
 	require.Empty(t, results)
 }
 
+func TestBuildCandidateQueryRawWindowCountsOnlyItsGeneration(t *testing.T) {
+	ctx := t.Context()
+	db, store := setupWithRevision(t)
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1), (2, 'a dog ran', 1)`)
+	require.NoError(t, err)
+	model := vector.Generation{Model: "m", Dimensions: 3}
+	require.NoError(t, store.EnsureGeneration(ctx, 1, model, sqlitevec.StateActive))
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
+	require.NoError(t, err)
+
+	_, err = db.ExecContext(ctx, `DELETE FROM messages WHERE id = 2`)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, 2, model, sqlitevec.StateBuilding))
+	_, err = vector.Fill(ctx, store, 2, topicEncoder())
+	require.NoError(t, err)
+	// Source changes leave the raw neighbors occupying their original slots.
+	_, err = db.ExecContext(ctx, `UPDATE messages SET last_modified = 2 WHERE id = 1`)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name  string
+		gen   int64
+		limit int
+		full  bool
+	}{
+		{name: "exact capacity with stale and deleted sources", gen: 1, limit: 2, full: true},
+		{name: "short window", gen: 1, limit: 3, full: false},
+		{name: "second generation full", gen: 2, limit: 1, full: true},
+		{name: "other generation rows do not fill window", gen: 2, limit: 2, full: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q, err := store.BuildCandidateQuery(t.Context(), db, tc.gen, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{CandidateLimit: tc.limit})
+			require.NoError(t, err)
+			full, err := q.RawWindow(t.Context(), db)
+			require.NoError(t, err)
+			assert.Equal(t, tc.full, full)
+		})
+	}
+}
+
 func TestQueryGenerationWindowReturnsRevisionAndExhaustion(t *testing.T) {
 	ctx := t.Context()
 	db, store := setupWithRevision(t)

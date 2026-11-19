@@ -2,16 +2,20 @@
 // sqlite-vec extension. It is a reference backend: a worked example of the
 // storage contract the vector flows depend on, built against sqlite-vec.
 //
-// On Unix platforms with cgo, call Register before opening a mattn/go-sqlite3
-// database:
+// The caller selects the SQLite driver and registers its sqlite-vec extension.
+// Driver selection is independent of whether the application enables cgo.
+// For modernc.org/sqlite, import both the driver and its extension:
+//
+//	import _ "modernc.org/sqlite"
+//	import _ "modernc.org/sqlite/vec"
+//	db, _ := sql.Open("sqlite", path)
+//
+// For github.com/mattn/go-sqlite3, register its extension before opening:
 //
 //	import _ "github.com/mattn/go-sqlite3"
-//	sqlitevec.Register()
+//	import vecext "github.com/asg017/sqlite-vec-go-bindings/cgo"
+//	vecext.Auto()
 //	db, _ := sql.Open("sqlite3", path)
-//
-// On Windows or without cgo, import modernc.org/sqlite and open databases with
-// the "sqlite" driver. The sqlite-vec extension is registered during package
-// initialization in that build.
 //
 // The caller owns the documents table; this package owns a small set of
 // vector tables derived from VectorsPrefix. Each generation gets its own
@@ -34,13 +38,13 @@ var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // State is a generation's role in the active/building lifecycle. Only
 // building and active generations are searched; building sorts ahead of
 // active so Merge keeps the newer generation's hit on overlap.
-type State string
+type State = vector.State
 
 const (
-	StatePending  State = "pending"
-	StateBuilding State = "building"
-	StateActive   State = "active"
-	StateRetired  State = "retired"
+	StatePending  = vector.StatePending
+	StateBuilding = vector.StateBuilding
+	StateActive   = vector.StateActive
+	StateRetired  = vector.StateRetired
 )
 
 // Schema names the caller's documents table and the prefix for the
@@ -91,6 +95,7 @@ type Store[K, G comparable] struct {
 // New returns a Store bound to db. The caller retains ownership of db. New
 // creates the generations and chunks bookkeeping tables if they do not
 // exist; per-generation vec0 tables are created by EnsureGeneration.
+// New attempts to build missing document-key lookup indexes on existing data.
 func New[K, G comparable](ctx context.Context, db *sql.DB, schema Schema) (*Store[K, G], error) {
 	if err := schema.validate(); err != nil {
 		return nil, err
@@ -129,6 +134,20 @@ CREATE INDEX IF NOT EXISTS %s ON %s (doc_key, revision);`,
 		s.stampsByDocRevisionIndex(), s.stampsTable())); err != nil {
 		return nil, fmt.Errorf("create bookkeeping tables: %w", err)
 	}
+	var indexesExist bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?) AND EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?)`,
+		s.stampsByDocNumericIndex(), s.chunksByDocNumericIndex()).Scan(&indexesExist); err != nil {
+		return nil, fmt.Errorf("check numeric document key indexes: %w", err)
+	}
+	if !indexesExist {
+		// Queries stay correct without these indexes. A read-only handle or a
+		// writer holding the lock must not stop New.
+		_, _ = db.ExecContext(ctx, fmt.Sprintf(`
+CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);
+CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);`,
+			s.stampsByDocNumericIndex(), s.stampsTable(), numericDocKey("doc_key"),
+			s.chunksByDocNumericIndex(), s.chunksTable(), numericDocKey("doc_key")))
+	}
 	return s, nil
 }
 
@@ -141,6 +160,14 @@ func (s *Store[K, G]) chunksByVectorIndex() string {
 func (s *Store[K, G]) chunksByDocIndex() string { return s.schema.VectorsPrefix + "_chunks_by_doc" }
 func (s *Store[K, G]) stampsByDocRevisionIndex() string {
 	return s.schema.VectorsPrefix + "_stamps_by_doc_revision"
+}
+
+func (s *Store[K, G]) stampsByDocNumericIndex() string {
+	return s.schema.VectorsPrefix + "_stamps_by_doc_numeric"
+}
+
+func (s *Store[K, G]) chunksByDocNumericIndex() string {
+	return s.schema.VectorsPrefix + "_chunks_by_doc_numeric"
 }
 
 func (s *Store[K, G]) vecTable(ordinal int64) string {

@@ -9,8 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+
+	"go.kenn.io/kit/consolewindow"
 )
 
 // Listener is one entry in a CLI's `mcp status --json` response. BackendURL
@@ -27,7 +28,7 @@ type Listener struct {
 // HTTP listeners. It does not start servers or fall back to a stdio command.
 // The caller should supply a context deadline and query only trusted CLIs.
 func Discover(ctx context.Context, executable string) ([]Listener, error) {
-	data, err := exec.CommandContext(ctx, executable, "mcp", "status", "--json").Output()
+	data, err := consolewindow.CommandContext(ctx, executable, "mcp", "status", "--json").Output()
 	if err != nil {
 		return nil, fmt.Errorf("discover MCP listeners with %s: %w", executable, errors.Join(err, ctx.Err()))
 	}

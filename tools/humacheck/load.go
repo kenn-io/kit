@@ -9,11 +9,12 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+
+	"go.kenn.io/kit/consolewindow"
 )
 
 // dependencyFiles recognizes source files that belong to the standard library
@@ -30,7 +31,7 @@ type dependencyFiles struct {
 // newDependencyFiles asks the go command that go/packages will run in dir
 // for GOROOT and GOMODCACHE, so a toolchain switch picks the same roots.
 func newDependencyFiles(ctx context.Context, dir string, env []string) (*dependencyFiles, error) {
-	cmd := exec.CommandContext(ctx, "go", "env", "GOROOT", "GOMODCACHE")
+	cmd := consolewindow.CommandContext(ctx, "go", "env", "GOROOT", "GOMODCACHE")
 	cmd.Dir = dir
 	cmd.Env = env
 	var stderr bytes.Buffer

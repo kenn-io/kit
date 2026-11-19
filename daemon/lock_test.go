@@ -10,10 +10,49 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
 )
+
+func TestStartLockHeld(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "missing")}
+	held, err := store.StartLockHeld(t.Context())
+	require.NoError(t, err)
+	assert.False(t, held)
+	assert.NoDirExists(t, store.Dir)
+	release, err := store.AcquireStartLock(t.Context())
+	require.NoError(t, err)
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
+	held, err = store.StartLockHeld(t.Context())
+	require.NoError(t, err)
+	assert.True(t, held)
+	release()
+	release = nil
+	path, err := store.LockPath()
+	require.NoError(t, err)
+	reader := flock.New(path, flock.SetFlag(os.O_RDONLY))
+	acquired, err := reader.TryRLock()
+	require.NoError(t, err)
+	require.True(t, acquired)
+	defer func() { require.NoError(t, reader.Close()) }()
+	held, err = store.StartLockHeld(t.Context())
+	require.NoError(t, err)
+	assert.False(t, held, "shared observers coexist")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = store.StartLockHeld(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = (daemon.RuntimeStore{Dir: "relative"}).StartLockHeld(t.Context())
+	require.Error(t, err)
+	_, err = (daemon.RuntimeStore{Dir: store.Dir + "\x00"}).StartLockHeld(t.Context())
+	require.Error(t, err)
+}
 
 func TestTryAcquireStartLockCoordinatesWithManager(t *testing.T) {
 	assert := assert.New(t)
@@ -59,7 +98,7 @@ func TestTryAcquireStartLockCoordinatesWithManager(t *testing.T) {
 			return nil
 		},
 	}
-	ctx, cancel = context.WithTimeout(t.Context(), 20*time.Millisecond)
+	ctx, cancel = context.WithTimeout(t.Context(), 20*time.Millisecond) //nolint:kennlint // deadlinetest: the deadline is the expected result; the test holds the start lock, so Ensure can only stop when it fires
 	defer cancel()
 	_, _, err = manager.Ensure(ctx, time.Second)
 	require.ErrorIs(err, context.DeadlineExceeded)

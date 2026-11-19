@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -17,23 +17,35 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
   cancel-in-progress: true
 
+env:
+  # "|" falls back to the source repo on any proxy error, including HTTP/2 stream resets mid-download.
+  GOPROXY: https://proxy.golang.org|direct
+  # Module-relative source paths let every checkout share Go build cache entries.
+  GOFLAGS: -trimpath
+
 jobs:
   hygiene:
     name: Go hygiene
     runs-on: namespace-profile-linux-4cpu
-    timeout-minutes: 10
+    timeout-minutes: 12
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
+
+      - uses: $/.github/actions/kit-retry
+
+      - name: Download modules
+        run: kit-retry 3 5 go mod download
 
       - name: Check go.mod is tidy
         run: |
@@ -43,69 +55,207 @@ jobs:
       - name: Run golangci-lint
         run: make lint
 
-      - name: Run golangci-lint for Windows
+      - name: Check Markdown edit dates
+        if: github.event_name == 'pull_request'
+        env:
+          FRONTMATTER_BASE: ${{ github.event.pull_request.base.sha }}
+        run: make lint-frontmatter-changed
+
+      - name: Run lint, build, and vet for Windows
         env:
           GOOS: windows
-        run: ./custom-gcl run ./...
+        run: |
+          ./custom-gcl run ./...
+          go build ./...
+          go vet ./...
 
   test:
-    name: Go tests (${{ matrix.os }})
+    name: Go tests (${{ matrix.os }}${{ matrix.shard == 'managed' && format(', git/managed {0}/{1}', matrix.part, matrix.parts) || '' }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.shard == 'managed' && 30 || matrix.os == 'windows-latest' && 31 || 14 }}
+    env:
+      MANAGED_PACKAGE: go.kenn.io/kit/git/managed
+      GOTESTSUM_SUITE: go-${{ matrix.os }}-${{ matrix.shard }}-${{ matrix.part || 'all' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             runner: namespace-profile-linux-8cpu
+            shard: regular
           - os: macos-latest
             runner: namespace-profile-mac-6cpu
+            shard: regular
           - os: windows-latest
-            runner: namespace-profile-windows-4cpu
+            runner: windows-latest
+            shard: regular
+            own-go-cache: true
+          - os: windows-latest
+            runner: windows-latest
+            shard: managed
+            part: 1
+            parts: 3
+          - os: windows-latest
+            runner: windows-latest
+            shard: managed
+            part: 2
+            parts: 3
+          - os: windows-latest
+            runner: windows-latest
+            shard: managed
+            part: 3
+            parts: 3
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          # The regular Windows leg restores its own entry below.
+          cache: ${{ !matrix.own-go-cache }}
+
+      - name: Prepare Go cache key
+        if: matrix.own-go-cache
+        id: go-cache-key
+        shell: bash
+        env:
+          GO_SUM: ${{ hashFiles('go.sum') }}
+        run: |
+          # A go.sum change starts a new chain, so modules it drops leave the cache.
+          {
+            echo 'paths<<EOF'
+            go env GOCACHE GOMODCACHE
+            echo 'EOF'
+            echo "prefix=go-windows-regular-$GO_SUM-"
+            echo "key=go-windows-regular-$GO_SUM-$(date -u +%F)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go cache
+        if: matrix.own-go-cache
+        id: go-cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ steps.go-cache-key.outputs.paths }}
+          key: ${{ steps.go-cache-key.outputs.key }}
+          restore-keys: ${{ steps.go-cache-key.outputs.prefix }}
+
+      - uses: $/.github/actions/kit-retry
 
       - name: Download modules
-        run: go mod download
+        if: matrix.shard != 'managed'
+        shell: bash
+        run: kit-retry 3 5 go mod download
+
+      - name: Download managed test modules
+        if: matrix.shard == 'managed'
+        shell: bash
+        run: |
+          kit-retry 3 5 go list -deps -test "$MANAGED_PACKAGE" > /dev/null
+          kit-retry 3 5 go list -deps gotest.tools/gotestsum > /dev/null
 
       - name: Build
+        if: matrix.os != 'windows-latest'
         run: go build ./...
 
       - name: Run tests
-        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-${{ matrix.os }}.json -- ./...
+        if: matrix.os != 'windows-latest'
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile "gotestsum/${GOTESTSUM_SUITE}.json" --rerun-fails=2 --rerun-fails-report "gotestsum/${GOTESTSUM_SUITE}-reruns.txt" --packages "./..."
+
+      - name: Run Windows tests (${{ matrix.shard }})
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          TEST_SHARD: ${{ matrix.shard }}
+          TEST_PART: ${{ matrix.part }}
+          TEST_PARTS: ${{ matrix.parts }}
+        run: |
+          if ($env:TEST_SHARD -eq 'managed') {
+            $listed = @(go test -list '^(Test|Example|Fuzz)' $env:MANAGED_PACKAGE)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            [string[]]$names = @($listed | Where-Object { $_ -match '^(Test|Example|Fuzz)\S*$' })
+            [Array]::Sort($names, [StringComparer]::Ordinal)
+            $selected = @(for ($i = 0; $i -lt $names.Count; $i++) {
+              if ($i % [int]$env:TEST_PARTS -eq [int]$env:TEST_PART - 1) { $names[$i] }
+            })
+            if ($selected.Count -eq 0) { throw "Managed test part $env:TEST_PART has no tests" }
+            Write-Host "Managed test part $env:TEST_PART/$env:TEST_PARTS selected $($selected.Count) of $($names.Count) tests"
+            $pattern = '^(' + (($selected | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
+            $packages = $env:MANAGED_PACKAGE
+            $testArgs = @('-count=1', '-timeout=20m', '-run', $pattern)
+          } else {
+            $allPackages = @(go list ./...)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $packages = @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE }) -join ' '
+            $testArgs = @('-count=1')
+          }
+          go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile "gotestsum/$($env:GOTESTSUM_SUITE).json" --rerun-fails=2 --rerun-fails-report "gotestsum/$($env:GOTESTSUM_SUITE)-reruns.txt" --packages $packages -- @testArgs
+          exit $LASTEXITCODE
+
+      - name: Save Go cache
+        if: matrix.own-go-cache && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ steps.go-cache-key.outputs.paths }}
+          key: ${{ steps.go-cache-key.outputs.key }}
+
+      - name: Upload gotestsum results
+        if: failure() || github.run_attempt > 1 || hashFiles(format('gotestsum/{0}-reruns.txt', env.GOTESTSUM_SUITE)) != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-${{ env.GOTESTSUM_SUITE }}-attempt-${{ github.run_attempt }}
+          path: gotestsum/*.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Print slowest tests
+        if: always() && hashFiles('gotestsum/*.json') != ''
+        shell: bash
+        run: go tool gotestsum tool slowest --jsonfile "gotestsum/${GOTESTSUM_SUITE}.json" --num 10
+
+      - name: Upload test times
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: test-times-${{ matrix.os }}-${{ matrix.shard }}-${{ matrix.part || 'all' }}
+          path: gotestsum/*.json
 
       - name: Run go vet
+        if: matrix.os != 'windows-latest'
         run: go vet ./...
 
   streaming-gates:
     name: Streaming race and portability gates
     runs-on: namespace-profile-linux-8cpu
-    timeout-minutes: 25
+    timeout-minutes: 14
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Run streaming race tests
-        run: go test -race ./pack ./packstore ./backup
+      - name: Run storage and PostHog race tests
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/streaming-race.json --rerun-fails=2 --rerun-fails-report gotestsum/streaming-race-reruns.txt --packages "./pack ./packstore ./backup ./telemetry/posthog/..." -- -race
+
+      - name: Upload gotestsum results
+        if: failure() || github.run_attempt > 1 || hashFiles('gotestsum/streaming-race-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-streaming-race-attempt-${{ github.run_attempt }}
+          path: gotestsum/streaming-race.json
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Compile streaming packages for Linux 386
         env:
@@ -116,6 +266,21 @@ jobs:
           go test -c -o "${RUNNER_TEMP}/kit-pack-linux386.test" ./pack
           go test -c -o "${RUNNER_TEMP}/kit-packstore-linux386.test" ./packstore
           go test -c -o "${RUNNER_TEMP}/kit-backup-linux386.test" ./backup
+
+      - name: Run spill tests on Linux 386
+        env:
+          CGO_ENABLED: "0"
+          GOARCH: "386"
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/spill-linux386.json --rerun-fails=2 --rerun-fails-report gotestsum/spill-linux386-reruns.txt --packages "./spill"
+
+      - name: Upload gotestsum results
+        if: failure() || github.run_attempt > 1 || hashFiles('gotestsum/spill-linux386-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-spill-linux386-attempt-${{ github.run_attempt }}
+          path: gotestsum/spill-linux386.json
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Compile fail-closed storage packages for Plan 9
         env:
@@ -140,16 +305,16 @@ jobs:
   s3-conformance:
     name: S3-compatible backend conformance
     runs-on: namespace-profile-linux-4cpu
-    timeout-minutes: 15
+    timeout-minutes: 14
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -167,6 +332,7 @@ jobs:
           endpoint="http://$(docker port kit-s3-conformance 9000/tcp)"
           echo "KIT_S3_TEST_ENDPOINT=${endpoint}" >> "${GITHUB_ENV}"
           for attempt in $(seq 1 30); do
+            # workflowretry: allow local container readiness already retries
             if curl --fail --silent --show-error \
               "${endpoint}/health" >/dev/null; then
               exit 0
@@ -181,21 +347,30 @@ jobs:
           KIT_S3_TEST_ACCESS_KEY: kit-test
           KIT_S3_TEST_SECRET_KEY: kit-test-secret
           KIT_S3_TEST_BUCKET: kit-conformance
-        run: go test -race ./packstore/s3store
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/s3-conformance.json --rerun-fails=2 --rerun-fails-report gotestsum/s3-conformance-reruns.txt --packages "./objectstore/s3 ./packstore/s3store" -- -race -shuffle=on
+
+      - name: Upload gotestsum results
+        if: failure() || github.run_attempt > 1 || hashFiles('gotestsum/s3-conformance-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-s3-conformance-attempt-${{ github.run_attempt }}
+          path: gotestsum/*.json
+          retention-days: 14
+          if-no-files-found: ignore
 
   search-backends:
     name: Search backend conformance
     runs-on: namespace-profile-linux-4cpu
-    timeout-minutes: 20
+    timeout-minutes: 12
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -230,4 +405,73 @@ jobs:
         env:
           KIT_POSTGRES_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/kit?sslmode=disable
           KIT_CLICKHOUSE_TEST_ADDR: 127.0.0.1:9000
-        run: go test -count=1 ./search/postgres ./search/clickhouse
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/search-backends.json --rerun-fails=2 --rerun-fails-report gotestsum/search-backends-reruns.txt --packages "./search/postgres ./search/clickhouse ./vector/pgvector" -- -count=1 -p 1
+
+      - name: Upload gotestsum results
+        if: failure() || github.run_attempt > 1 || hashFiles('gotestsum/search-backends-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-search-backends-attempt-${{ github.run_attempt }}
+          path: gotestsum/*.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+  embedserver:
+    name: Local embedding parity (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: namespace-profile-linux-4cpu
+          - os: macos
+            runner: namespace-profile-mac-6cpu
+          - os: windows
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cache verified model and runtime
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/embedserver
+          key: embedserver-${{ runner.os }}-${{ runner.arch }}-ort-1.23.2-nomic-cf5b5a86-d241a60d-faces-af6d057c-f12e1279-${{ hashFiles('embedserver/testdata/faces/*') }}-nuget
+      - name: Stage ONNX Runtime 1.23.2
+        shell: python
+        run: |
+          import os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'embedserver' / 'bundle'
+          library = subprocess.check_output(['python', '.github/scripts/stage-onnx.py', '--output', str(root)], text=True).strip()
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('KIT_EMBED_TEST_DIR=' + str(root.parent / 'model') + '\n')
+              env.write('KIT_EMBED_TEST_LIBRARY=' + library + '\n')
+      - name: Stage verified model and photograph fixtures
+        shell: bash
+        run: .github/actions/kit-retry/kit-retry 3 5 go run .github/scripts/stage-embed-test.go
+      - name: Run focused tests and native parity
+        run: make test-embedserver GOTESTSUM_SUITE=embedserver-${{ matrix.os }}
+      - name: Upload gotestsum results
+        if: failure() || github.run_attempt > 1 || hashFiles(format('gotestsum/embedserver-{0}-reruns.txt', matrix.os)) != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-embedserver-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: gotestsum/*.json
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Compile six targets without CGo
+        if: matrix.os == 'linux'
+        shell: python
+        run: |
+          import os, pathlib, subprocess
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'kennembed-build'
+          for target in ('linux', 'darwin', 'windows'):
+              for arch in ('amd64', 'arm64'):
+                  env = dict(os.environ, GOOS=target, GOARCH=arch, CGO_ENABLED='0')
+                  subprocess.run(['go', 'build', '-o', str(output), './cmd/kennembed'], env=env, check=True)

@@ -527,18 +527,36 @@ func TestStoreSharesBoundedAndOrdinaryCacheSlotsAndEvicts(t *testing.T) {
 	resolver := &mapResolver{locations: map[Hash]Location{}}
 	store := newStoreForTest(t, resolver, layout)
 
-	for i := range maxOpenReaders + 1 {
+	var entries []IndexEntry
+	for i := range 65 {
 		content := []byte{byte(i), byte(i >> 8)}
 		entry := buildStoreTestPack(t, layout, content)
+		entries = append(entries, entry)
 		resolver.locations[entry.Hash] = Location{Member: true, Pack: &entry}
 		r, _, err := store.Open(t.Context(), entry.Hash)
 		require.NoError(err)
 		require.NoError(r.Close())
 		_, _, err = store.ReadBounded(t.Context(), entry.Hash, int64(len(content)))
 		require.NoError(err)
-		require.LessOrEqual(len(store.packReaders), maxOpenReaders)
+		require.LessOrEqual(len(store.packReaders), 64)
 	}
-	assert.Len(t, store.order, maxOpenReaders)
+	require.Len(store.order, 64)
+
+	// Rotating one pack beyond the default capacity should still keep cache hits.
+	const reads = 65 * 20
+	misses := 0
+	for i := range reads {
+		entry := entries[i%len(entries)]
+		store.mu.Lock()
+		_, hit := store.packReaders[entry.PackID]
+		store.mu.Unlock()
+		if !hit {
+			misses++
+		}
+		_, _, err := store.ReadBounded(t.Context(), entry.Hash, entry.RawLen)
+		require.NoError(err)
+	}
+	assert.Less(t, misses, reads/2)
 	require.NoError(store.Close())
 	assert.Empty(t, store.order)
 }

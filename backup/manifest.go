@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -266,51 +265,72 @@ func (r *Repo) ListSnapshots() ([]*Manifest, error) {
 	return listSnapshots(os.DirFS(r.Path(snapshotsDirName)))
 }
 
-func listSnapshots(snapshots fs.FS) ([]*Manifest, error) {
+func snapshotIDs(snapshots fs.FS) ([]string, error) {
 	entries, err := fs.ReadDir(snapshots, ".")
 	if err != nil {
 		return nil, fmt.Errorf("backup: reading snapshots dir: %w", err)
 	}
-	var out []*Manifest
+	var ids []string
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), manifestExt) {
 			continue
 		}
-		m, err := loadManifest(snapshots, strings.TrimSuffix(e.Name(), manifestExt))
+		ids = append(ids, strings.TrimSuffix(e.Name(), manifestExt))
+	}
+	return ids, nil
+}
+
+func listSnapshots(snapshots fs.FS) ([]*Manifest, error) {
+	ids, err := snapshotIDs(snapshots)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Manifest
+	for _, id := range ids {
+		m, err := loadManifest(snapshots, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].SnapshotID < out[j].SnapshotID })
 	return out, nil
 }
 
 // LatestSnapshot returns the newest manifest, or nil for an empty repo.
+// It reads only the newest manifest; ListSnapshots checks the whole history.
 func (r *Repo) LatestSnapshot() (*Manifest, error) {
-	list, err := r.ListSnapshots()
+	snapshots := os.DirFS(r.Path(snapshotsDirName))
+	ids, err := snapshotIDs(snapshots)
 	if err != nil {
 		return nil, err
 	}
-	if len(list) == 0 {
+	if len(ids) == 0 {
 		return nil, nil
 	}
-	return list[len(list)-1], nil
+	return loadManifest(snapshots, ids[len(ids)-1])
 }
 
 // HashMapChain collects the newest-to-oldest page-hash-map blob chain from
 // head down to (and including) its keyframe manifest.
 func (r *Repo) HashMapChain(head *Manifest) ([]pack.BlobID, error) {
-	return r.mapChain(head, func(m *Manifest) string { return m.DB.PageHashMap })
+	return mapChainWith(head, r.LoadManifest, manifestPageHashMap)
 }
 
 // PageMapChain collects the newest-to-oldest page-map blob chain.
 func (r *Repo) PageMapChain(head *Manifest) ([]pack.BlobID, error) {
-	return r.mapChain(head, func(m *Manifest) string { return m.DB.PageMap })
+	return mapChainWith(head, r.LoadManifest, manifestPageMap)
 }
 
-func (r *Repo) mapChain(head *Manifest, field func(*Manifest) string) ([]pack.BlobID, error) {
-	manifests, err := r.manifestChain(head)
+func manifestPageHashMap(m *Manifest) string {
+	return m.DB.PageHashMap
+}
+
+func manifestPageMap(m *Manifest) string {
+	return m.DB.PageMap
+}
+
+func mapChainWith(head *Manifest, load func(string) (*Manifest, error), field func(*Manifest) string) ([]pack.BlobID, error) {
+	manifests, err := walkManifestChain(head, load)
 	if err != nil {
 		return nil, err
 	}
@@ -325,12 +345,8 @@ func (r *Repo) mapChain(head *Manifest, field func(*Manifest) string) ([]pack.Bl
 	return chain, nil
 }
 
-// manifestChain is the recovery dependency chain, newest to keyframe.
+// walkManifestChain is the recovery dependency chain, newest to keyframe.
 // Portable metadata is self-contained; its ParentID is informational.
-func (r *Repo) manifestChain(head *Manifest) ([]*Manifest, error) {
-	return walkManifestChain(head, r.LoadManifest)
-}
-
 func walkManifestChain(head *Manifest, load func(string) (*Manifest, error)) ([]*Manifest, error) {
 	var chain []*Manifest
 	m := head

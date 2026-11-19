@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -28,8 +29,16 @@ type Hook struct {
 // Win32 argv, and PowerShell forms respectively; do not combine them with
 // Executable. Marker must be a stable, application-namespaced substring unique
 // to commands the caller owns; it identifies those commands across binary path
-// changes. Hooks defaults to every event supported by the selected profile.
+// changes. On Windows, Claude Code hooks built from Executable are written in
+// exec form, which needs an executable such as an .exe rather than a .cmd or
+// .bat shim, and the marker matches the executable and arguments joined by
+// spaces. Pi hooks always use exec form on every OS: they require Executable,
+// reject raw commands and matchers, and match the marker the same way. Hooks
+// defaults to every event supported by the selected profile.
 type InstallOptions struct {
+	// WorkspaceDir selects the workspace Check inspects and where setup and
+	// Check resolve relative executables. Empty means the process directory.
+	WorkspaceDir      string
 	ConfigPath        string
 	Executable        string
 	Arguments         []string
@@ -42,6 +51,8 @@ type InstallOptions struct {
 
 // Result reports the planned or completed config mutation. Data contains the
 // complete resulting config and can be used by command-line dump operations.
+// Data is nil when an uninstall removes a kit-owned config file, such as Pi's
+// extension module once no application's hooks remain.
 type Result struct {
 	Agent      Agent
 	ConfigPath string
@@ -51,27 +62,76 @@ type Result struct {
 
 // PlanInstall computes an install without writing the config file.
 func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
-	opts.Marker = strings.TrimSpace(opts.Marker)
-	commands, err := resolveCommands(opts)
-	if err != nil {
-		return Result{}, err
-	}
-	spec, ok := profiles[agent]
-	if !ok {
-		return Result{}, fmt.Errorf("unsupported agent hook integration %q", agent)
-	}
-	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
-	spec, path, hooks, err := prepareInstall(agent, opts)
+	spec, path, hooks, opts, argv, err := prepareRegistration(agent, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	data, changed, err := planConfig(
-		spec, path, opts.Marker, opts.Command, opts.CommandWindows, hooks, false,
+		spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false, opts.WorkspaceDir,
 	)
 	if err != nil {
 		return Result{}, err
 	}
 	return Result{Agent: agent, ConfigPath: path, Changed: changed, Data: data}, nil
+}
+
+func prepareRegistration(agent Agent, opts InstallOptions) (profileSpec, string, []nativeHook, InstallOptions, []string, error) {
+	opts.Marker = strings.TrimSpace(opts.Marker)
+	commands, err := resolveCommands(opts)
+	if err != nil {
+		return profileSpec{}, "", nil, opts, nil, err
+	}
+	spec, ok := profiles[agent]
+	if !ok {
+		return profileSpec{}, "", nil, opts, nil, fmt.Errorf("unsupported agent hook integration %q", agent)
+	}
+	if spec.windowsCommandStyle == windowsCommandNested && commands.Windows != "" && commands.PowerShell == "" {
+		return profileSpec{}, "", nil, opts, nil, fmt.Errorf(
+			"%s runs Windows hooks in PowerShell; set CommandPowerShell instead of CommandWindows",
+			spec.profile.DisplayName,
+		)
+	}
+	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
+	argv, err := execArgv(spec, opts)
+	if err != nil {
+		return profileSpec{}, "", nil, opts, nil, err
+	}
+	if argv != nil {
+		// Removal matches the written argv joined by spaces, so validate that.
+		opts.Command = strings.Join(argv, " ")
+	}
+	spec, path, hooks, err := prepareInstall(agent, opts)
+	if err != nil {
+		return profileSpec{}, "", nil, opts, nil, err
+	}
+	return spec, path, hooks, opts, argv, nil
+}
+
+// execArgv returns the argv to write in exec form, or nil when the profile
+// writes a command string on this platform.
+func execArgv(spec profileSpec, opts InstallOptions) ([]string, error) {
+	executable := strings.TrimSpace(opts.Executable)
+	if spec.format == formatScript && executable == "" {
+		return nil, fmt.Errorf(
+			"%s hooks need Executable and Arguments; a raw command needs a shell",
+			spec.profile.DisplayName,
+		)
+	}
+	if spec.format != formatScript && (executable == "" ||
+		spec.windowsCommandStyle != windowsCommandExec || runtime.GOOS != "windows") {
+		return nil, nil
+	}
+	// Node refuses to spawn .cmd and .bat files without a shell:
+	// https://nodejs.org/en/blog/vulnerability/april-2024-security-releases-2
+	if ext := filepath.Ext(executable); runtime.GOOS == "windows" &&
+		(strings.EqualFold(ext, ".cmd") || strings.EqualFold(ext, ".bat")) {
+		return nil, fmt.Errorf(
+			"%s hooks on Windows cannot run %s shim %s without a shell; "+
+				"pass the executable it launches",
+			spec.profile.DisplayName, ext, executable,
+		)
+	}
+	return append([]string{executable}, opts.Arguments...), nil
 }
 
 // Install merges the application's hooks into the selected agent config.
@@ -105,7 +165,7 @@ func PlanUninstall(agent Agent, configPath, marker string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	data, changed, err := planConfig(spec, path, marker, "", "", nil, true)
+	data, changed, err := planConfig(spec, path, marker, "", "", nil, nil, true, "")
 	if err != nil {
 		return Result{}, err
 	}
@@ -113,12 +173,19 @@ func PlanUninstall(agent Agent, configPath, marker string) (Result, error) {
 }
 
 // Uninstall removes every command containing marker from the selected agent
-// config while preserving hooks owned by other applications. Callers must
-// serialize concurrent mutations of the same config path.
+// config while preserving hooks owned by other applications. It deletes a
+// kit-owned config file, such as Pi's extension module, once no hooks remain.
+// Callers must serialize concurrent mutations of the same config path.
 func Uninstall(agent Agent, configPath, marker string) (Result, error) {
 	result, err := PlanUninstall(agent, configPath, marker)
 	if err != nil || !result.Changed {
 		return result, err
+	}
+	if result.Data == nil {
+		if err := os.Remove(result.ConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Result{}, fmt.Errorf("remove agent hook config %s: %w", result.ConfigPath, err)
+		}
+		return result, nil
 	}
 	if err := writeConfig(result.ConfigPath, result.Data); err != nil {
 		if errors.Is(err, atomicfile.ErrPublished) {
@@ -173,6 +240,10 @@ func prepareInstall(agent Agent, opts InstallOptions) (profileSpec, string, []na
 		if spec.format == formatHermesYAML && hook.Timeout > 300*time.Second {
 			return profileSpec{}, "", nil, errors.New("Hermes hook timeout must not exceed 300 seconds")
 		}
+		// The generated module runs every command for its event, so a matcher would be dropped silently.
+		if spec.format == formatScript && strings.TrimSpace(hook.Matcher) != "" {
+			return profileSpec{}, "", nil, fmt.Errorf("%s hooks do not support matchers", spec.profile.DisplayName)
+		}
 		matcher := nativeMatcher(spec, strings.TrimSpace(hook.Matcher))
 		if spec.format == formatHermesYAML && matcher != "" &&
 			hook.Event != EventPreToolUse && hook.Event != EventPostToolUse {
@@ -208,18 +279,21 @@ func resolveConfigPath(agent Agent, override string) (string, error) {
 func planConfig(
 	spec profileSpec,
 	path, marker, command, commandWindows string,
+	argv []string,
 	hooks []nativeHook,
-	uninstall bool,
+	uninstall bool, dir string,
 ) ([]byte, bool, error) {
 	switch spec.format {
 	case formatNestedJSON:
-		return planNestedJSONConfig(path, marker, command, commandWindows, hooks, uninstall)
+		return planNestedJSONConfig(spec, path, marker, command, commandWindows, argv, hooks, uninstall, dir)
 	case formatDirectJSON:
 		return planDirectJSONConfig(
 			spec, path, marker, command, commandWindows, hooks, uninstall,
 		)
 	case formatHermesYAML:
 		return planHermesConfig(path, marker, command, hooks, uninstall)
+	case formatScript:
+		return planScriptConfig(spec, path, marker, argv, hooks, uninstall)
 	default:
 		return nil, false, errors.New("unsupported agent hook config format")
 	}

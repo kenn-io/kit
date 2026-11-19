@@ -6,11 +6,37 @@
 // and file format used by each harness. This lets applications describe one set
 // of lifecycle hooks while support for new agents stays centralized in kit.
 // Profiles are provided for Claude Code, Codex, GitHub Copilot CLI, Cursor,
-// Factory Droid, Gemini CLI, Hermes Agent, and Qwen Code.
+// Factory Droid, Gemini CLI, Hermes Agent, Muse Code, OpenCode, Pi, and Qwen
+// Code. Pi and
+// OpenCode have no command-hook config, so their profiles write a kit-owned
+// module that runs the registered commands. The Pi module reports only from
+// Pi's interactive terminal, so print, json, and rpc runs, subagents included,
+// stay silent. Its SessionEnd fires only when another session replaces the
+// current one (new, resume, or fork), never on quit or reload. The module
+// reports an event only once Pi has saved the session file, so every reported
+// ID resumes: a new session's SessionStart and first prompt wait for that save,
+// and a --no-session run reports nothing. Pi reports startup when it opens a
+// saved session (pi --session or --continue), so the module reports that
+// SessionStart with source resume. A failed command's error ends with the
+// tail of its stderr. Uninstall deletes the module once no application's
+// hooks remain. A root index.ts, index.js, or package.json pi.extensions in
+// Pi's extensions directory stops Pi from loading the module. It needs Pi
+// 0.80.4 or later. The OpenCode 2.x TUI plugin reports the root session its
+// terminal shows and that session's lifecycle events.
+// Several terminals can report the same session_id, so hosts should keep one
+// record per terminal.
 //
 // Applications identify their hooks with a stable marker embedded in the
-// command. Reinstalling replaces commands carrying that marker even when the
-// executable path changed, and uninstalling removes only those commands:
+// command. Reinstalling keeps a marked hook whose executable moved when its
+// active command arguments and other settings match and the installed executable
+// resolves, and otherwise writes the requested executable. Uninstalling removes
+// only marked commands.
+// Nested JSON reinstalls retain the group and handler positions of existing
+// event/matcher registrations. Changed matchers reuse single-handler groups
+// in the same event, and new registrations append after existing groups.
+// Removing registrations can renumber later hooks.
+//
+// For example, install an application's Hermes hooks with a stable marker:
 //
 //	result, err := agenthook.Install(agenthook.AgentHermes, agenthook.InstallOptions{
 //		Executable: "/opt/example",
@@ -21,6 +47,33 @@
 //			{Event: agenthook.EventStop},
 //		},
 //	})
+//
+// Check inspects an application's registrations for Claude Code or Codex without
+// executing hooks or changing hook config or trust. Starting Codex app-server may
+// create state files and install bundled skills. Pass the desired InstallOptions
+// directly. Set WorkspaceDir to inspect another workspace; it defaults to the
+// process directory, and a missing workspace is unknown. State is ok, missing,
+// outdated, untrusted, modified, disabled, or unknown; Reason and NextStep
+// explain any action needed. Executable lookup uses the checking process's
+// environment and PATH, with relative executable paths resolved in the workspace
+// during both installation and Check.
+// Plain command strings use POSIX syntax on every platform. Codex's active
+// commandWindows override uses PowerShell syntax on Windows.
+// Missing registrations return missing before inspecting disablement or starting
+// Codex.
+// Codex checks the selected workspace's effective feature, discovery, enablement,
+// and trust through app-server. For discovered Codex hooks, states take precedence:
+// disabled, modified, outdated, untrusted, ok. Only enabled trusted or managed
+// hooks can be ok. Review consent remains with Codex's /hooks interface.
+// Claude Code has no native hook probe here: ok covers its active user
+// registrations, disableAllHooks in user, project, and local settings for the
+// selected workspace, and executable resolution. Managed policy remains unverified.
+// Raw POSIX commands inspect only the executable word; argument execution remains
+// unverified. Executable expansions, compound commands, and executable lookup
+// failures return unknown with the reason and a corrective step. Neither check
+// establishes runtime permissions or successful hook execution. A config outside
+// the active user config returns unknown; set CODEX_HOME or CLAUDE_CONFIG_DIR to
+// inspect a separate user config.
 //
 // Installing a Hermes profile does not enable hooks_auto_accept. Hermes retains
 // its first-use consent flow for every event and command pair.

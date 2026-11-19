@@ -1,7 +1,7 @@
 ---
 title: "Adopting Bombadil for UI property tests"
 description: "Add bounded, isolated browser property testing to Kenn applications without replacing deterministic regression tests."
-last_edited: 2026-11-12
+last_edited: 2026-11-19
 ---
 
 # Adopting Bombadil for UI property tests
@@ -71,7 +71,7 @@ const session = extract(({ document }) => {
   const logout = document.querySelector<HTMLButtonElement>('[data-testid="logout"]');
   return {
     authenticated,
-    logoutEnabled: !!logout && !logout.disabled && logout.getClientRects().length > 0,
+    logoutEnabled: !!logout && !logout.matches(":disabled") && logout.getClientRects().length > 0,
   };
 });
 export const authenticatedSessionHasLogout = always(
