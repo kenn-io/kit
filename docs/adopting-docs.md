@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:12:00Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:21:15Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -39,7 +39,9 @@ status.
 
 `README.md`, `AGENTS.md`, and `CLAUDE.md` files never take frontmatter at any
 depth. The check also excludes `SKILL.md` files, release notes, changelogs,
-`.github`, `testdata`, `vendor`, and `node_modules`.
+`.github`, `testdata`, `vendor`, and `node_modules`. Conventional
+`release-notes.md` and `release_notes.md` basenames (also uppercase) are
+excluded at every depth.
 It also skips all Markdown inside skill bundles. Reserved `index.md` files
 are not concepts: they need no type or generated fields. A bundle-root index
 may contain `okf_version: "0.3"`, `title`, `description`, `license`, and
