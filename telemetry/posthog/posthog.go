@@ -24,7 +24,7 @@ import (
 const (
 	// DefaultEndpoint is PostHog's US ingest endpoint.
 	DefaultEndpoint = "https://us.i.posthog.com"
-	// GenericEnabledEnv is the unprefixed telemetry opt-out variable.
+	// GenericEnabledEnv controls telemetry admission with an affirmative or negative value.
 	// See EnabledFromEnv for accepted values and vetoes.
 	GenericEnabledEnv = "TELEMETRY_ENABLED"
 
@@ -102,7 +102,7 @@ type Options struct {
 	Endpoint string
 	// Application is included on every event and cannot be overridden by Capture.
 	Application string
-	// EnvPrefix names the PREFIX_TELEMETRY_ENABLED opt-out variable.
+	// EnvPrefix names the prefix of the telemetry disable variable.
 	// NewReporter samples it and TELEMETRY_ENABLED once through Eligible.
 	EnvPrefix string
 	// DistinctID must be an anonymous stable installation or instance ID.
@@ -217,12 +217,11 @@ func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 
 // EnabledFromEnv reports whether telemetry is enabled for envPrefix.
 // See Eligible for the full reporting decision, including the release version.
-// Reporting defaults to on. An explicit 0, false, no, or off in TELEMETRY_ENABLED
-// or PREFIX_TELEMETRY_ENABLED turns it off. Values are trimmed and case-insensitive.
-// Process disable and any present CI turn reporting off. A present DO_NOT_TRACK
-// turns reporting off unless its trimmed, case-insensitive value is 0 or false.
-// NewReporter samples the environment once, while DisableProcess also stops
-// reporting after construction.
+// Reporting requires stored consent read at each call or an affirmative
+// TELEMETRY_ENABLED value (1, true, yes, or on). A 0, false, no, or off in
+// either variable vetoes reporting. Values are trimmed and case-insensitive.
+// Process disable, any present CI, and DO_NOT_TRACK except 0 or false also veto.
+// Each call reads the environment and consent; DisableProcess also stops existing reporters.
 func EnabledFromEnv(envPrefix string) bool {
 	if ProcessDisabled() {
 		return false
@@ -246,12 +245,17 @@ func EnabledFromEnv(envPrefix string) bool {
 			return false
 		}
 	}
-	return true
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(GenericEnabledEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	consent, _ := ReadConsent()
+	return consent == ConsentGranted
 }
 
 // Eligible reports whether the admission gate allows envPrefix and version at
 // the time of the call. It reads the current environment and process-disable
-// state each time. NewReporter samples the environment at construction, so a
+// state and stored consent each time. NewReporter samples admission at construction, so a
 // forwarding client should call Eligible before each send with its own prefix
 // and version. The version must match plain vX.Y.Z or X.Y.Z numeric components
 // exactly, without trimming.
@@ -259,7 +263,7 @@ func Eligible(envPrefix, version string) bool {
 	return EnabledFromEnv(envPrefix) && releaseVersion.MatchString(version)
 }
 
-// PrefixedEnabledEnv returns the telemetry opt-out environment variable
+// PrefixedEnabledEnv returns the telemetry disable environment variable
 // for prefix, such as KATA_TELEMETRY_ENABLED.
 func PrefixedEnabledEnv(prefix string) string {
 	prefix = strings.Trim(strings.ToUpper(strings.TrimSpace(prefix)), "_")
@@ -295,7 +299,8 @@ func ProcessDisabled() bool {
 // Disabled construction skips client configuration validation and client creation,
 // preserving configured events for handler validation. Invalid event declarations
 // still return errors.
-// Later environment changes have no effect; DisableProcess stops reporting at runtime.
+// Later environment and consent changes have no effect on the reporter;
+// DisableProcess stops reporting at runtime.
 func NewReporter(opts Options, options ...Option) (*Reporter, error) {
 	return newPostHogReporter(opts, func(apiKey string, config phsdk.Config) (postHogEnqueueCloser, error) {
 		return phsdk.NewWithConfig(apiKey, config)
@@ -673,6 +678,7 @@ func (t postHogDisableTransport) rewriteBatch(body io.Reader) ([]byte, error) {
 }
 
 func (r *Reporter) addDefaultProperties(props map[string]any) {
+	props["telemetry_consent"] = true
 	props["$process_person_profile"] = false
 	props["$geoip_disable"] = true
 	props["application"] = r.application

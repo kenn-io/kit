@@ -405,7 +405,7 @@ jobs:
         env:
           KIT_POSTGRES_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/kit?sslmode=disable
           KIT_CLICKHOUSE_TEST_ADDR: 127.0.0.1:9000
-        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/search-backends.json --rerun-fails=2 --rerun-fails-report gotestsum/search-backends-reruns.txt --packages "./search/postgres ./search/clickhouse" -- -count=1
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/search-backends.json --rerun-fails=2 --rerun-fails-report gotestsum/search-backends-reruns.txt --packages "./search/postgres ./search/clickhouse ./vector/pgvector" -- -count=1 -p 1
 
       - name: Upload gotestsum results
         if: failure() || github.run_attempt > 1 || hashFiles('gotestsum/search-backends-reruns.txt') != ''
@@ -442,7 +442,7 @@ jobs:
         uses: actions/cache@v6.1.0
         with:
           path: ${{ runner.temp }}/embedserver
-          key: embedserver-${{ runner.os }}-${{ runner.arch }}-ort-1.23.2-nomic-cf5b5a86-d241a60d-faces-af6d057c-f12e1279-${{ hashFiles('embedserver/testdata/faces/*') }}
+          key: embedserver-${{ runner.os }}-${{ runner.arch }}-ort-1.23.2-nomic-cf5b5a86-d241a60d-faces-af6d057c-f12e1279-${{ hashFiles('embedserver/testdata/faces/*') }}-nuget
       - name: Stage ONNX Runtime 1.23.2
         shell: python
         run: |

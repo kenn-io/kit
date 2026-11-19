@@ -222,7 +222,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	changed := flags.String("changed", "", "require metadata to change for meaningful edits since this ref")
 	legacy := flags.Bool("legacy", false, "use the temporary last_edited profile")
 	var by, description trimmedText
-	flags.Var(&by, "by", "actor for missing generated.by")
+	flags.Var(&by, "by", "actor for missing generated.by (producer/version, human:id, or process:id)")
 	flags.Var(&description, "description", "description for one selected file")
 	var rules frontmatterRules
 	flags.Var(&rules, "type-rule", "path rule GLOB=TYPE (repeatable)")
@@ -298,7 +298,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			return total, err
 		}
 		for _, file := range stale {
-			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to you"
+			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to the actual editor"
 			if *legacy {
 				message = "content changed without changing last_edited"
 			}
