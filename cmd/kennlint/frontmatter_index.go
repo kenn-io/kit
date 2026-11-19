@@ -105,6 +105,13 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 		if !ok || base == "index.md" || base == "log.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, excludes) {
 			continue
 		}
+		excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes)
+		if err != nil {
+			return nil, err
+		}
+		if excluded {
+			continue
+		}
 		src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
 		if os.IsNotExist(err) {
 			continue
@@ -116,7 +123,7 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 		if err != nil {
 			return nil, &indexPageError{file, err}
 		}
-		if status := b.fields["status"]; status != nil && validString(status) && status.Value == "deprecated" {
+		if status := b.fields["status"]; status != nil && (!validString(status) || (status.Value != "stable" && status.Value != "draft")) {
 			continue
 		}
 		title, description := b.fields["title"], b.fields["description"]
@@ -129,6 +136,10 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 }
 
 func refreshTrackedIndex(root, file string, files []string, skillDirs map[string]struct{}, excludes []string) ([]byte, bool, error) {
+	excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes)
+	if err != nil || excluded {
+		return nil, false, err
+	}
 	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
 	if err != nil {
 		return nil, false, err

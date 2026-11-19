@@ -158,7 +158,10 @@ Keep the root README as the project overview and link it to `docs/index.md`.
 Move a nested landing-page README to `index.md`. Organize pages in `tutorials/`
 (learn), `guides/` (do), `reference/` (look up), and `explanation/`
 (understand), creating sections only where content exists. No folder needs an
-index, and no new `log.md` is required. Indexes and logs have no concept header.
+index, and no new `log.md` is required. Indexes are not concepts: a bundle-root
+index may carry the v0.3 bundle metadata above, while nested indexes have no
+frontmatter. Logs have no frontmatter. Kit treats `docs/` as its documentation
+bundle and declares `okf_version: "0.3"` in `docs/index.md`.
 
 A parent managed index also lists pages under a nested managed index.
 
@@ -175,7 +178,11 @@ are listed. A missing target inside the marked block makes it stale; links
 outside the block are neither checked nor rewritten. Run `make fix-frontmatter`
 in Kit to regenerate the list. The read-only check reports stale lists and the
 Make target prints the local fix command. Unmarked indexes are left alone.
-Skills, skill bundle files, deprecated pages, README and AGENTS files, and
-release notes are never listed. Retain deprecated pages as linked pointers to preserve public URLs. Repeat
+Skills, skill bundle files, deprecated pages, pages with unknown status values,
+README and AGENTS files, and release notes are never listed. Omitted status,
+`stable`, and `draft` remain eligible. Index regeneration preserves all bytes
+outside the marked body block, including the complete bundle metadata and
+nested extension values. Resolved symlink targets obey the same exclusions
+as their aliases. Retain deprecated pages as linked pointers to preserve public URLs. Repeat
 the original headings in each pointer so old fragment links land on a heading
 that links to the new section.

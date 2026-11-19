@@ -250,8 +250,6 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	indexExcludes := append(slices.Clone(excludes), customExcludes...)
 	if *legacy {
 		excludes = append(excludes, "**/SKILL.md")
-	} else {
-		excludes = append(excludes, "**/index.md", "**/log.md")
 	}
 	excludes = append(excludes, customExcludes...)
 	rootBytes, err := frontmatterGit(ctx, "", "rev-parse", "--show-toplevel")
@@ -305,27 +303,13 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if !frontmatterSelected(file, selected, nil) {
 			continue
 		}
-		if !skill && err == nil && info.Mode()&os.ModeSymlink != 0 {
-			resolved, resolveErr := pathresolve.EvalSymlinks(filepath.Join(root, filepath.FromSlash(file)))
-			if resolveErr != nil && !errors.Is(resolveErr, fs.ErrNotExist) {
-				return 0, fmt.Errorf("%s: resolve symlink: %w", file, resolveErr)
+		if !skill {
+			excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes)
+			if err != nil {
+				return 0, err
 			}
-			if resolveErr == nil {
-				// Imported skills stay outside document management even outside this repository.
-				if isSkillFile(filepath.ToSlash(resolved)) {
-					continue
-				}
-				resolvedRoot, rootErr := pathresolve.EvalSymlinks(root)
-				if rootErr != nil {
-					return 0, fmt.Errorf("resolve repository root: %w", rootErr)
-				}
-				rel, relErr := filepath.Rel(resolvedRoot, resolved)
-				if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					target := filepath.ToSlash(rel)
-					if rootSkill || isSkillFile(target) || frontmatterInSkillDirectory(target, skillDirs) {
-						continue
-					}
-				}
+			if excluded {
+				continue
 			}
 		}
 		if skill {
@@ -617,4 +601,49 @@ func frontmatterScaffold(src []byte) []byte {
 		newline = "\r\n"
 	}
 	return append([]byte("---"+newline+"{}"+newline+"---"+newline), src...)
+}
+
+// frontmatterExcludedTarget applies the same exclusions to a document alias's
+// resolved target. External skill imports are protected before containment checks;
+// repository-relative bundle and custom exclusions apply only inside the repo.
+func frontmatterExcludedTarget(root, file string, skillDirs map[string]struct{}, excludes []string) (bool, error) {
+	full := filepath.Join(root, filepath.FromSlash(file))
+	info, err := os.Lstat(full)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, nil
+	}
+	resolved, err := pathresolve.EvalSymlinks(full)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%s: resolve symlink: %w", file, err)
+	}
+	if isSkillFile(filepath.ToSlash(resolved)) {
+		return true, nil
+	}
+	resolvedRoot, err := pathresolve.EvalSymlinks(root)
+	if err != nil {
+		return false, fmt.Errorf("resolve repository root: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil {
+		return false, nil //nolint:nilerr // A target on another volume is external, so repository exclusions do not apply.
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false, nil
+	}
+	target := filepath.ToSlash(rel)
+	if frontmatterInSkillDirectory(target, skillDirs) || !frontmatterSelected(target, nil, excludes) {
+		return true, nil
+	}
+	// A differently named alias must not turn an index or log into a concept.
+	base := path.Base(target)
+	return (base == "index.md" || base == "log.md") && path.Base(file) != base, nil
 }

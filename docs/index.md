@@ -1,3 +1,10 @@
+---
+okf_version: "0.3"
+title: Kit documentation
+description: Guides and explanations for reusable Kenn Go packages and developer tools.
+license: Apache-2.0
+---
+
 # Documentation
 
 Find Kit guides and explanations below, along with package documentation and

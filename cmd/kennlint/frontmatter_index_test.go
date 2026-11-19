@@ -261,3 +261,66 @@ func TestManagedIndexInvalidPageReportedOnce(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, original, string(got))
 }
+
+func TestIndexV03BundleMetadata(t *testing.T) {
+	root := t.TempDir()
+	header := "---\nokf_version: \"0.3\"\ntitle: Bundle\ndescription: Useful docs\nlicense: /LICENSE\nx-index: {preserve: [one, 2, true]}\n---\n"
+	src := header + "# Pages\n" + indexBegin + "\nold\n" + indexEnd + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "index.md"), []byte(src), 0o600))
+	files := []string{"index.md"}
+	for _, status := range []string{"stable", "draft", "deprecated", "future-status"} {
+		file := status + ".md"
+		require.NoError(t, os.WriteFile(filepath.Join(root, file), []byte(strings.Replace(goodOKF, "type: Guide\n", "type: Guide\nstatus: "+status+"\n", 1)), 0o600))
+		files = append(files, file)
+	}
+	got, changed, err := refreshTrackedIndex(root, "index.md", files, nil, nil)
+	require.NoError(t, err)
+	require.True(t, changed)
+	assert.True(t, bytes.HasPrefix(got, []byte(header)), "preserve bundle metadata byte for byte")
+	assert.Contains(t, string(got), "(stable.md)")
+	assert.Contains(t, string(got), "(draft.md)")
+	assert.NotContains(t, string(got), "(deprecated.md)")
+	assert.NotContains(t, string(got), "(future-status.md)")
+}
+
+func TestIndexResolvedSkillExclusions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	const protected = "# Resource\n" + indexBegin + "\noriginal\n" + indexEnd + "\n"
+	repo.WriteFile("skills/a/SKILL.md", "---\nname: example\ndescription: Example\n---\n# Skill\n")
+	repo.WriteFile("skills/a/references/index.md", protected)
+	repo.WriteFile("skills/a/references/page.md", "# Resource\n")
+	repo.WriteFile("other/page.md", goodOKF)
+	repo.WriteFile("excluded/index.md", protected)
+	repo.WriteFile("excluded/page.md", "# Excluded\n")
+	repo.WriteFile("docs/index.md", indexBegin+"\nold\n"+indexEnd+"\n")
+	for name, target := range map[string]string{
+		"docs/resource.md":           "../skills/a/references/page.md",
+		"docs/skill-index/index.md":  "../../skills/a/references/index.md",
+		"docs/ordinary.md":           "../other/page.md",
+		"docs/custom.md":             "../excluded/page.md",
+		"docs/custom-index/index.md": "../../excluded/index.md",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(name), 0o700))
+		require.NoError(t, os.Symlink(target, name))
+	}
+	repo.Run("add", ".")
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-exclude", "excluded/**", "docs"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Zero(t, n, errs.String())
+	got, err := os.ReadFile("docs/index.md")
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "(ordinary.md)")
+	assert.NotContains(t, string(got), "resource.md")
+	assert.NotContains(t, string(got), "custom.md")
+	for _, file := range []string{"skills/a/references/index.md", "excluded/index.md"} {
+		got, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, protected, string(got), file)
+	}
+}
