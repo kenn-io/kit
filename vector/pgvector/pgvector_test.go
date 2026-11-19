@@ -838,7 +838,7 @@ func TestSaveDocumentsTwoGenerationsDuringActivation(t *testing.T) {
 		err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&blocked)
 		return err == nil && blocked
 	}, 5*time.Second, 10*time.Millisecond)
-	stale, err = store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 2}})
+	_, err = store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 2}})
 	var busy *pgvector.GenerationBusyError
 	require.ErrorAs(t, err, &busy)
 	require.NoError(t, tx.Rollback())
@@ -933,7 +933,7 @@ func TestSaveDocumentsReclaimWithCallerDocumentLock(t *testing.T) {
 	rollbackErr := tx.Rollback()
 	reclaimErr := <-done
 	var busy *pgvector.GenerationBusyError
-	assert.ErrorAs(t, err, &busy)
+	require.ErrorAs(t, err, &busy)
 	assert.NoError(t, rollbackErr)
 	assert.NoError(t, reclaimErr)
 }

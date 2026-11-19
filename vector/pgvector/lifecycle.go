@@ -182,6 +182,7 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = rows.Close() }()
 	var ids []int64
 	for rows.Next() {
 		var id int64
