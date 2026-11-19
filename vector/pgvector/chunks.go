@@ -1,22 +1,23 @@
 package pgvector
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
 	"iter"
-	"slices"
+	"math"
 	"strings"
 
 	"go.kenn.io/kit/search/postgres"
 	"go.kenn.io/kit/search/sqlquery"
 	"go.kenn.io/kit/vector"
+	"go.kenn.io/kit/vector/internal/vectorliteral"
 )
 
 // Chunks accesses an application-owned table of halfvec chunks.
 type Chunks[K comparable] struct {
 	table, ext string
+	dimension  int
 }
 
 // Chunk is one document's vector at a chunk index.
@@ -26,9 +27,18 @@ type Chunk[K comparable] struct {
 	Vector     vector.Vector
 }
 
+// ChunkPage contains raw hits and the maximum scan size used for the request.
+type ChunkPage[K comparable] struct {
+	Hits    []vector.Hit[K]
+	ScanCap int
+}
+
 // AttachChunks resolves a table on the queryer's search path without changing it.
 // Keys must be supported by database/sql for both binding and scanning.
-func AttachChunks[K comparable](ctx context.Context, q sqlquery.Queryer, table string) (*Chunks[K], error) {
+func AttachChunks[K comparable](ctx context.Context, q sqlquery.Queryer, table string, dimension int) (*Chunks[K], error) {
+	if dimension <= 0 {
+		return nil, fmt.Errorf("pgvector: invalid dimension %d", dimension)
+	}
 	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 JOIN pg_attribute a ON a.attrelid=c.oid AND a.attname='embedding' AND NOT a.attisdropped
@@ -36,7 +46,7 @@ JOIN pg_type t ON t.oid=a.atttypid
 JOIN pg_depend d ON d.classid='pg_type'::regclass AND d.objid=t.oid AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
 JOIN pg_extension e ON e.oid=d.refobjid AND e.extname='vector'
 JOIN pg_namespace en ON en.oid=e.extnamespace
-WHERE c.oid=to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.QuoteIdentifier(table)}}
+WHERE c.oid=to_regclass($1) AND t.typname='halfvec' AND a.atttypmod=$2`, Args: []any{postgres.QuoteIdentifier(table), dimension}}
 	type tableNames struct{ namespace, name, ext string }
 	names, err := query.All(ctx, q, func(rows *sql.Rows) (tableNames, error) {
 		var names tableNames
@@ -50,7 +60,14 @@ WHERE c.oid=to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.Quote
 		return nil, fmt.Errorf("pgvector: table %q has no extension-owned halfvec embedding", table)
 	}
 	qualified := postgres.QuoteIdentifier(names[0].namespace) + "." + postgres.QuoteIdentifier(names[0].name)
-	return &Chunks[K]{table: qualified, ext: postgres.QuoteIdentifier(names[0].ext)}, nil
+	rows, err := q.QueryContext(ctx, "SELECT doc_key,chunk_index,embedding FROM "+qualified+" WHERE false")
+	if err != nil {
+		return nil, fmt.Errorf("check chunk table: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("check chunk table: %w", err)
+	}
+	return &Chunks[K]{table: qualified, ext: postgres.QuoteIdentifier(names[0].ext), dimension: dimension}, nil
 }
 
 // ReplaceTx deletes the selected documents' chunks and streams replacements.
@@ -98,7 +115,7 @@ func (c *Chunks[K]) insertChunks(ctx context.Context, tx *sql.Tx, keys []K, chun
 		if _, ok := selected[chunk.Doc]; !ok {
 			return 0, fmt.Errorf("pgvector: chunk %d of document %v is outside the selected keys", chunk.ChunkIndex, chunk.Doc)
 		}
-		literal, err := halfvec(chunk.Vector)
+		literal, err := c.literal(chunk.Vector)
 		if err != nil {
 			return 0, fmt.Errorf("document %v chunk %d: %w", chunk.Doc, chunk.ChunkIndex, err)
 		}
@@ -118,32 +135,65 @@ func (c *Chunks[K]) insertChunks(ctx context.Context, tx *sql.Tx, keys []K, chun
 	return count, nil
 }
 
+// literal validates dimensions and finite components without changing stored values.
+func (c *Chunks[K]) literal(v vector.Vector) (string, error) {
+	if len(v) != c.dimension {
+		return "", fmt.Errorf("pgvector: vector dimension %d, want %d", len(v), c.dimension)
+	}
+	for i, component := range v {
+		if math.IsNaN(float64(component)) || math.IsInf(float64(component), 0) {
+			return "", fmt.Errorf("pgvector: vector component %d is non-finite", i)
+		}
+	}
+	return vectorliteral.Format(v), nil
+}
+
 // SearchTx returns raw nearest chunks. The caller owns freshness, hydration,
-// exhaustion decisions, and transaction completion.
-func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vector, limit int) ([]vector.Hit[K], error) {
-	literal, err := halfvec(query)
+// exhaustion decisions, and transaction completion. ScanCap can be used with
+// the raw row count to decide whether a short page exhausted the scan.
+func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vector, limit int) (ChunkPage[K], error) {
+	var page ChunkPage[K]
+	literal, err := c.literal(query)
 	if err != nil {
-		return nil, fmt.Errorf("query vector: %w", err)
+		return page, fmt.Errorf("query vector: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", min(max(limit, 40), 1000))); err != nil {
-		return nil, fmt.Errorf("set hnsw.ef_search: %w", err)
+	limit = max(limit, 0)
+	efSearch := min(max(limit, 40), 1000)
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
+		return page, fmt.Errorf("set hnsw.ef_search: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
-		return nil, fmt.Errorf("set hnsw.iterative_scan: %w", err)
+	page.ScanCap = limit
+	if limit > efSearch {
+		var setting sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.iterative_scan', true)`).Scan(&setting); err != nil {
+			return page, fmt.Errorf("probe hnsw.iterative_scan: %w", err)
+		}
+		if !setting.Valid {
+			page.ScanCap = efSearch
+		} else if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
+			return page, fmt.Errorf("set hnsw.iterative_scan: %w", err)
+		}
 	}
 	distance := fmt.Sprintf("embedding OPERATOR(%s.<=>) $1::%s.halfvec", c.ext, c.ext)
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT doc_key,NULL,1-(%s),chunk_index FROM %s ORDER BY %s LIMIT $2", distance, c.table, distance), literal, limit)
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT doc_key,chunk_index,1-(%s) FROM %s ORDER BY %s LIMIT $2", distance, c.table, distance), literal, limit)
 	if err != nil {
-		return nil, fmt.Errorf("search chunks: %w", err)
+		return page, fmt.Errorf("search chunks: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	hits, err := scanHits[K](rows)
-	if err != nil {
-		return nil, err
+	for rows.Next() {
+		var hit vector.Hit[K]
+		var score float64
+		if err := rows.Scan(&hit.Doc, &hit.ChunkIndex, &score); err != nil {
+			return page, fmt.Errorf("scan chunk: %w", err)
+		}
+		hit.Score = float32(score)
+		page.Hits = append(page.Hits, hit)
+	}
+	if err := rows.Err(); err != nil {
+		return page, fmt.Errorf("iterate chunks: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("close chunks: %w", err)
+		return page, fmt.Errorf("close chunks: %w", err)
 	}
-	slices.SortStableFunc(hits, func(a, b vector.Hit[K]) int { return cmp.Compare(b.Score, a.Score) })
-	return hits, nil
+	return page, nil
 }
