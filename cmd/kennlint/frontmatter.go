@@ -308,6 +308,10 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 				return 0, fmt.Errorf("%s: resolve symlink: %w", file, resolveErr)
 			}
 			if resolveErr == nil {
+				// Imported skills stay outside document management even outside this repository.
+				if isSkillFile(filepath.ToSlash(resolved)) {
+					continue
+				}
 				resolvedRoot, rootErr := pathresolve.EvalSymlinks(root)
 				if rootErr != nil {
 					return 0, fmt.Errorf("resolve repository root: %w", rootErr)
