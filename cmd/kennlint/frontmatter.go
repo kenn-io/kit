@@ -317,14 +317,12 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if !frontmatterSelected(file, selected, nil) {
 			continue
 		}
-		if !skill {
-			excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes)
-			if err != nil {
-				return 0, err
-			}
-			if excluded {
-				continue
-			}
+		excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes)
+		if err != nil {
+			return 0, err
+		}
+		if excluded {
+			continue
 		}
 		if skill {
 			if !slices.ContainsFunc(managedSkills, func(pattern string) bool { return frontmatterGlob(pattern, file) }) {
@@ -627,7 +625,8 @@ func frontmatterScaffold(src []byte) []byte {
 // location after every symlink in its path (a linked ancestor directory as much
 // as a linked final element) is followed. Targets outside the repository, in
 // imported skills or bundles, hidden, or custom-excluded are protected, and an
-// index or log reached through any alias is never owned by the alias path.
+// index, log, or SKILL.md reached through any alias is never owned by the alias
+// path.
 // Eligible in-repository document aliases stay supported.
 func frontmatterExcludedTarget(root, file string, skillDirs map[string]struct{}, excludes []string) (bool, error) {
 	resolved, err := pathresolve.EvalSymlinks(filepath.Join(root, filepath.FromSlash(file)))
@@ -645,6 +644,10 @@ func frontmatterExcludedTarget(root, file string, skillDirs map[string]struct{},
 	inside := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	target := filepath.ToSlash(rel)
 	base := path.Base(target)
-	reserved := (base == "index.md" || base == "log.md") && target != file
-	return !inside || isSkillFile(target) || frontmatterHiddenPath(target) || frontmatterInSkillDirectory(target, skillDirs) || !frontmatterSelected(target, nil, excludes) || reserved, nil
+	container := target
+	if isSkillFile(target) {
+		container = path.Dir(target) // A directly owned SKILL.md sits in its own bundle.
+	}
+	reserved := (base == "index.md" || base == "log.md" || isSkillFile(target)) && target != file
+	return !inside || frontmatterHiddenPath(target) || frontmatterInSkillDirectory(container, skillDirs) || !frontmatterSelected(target, nil, excludes) || reserved, nil
 }

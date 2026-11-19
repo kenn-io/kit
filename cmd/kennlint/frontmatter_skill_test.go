@@ -570,3 +570,38 @@ func TestFrontmatterReviewAncestorSymlinks(t *testing.T) {
 		})
 	}
 }
+
+func TestSkillReviewAncestorSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	const unmanaged = "---\nname: example\ndescription: Example\n---\nBody text.\n"
+	for _, boundary := range []string{"external", "internal"} {
+		t.Run(boundary, func(t *testing.T) {
+			isolateFrontmatterGit(t)
+			repo := gittest.NewRepoWithCommit(t)
+			t.Chdir(repo.Root)
+			repo.WriteFile("skills/own/SKILL.md", unmanaged)
+			repo.WriteFile("skills/imported/SKILL.md", unmanaged)
+			targetDir := t.TempDir()
+			if boundary == "internal" {
+				targetDir = filepath.Join(repo.Root, "vendored", "imported")
+			}
+			require.NoError(t, os.MkdirAll(targetDir, 0o700))
+			target := filepath.Join(targetDir, "SKILL.md")
+			require.NoError(t, os.WriteFile(target, []byte(unmanaged), 0o600))
+			repo.Run("add", ".")
+			require.NoError(t, os.RemoveAll("skills/imported"))
+			require.NoError(t, os.Symlink(targetDir, "skills/imported"))
+			var out, errs bytes.Buffer
+			_, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-managed-skill", "skills/**/SKILL.md"}, &out, &errs)
+			require.NoError(t, err)
+			got, err := os.ReadFile(target)
+			require.NoError(t, err)
+			assert.Equal(t, unmanaged, string(got), "aliased skill is an import")
+			got, err = os.ReadFile("skills/own/SKILL.md")
+			require.NoError(t, err)
+			assert.Contains(t, string(got), "generated:", "directly owned skill stays opted in")
+		})
+	}
+}
