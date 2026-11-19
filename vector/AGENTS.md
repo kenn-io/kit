@@ -231,6 +231,9 @@ pipeline. Preserve these invariants when changing it.
   access-share table lock until the query ends, so reclamation waits for an
   in-flight query. A query using a stale generation list returns no hits if
   reclamation completed before it locked the retired table.
+- `PendingForGeneration` and `SaveVectors` return `ErrRetired` for retired
+  generations. `SaveVectors` and `QueryGeneration` reject non-finite or
+  zero-norm vectors before PostgreSQL converts them to halfvec.
 - The candidate query orders by distance alone so the HNSW index is used.
   Freshness is checked during the index scan; do not add a tie-break to that
   inner `ORDER BY`.

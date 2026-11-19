@@ -20,6 +20,9 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, after *K,
 	if err != nil {
 		return nil, err
 	}
+	if row.state == vector.StateRetired {
+		return nil, vector.ErrRetired
+	}
 	args := []any{row.id}
 	cursor := ""
 	if after != nil {
@@ -48,16 +51,23 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, after *K,
 
 // halfvec preserves cosine direction by scaling the largest component to one.
 // Scaling in float64 handles the full range of finite float32 inputs.
-func halfvec(v vector.Vector) string {
+func halfvec(v vector.Vector) (string, error) {
 	var maxComponent float64
-	for _, component := range v {
-		maxComponent = max(maxComponent, math.Abs(float64(component)))
+	for i, component := range v {
+		value := float64(component)
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return "", fmt.Errorf("pgvector: vector component %d is non-finite", i)
+		}
+		maxComponent = max(maxComponent, math.Abs(value))
+	}
+	if maxComponent == 0 {
+		return "", errors.New("pgvector: vector has zero norm")
 	}
 	scaled := make([]float32, len(v))
 	for i, component := range v {
 		scaled[i] = float32(float64(component) / maxComponent)
 	}
-	return vectorliteral.Format(scaled)
+	return vectorliteral.Format(scaled), nil
 }
 
 // SaveVectors atomically checks the document revision, replaces chunks, and stamps it.
@@ -71,10 +81,18 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	if err != nil {
 		return err
 	}
+	if row.state == vector.StateRetired {
+		return vector.ErrRetired
+	}
 	id := row.id
-	for _, cv := range vectors {
+	halfvecs := make([]string, len(vectors))
+	for i, cv := range vectors {
 		if len(cv.Vector) != row.dim {
 			return fmt.Errorf("chunk %d has %d dimensions, expected %d", cv.ChunkIndex, len(cv.Vector), row.dim)
+		}
+		halfvecs[i], err = halfvec(cv.Vector)
+		if err != nil {
+			return fmt.Errorf("chunk %d: %w", cv.ChunkIndex, err)
 		}
 	}
 	var matches bool
@@ -91,8 +109,8 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE doc_key=$1`, s.chunks(id)), doc); err != nil {
 		return err
 	}
-	for _, cv := range vectors {
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), postgres.QuoteIdentifier(s.ext)), doc, cv.ChunkIndex, halfvec(cv.Vector)); err != nil {
+	for i, cv := range vectors {
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), postgres.QuoteIdentifier(s.ext)), doc, cv.ChunkIndex, halfvecs[i]); err != nil {
 			return err
 		}
 	}
@@ -218,7 +236,11 @@ func (s *Store[K, G]) lockChunks(ctx context.Context, tx *sql.Tx, gen G, row gen
 // index scan, and hnsw.iterative_scan keeps scanning until the limit is filled.
 func (s *Store[K, G]) candidateQuery(id int64, query vector.Vector, limit int, predicate sqlquery.Predicate) (string, []any, error) {
 	ext, docs, key := postgres.QuoteIdentifier(s.ext), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)
-	args := []any{halfvec(query), id}
+	queryVector, err := halfvec(query)
+	if err != nil {
+		return "", nil, fmt.Errorf("query vector: %w", err)
+	}
+	args := []any{queryVector, id}
 	predicateSQL := strings.TrimSpace(predicate.SQL)
 	if predicateSQL == "" && len(predicate.Args) != 0 {
 		return "", nil, errors.New("pgvector: predicate args require SQL")

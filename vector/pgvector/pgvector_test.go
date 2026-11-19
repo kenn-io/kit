@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"math"
 	"net/url"
 	"os"
 	"strings"
@@ -282,6 +283,114 @@ func TestReclaimWaitsForQueryAndHandlesStaleGenerationList(t *testing.T) {
 	var stampCount int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_stamps WHERE generation_id=(SELECT id FROM vectors_generations WHERE gen_key=$1)`, oldGen).Scan(&stampCount))
 	assert.Zero(t, stampCount)
+}
+
+func TestReclaimedGenerationRejectsPendingAndSave(t *testing.T) {
+	_, store := setupActiveStore(t)
+	ctx := t.Context()
+	require.NoError(t, store.EnsureGeneration(ctx, "b", vector.Generation{Dimensions: 2}, vector.StateBuilding))
+	pending, err := store.PendingForGeneration(ctx, "b", nil, 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 2)
+	for _, doc := range pending {
+		require.NoError(t, store.SaveVectors(ctx, "b", doc.Doc, doc.Revision, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	}
+	require.NoError(t, store.Activate(ctx, "b"))
+	require.NoError(t, store.Reclaim(ctx, "a"))
+
+	_, err = store.PendingForGeneration(ctx, "a", nil, 10)
+	require.ErrorIs(t, err, vector.ErrRetired)
+	err = store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}})
+	require.ErrorIs(t, err, vector.ErrRetired)
+}
+
+func TestDirectVectorMethodsRejectInvalidVectors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		vector vector.Vector
+		want   string
+	}{
+		{name: "zero norm", vector: vector.Vector{0, 0}, want: "zero norm"},
+		{name: "NaN", vector: vector.Vector{1, float32(math.NaN())}, want: "non-finite"},
+		{name: "infinity", vector: vector.Vector{1, float32(math.Inf(1))}, want: "non-finite"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, store := setupActiveStore(t)
+			ctx := t.Context()
+			require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+
+			err := store.SaveVectors(ctx, "a", 2, 1, []vector.ChunkVector{{Vector: tc.vector}})
+			require.ErrorContains(t, err, tc.want)
+			_, err = store.QueryGeneration(ctx, "a", tc.vector, 10)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestFillAndSearchAcrossPartialGenerationActivation(t *testing.T) {
+	db, store := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'alpha',1),(2,'beta',1)`)
+	require.NoError(t, err)
+
+	oldEncoder := func(_ context.Context, texts []string) ([][]float32, error) {
+		vectors := make([][]float32, len(texts))
+		for i, text := range texts {
+			switch text {
+			case "alpha", "find":
+				vectors[i] = []float32{1, 0}
+			case "beta":
+				vectors[i] = []float32{0, 1}
+			}
+		}
+		return vectors, nil
+	}
+	newEncoder := func(_ context.Context, texts []string) ([][]float32, error) {
+		vectors := make([][]float32, len(texts))
+		for i, text := range texts {
+			switch text {
+			case "alpha":
+				vectors[i] = []float32{0, 0, 1}
+			case "beta", "find":
+				vectors[i] = []float32{1, 0, 0}
+			}
+		}
+		return vectors, nil
+	}
+	encoders := map[string]vector.EncodeFunc{"old": oldEncoder, "new": newEncoder}
+	oldGeneration := vector.Generation{Model: "old", Dimensions: 2}
+	newGeneration := vector.Generation{Model: "new", Dimensions: 3}
+	require.NoError(t, store.EnsureGeneration(ctx, "old", oldGeneration, vector.StateActive))
+	stats, err := vector.Fill(ctx, store, "old", oldEncoder)
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.Documents)
+	require.NoError(t, store.EnsureGeneration(ctx, "new", newGeneration, vector.StateBuilding))
+
+	stats, err = vector.Fill(ctx, store, "new", newEncoder, vector.WithFillDocumentLimit[int64](1))
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Documents)
+	require.ErrorIs(t, store.Activate(ctx, "new"), vector.ErrUncovered)
+	var searched []string
+	searchEncoder := func(gen string) vector.EncodeFunc {
+		searched = append(searched, gen)
+		return encoders[gen]
+	}
+	hits, err := vector.Search(ctx, store, "find", searchEncoder, vector.SearchOptions{PerGeneration: 10})
+	require.NoError(t, err)
+	require.Len(t, hits, 2)
+	assert.Equal(t, []string{"new", "old"}, searched)
+	assert.Equal(t, []int64{1, 2}, []int64{hits[0].Doc, hits[1].Doc})
+
+	stats, err = vector.Fill(ctx, store, "new", newEncoder)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Documents)
+	require.NoError(t, store.Activate(ctx, "new"))
+	searched = nil
+	hits, err = vector.Search(ctx, store, "find", searchEncoder, vector.SearchOptions{PerGeneration: 10})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"new"}, searched)
+	require.Len(t, hits, 2)
+	assert.Equal(t, []int64{2, 1}, []int64{hits[0].Doc, hits[1].Doc})
 }
 
 func TestStaleEdited(t *testing.T) {
