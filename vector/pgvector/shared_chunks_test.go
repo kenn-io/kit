@@ -73,10 +73,10 @@ func TestSharedChunksDMLRole(t *testing.T) {
 	assert.Equal(t, 3, calls)
 	require.NoError(t, store.EnsureGeneration(ctx, "b", vector.Generation{Model: "b", Dimensions: 3}, vector.StateBuilding))
 	require.NoError(t, store.SaveVectors(ctx, "b", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0, 0}}}))
-	calls -= 2
+	assert.Equal(t, 5, calls)
 	require.NoError(t, store.SetGenerationState(ctx, "a", vector.StateRetired))
 	require.NoError(t, store.Reclaim(ctx, "a"))
-	assert.Equal(t, 5, calls)
+	assert.Equal(t, 7, calls)
 	var remaining int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks`).Scan(&remaining))
 	assert.Equal(t, 1, remaining)
