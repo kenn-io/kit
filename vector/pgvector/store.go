@@ -177,9 +177,43 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	hits, reclaimed, err := s.queryGenerationWithPredicate(ctx, tx, gen, query, limit, predicate, true)
-	if err != nil || reclaimed {
-		return hits, err
+	row, err := s.lookup(ctx, tx, gen, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(query) != row.dim {
+		return nil, fmt.Errorf("query has %d dimensions, expected %d", len(query), row.dim)
+	}
+	sqlText, args, err := s.candidateQuery(row.id, query, limit, predicate)
+	if err != nil {
+		return nil, err
+	}
+	if !s.schema.SharedChunks {
+		reclaimed, err := s.lockChunks(ctx, tx, gen, row)
+		if err != nil {
+			return nil, fmt.Errorf("lock generation storage: %w", err)
+		}
+		if reclaimed {
+			return nil, nil
+		}
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL hnsw.ef_search = %d`, min(max(limit, 40), 1000))); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := tx.QueryContext(ctx, sqlText, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	hits, err := scanHits[K](rows)
+	if err != nil {
+		return nil, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
@@ -187,65 +221,8 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 	return hits, nil
 }
 
-// QueryGenerationWithPredicateTx searches the caller's transaction. After a
-// chunk lock error with a live context, savepoint recovery can leave the
-// transaction usable. If the context is cancelled or expires, the connection
-// may be lost; roll back the transaction. Candidate-query and SET LOCAL errors
-// also require rollback. The chunk lock and SET LOCAL settings last until the
-// transaction ends.
-func (s *Store[K, G]) QueryGenerationWithPredicateTx(ctx context.Context, tx *sql.Tx, gen G, query vector.Vector, limit int, predicate sqlquery.Predicate) ([]vector.Hit[K], error) {
-	hits, _, err := s.queryGenerationWithPredicate(ctx, tx, gen, query, limit, predicate, false)
-	return hits, err
-}
-
-func (s *Store[K, G]) queryGenerationWithPredicate(ctx context.Context, tx *sql.Tx, gen G, query vector.Vector, limit int, predicate sqlquery.Predicate, owned bool) ([]vector.Hit[K], bool, error) {
-	row, err := s.lookup(ctx, tx, gen, false)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(query) != row.dim {
-		return nil, false, fmt.Errorf("query has %d dimensions, expected %d", len(query), row.dim)
-	}
-	sqlText, args, err := s.candidateQuery(row.id, query, limit, predicate)
-	if err != nil {
-		return nil, false, err
-	}
-	if !s.schema.SharedChunks {
-		if owned {
-			reclaimed, err := s.lockChunks(ctx, tx, gen, row)
-			if err != nil {
-				return nil, false, fmt.Errorf("lock generation storage: %w", err)
-			}
-			if reclaimed {
-				return nil, true, nil
-			}
-		} else if err := s.lockChunksTx(ctx, tx, row.id); err != nil {
-			return nil, false, fmt.Errorf("lock generation storage: %w", err)
-		}
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL hnsw.ef_search = %d`, min(max(limit, 40), 1000))); err != nil {
-			return nil, false, err
-		}
-		if _, err = tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
-			return nil, false, err
-		}
-	}
-	rows, err := tx.QueryContext(ctx, sqlText, args...)
-	if err != nil {
-		return nil, false, err
-	}
-	defer func() { _ = rows.Close() }()
-	hits, err := scanHits[K](rows)
-	if err != nil {
-		return nil, false, err
-	}
-	if err = rows.Close(); err != nil {
-		return nil, false, err
-	}
-	return hits, false, nil
-}
-
 func (s *Store[K, G]) lockChunks(ctx context.Context, tx *sql.Tx, gen G, row generationRow) (bool, error) {
-	err := s.lockChunkTable(ctx, tx, row.id)
+	_, err := tx.ExecContext(ctx, "LOCK TABLE "+s.chunks(row.id)+" IN ACCESS SHARE MODE")
 	if err == nil {
 		return false, nil
 	}
@@ -270,25 +247,6 @@ func (s *Store[K, G]) lockChunks(ctx context.Context, tx *sql.Tx, gen G, row gen
 		return true, nil
 	}
 	return false, err
-}
-
-func (s *Store[K, G]) lockChunkTable(ctx context.Context, tx *sql.Tx, id int64) error {
-	_, err := tx.ExecContext(ctx, "LOCK TABLE "+s.chunks(id)+" IN ACCESS SHARE MODE")
-	return err
-}
-
-func (s *Store[K, G]) lockChunksTx(ctx context.Context, tx *sql.Tx, id int64) error {
-	if _, err := tx.ExecContext(ctx, `SAVEPOINT pgvector_chunk_lock`); err != nil {
-		return err
-	}
-	lockErr := s.lockChunkTable(ctx, tx, id)
-	if lockErr != nil {
-		if _, err := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT pgvector_chunk_lock`); err != nil {
-			return errors.Join(lockErr, err)
-		}
-	}
-	_, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT pgvector_chunk_lock`)
-	return errors.Join(lockErr, err)
 }
 
 // candidateQuery selects the nearest fresh chunks and returns their stamp revision.
