@@ -37,10 +37,7 @@ CREATE TABLE IF NOT EXISTS %s (generation_id BIGINT NOT NULL, doc_key %s NOT NUL
 	if err != nil {
 		return fmt.Errorf("install vector catalog: %w", err)
 	}
-	// The shared chunk table belongs to the caller and may be installed later.
-	catalogSchema := schema
-	catalogSchema.SharedChunks = false
-	if err := checkCatalog(ctx, db, catalogSchema); err != nil {
+	if err := checkCatalog(ctx, db, schema); err != nil {
 		return err
 	}
 	_, err = db.ExecContext(ctx, fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (doc_key)`, postgres.QuoteIdentifier(schema.Prefix+"_stamps_by_doc"), postgres.QuoteIdentifier(schema.Prefix+"_stamps")))

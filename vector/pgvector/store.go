@@ -274,13 +274,11 @@ func (s *Store[K, G]) candidateQuery(id int64, query vector.Vector, limit int, p
 	args = append(args, limit)
 	distance := fmt.Sprintf(`c.embedding OPERATOR(%s.<=>) $1::%s.halfvec`, ext, ext)
 	filter := ""
-	order := distance
 	if s.schema.SharedChunks {
 		filter = " AND c.generation_id=$2"
-		order += ",c.doc_key"
 	}
 	text := fmt.Sprintf(`SELECT candidate.doc_key,candidate.revision,candidate.score,candidate.chunk_index FROM (SELECT c.doc_key,stamp.revision,1-(%s) AS score,c.chunk_index FROM %s c JOIN %s d ON d.%s=c.doc_key JOIN %s stamp ON stamp.generation_id=$2 AND stamp.doc_key=d.%s WHERE stamp.revision IS NOT DISTINCT FROM d.%s%s%s ORDER BY %s LIMIT $%d) candidate ORDER BY candidate.score DESC,candidate.doc_key`,
-		distance, s.chunkTable(id), docs, key, s.stamps(), key, postgres.QuoteIdentifier(s.schema.RevisionColumn), filter, predicateSQL, order, limitArg)
+		distance, s.chunkTable(id), docs, key, s.stamps(), key, postgres.QuoteIdentifier(s.schema.RevisionColumn), filter, predicateSQL, distance, limitArg)
 	return text, args, nil
 }
 

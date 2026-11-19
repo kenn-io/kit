@@ -22,8 +22,13 @@ type Schema struct {
 	ContentColumn  string
 	RevisionColumn string
 	Prefix         string
-	// SharedChunks uses a caller-installed table with an unbounded halfvec column
-	// and a doc_key foreign key to the source document with ON DELETE CASCADE.
+	// SharedChunks uses a caller-installed {prefix}_chunks table with generation_id
+	// bigint, doc_key matching the document key type and referencing it with
+	// ON DELETE CASCADE, chunk_index integer or bigint, and embedding unbounded
+	// halfvec. Its primary key is (generation_id, doc_key, chunk_index).
+	// Shared storage is searched exactly; Kit never creates or tunes a vector
+	// index on it. Without the cascade, deleted documents' vectors remain in
+	// storage but are never returned.
 	SharedChunks bool
 	// Begin opens write transactions; the store commits or rolls them back.
 	Begin func(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -95,6 +100,12 @@ func New[K comparable, G ~string](ctx context.Context, db *sql.DB, schema Schema
 	if err := checkCatalog(ctx, db, schema); err != nil {
 		return nil, err
 	}
+	if schema.SharedChunks {
+		name := schema.Prefix + "_chunks"
+		if err := checkTable(ctx, db, name, "generation_id,doc_key,chunk_index,embedding"); err != nil {
+			return nil, fmt.Errorf("check table %s: %w", name, err)
+		}
+	}
 	return s, nil
 }
 
@@ -135,31 +146,6 @@ func checkCatalog(ctx context.Context, db *sql.DB, schema Schema) error {
 	} {
 		if err := checkTable(ctx, db, table.name, table.columns); err != nil {
 			return fmt.Errorf("check table %s: %w", table.name, err)
-		}
-	}
-	if schema.SharedChunks {
-		name := schema.Prefix + "_chunks"
-		if err := checkTable(ctx, db, name, "generation_id,doc_key,chunk_index,embedding"); err != nil {
-			return fmt.Errorf("check table %s: %w", name, err)
-		}
-		var valid bool
-		err := db.QueryRowContext(ctx, `SELECT
- (SELECT atttypid = 'bigint'::regtype FROM pg_attribute WHERE attrelid=to_regclass($1) AND attname='generation_id' AND NOT attisdropped) AND
- (SELECT atttypid = 'integer'::regtype FROM pg_attribute WHERE attrelid=to_regclass($1) AND attname='chunk_index' AND NOT attisdropped) AND
- (SELECT a.atttypid = d.atttypid FROM pg_attribute a, pg_attribute d WHERE a.attrelid=to_regclass($1) AND a.attname='doc_key' AND NOT a.attisdropped AND d.attrelid=to_regclass($2) AND d.attname=$3 AND NOT d.attisdropped) AND
- (SELECT a.atttypid = t.oid FROM pg_attribute a JOIN pg_type t ON t.oid=a.atttypid JOIN pg_depend dep ON dep.objid=t.oid JOIN pg_extension e ON e.oid=dep.refobjid WHERE a.attrelid=to_regclass($1) AND a.attname='embedding' AND NOT a.attisdropped AND a.atttypmod=-1 AND t.typname='halfvec' AND e.extname='vector')`, postgres.QuoteIdentifier(name), postgres.QuoteIdentifier(schema.DocsTable), schema.IDColumn).Scan(&valid)
-		if err != nil {
-			return fmt.Errorf("check table %s column types: %w", name, err)
-		}
-		if !valid {
-			return fmt.Errorf("check table %s: wrong column types", name)
-		}
-		err = db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_attribute source ON source.attrelid=c.conrelid AND source.attname='doc_key' JOIN pg_attribute target ON target.attrelid=c.confrelid AND target.attname=$3 WHERE c.contype='f' AND c.conrelid=to_regclass($1) AND c.confrelid=to_regclass($2) AND c.conkey=ARRAY[source.attnum] AND c.confkey=ARRAY[target.attnum] AND c.confdeltype='c')`, postgres.QuoteIdentifier(name), postgres.QuoteIdentifier(schema.DocsTable), schema.IDColumn).Scan(&valid)
-		if err != nil {
-			return fmt.Errorf("check table %s document cascade: %w", name, err)
-		}
-		if !valid {
-			return fmt.Errorf("check table %s: doc_key must reference the document key with ON DELETE CASCADE", name)
 		}
 	}
 	return nil
