@@ -916,3 +916,50 @@ func TestSaveDocumentsReclaimWithCallerDocumentLock(t *testing.T) {
 	assert.NoError(t, rollbackErr)
 	assert.NoError(t, reclaimErr)
 }
+
+func TestQueryGenerationWithPredicateTxUsesCallerSnapshot(t *testing.T) {
+	db, owner := setupActiveStore(t)
+	ctx := t.Context()
+	require.NoError(t, owner.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	require.NoError(t, owner.SaveVectors(ctx, "a", 2, 1, []vector.ChunkVector{{Vector: vector.Vector{0, 1}}}))
+	runtime := dmlOnly(t, db)
+	runtime.SetMaxOpenConns(1)
+	store, err := pgvector.New[int64, string](ctx, runtime, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
+	require.NoError(t, err)
+	tx, err := runtime.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	var body string
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT body FROM docs WHERE id=2`).Scan(&body))
+	require.Equal(t, "dog", body)
+	_, err = db.ExecContext(ctx, `UPDATE docs SET body='new dog',revision=2 WHERE id=2`)
+	require.NoError(t, err)
+	require.NoError(t, owner.SaveVectors(ctx, "a", 2, 2, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	hits, err := store.QueryGenerationWithPredicateTx(queryCtx, tx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{SQL: "d.body = ?", Args: []any{"dog"}})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, int64(2), hits[0].Doc)
+	assert.EqualValues(t, 1, hits[0].Revision)
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT body FROM docs WHERE id=2`).Scan(&body))
+	assert.Equal(t, "dog", body)
+	require.NoError(t, tx.Commit())
+}
+
+func TestQueryGenerationWithPredicateTxLeavesFailedTransactionToCaller(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx := t.Context()
+	require.NoError(t, store.SetGenerationState(ctx, "a", vector.StateRetired))
+	require.NoError(t, store.Reclaim(ctx, "a"))
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = store.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{})
+	require.ErrorContains(t, err, "lock generation storage")
+	var n int
+	err = tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, sql.ErrTxDone)
+	require.NoError(t, tx.Rollback())
+}
