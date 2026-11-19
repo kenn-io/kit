@@ -1,7 +1,7 @@
 ---
 title: "CLI command design template"
 description: "Worksheet and review checklist for designing a CLI command or command family."
-last_edited: 2026-11-08
+last_edited: 2026-11-19
 ---
 
 # CLI command design template
@@ -24,6 +24,10 @@ completed worksheet with the adopting application's docs.
   revision), its scope, and which forms are rejected]
 - Side effects, retries, and conflicts: [what changes; idempotency key or UID
   behavior; the exit code for each conflict]
+- [Common flags](cli-design.md#common-flags-for-changing-state), if applicable:
+  [default is preview or apply; canonical spelling and existing aliases;
+  what the preview reads and predicts; what it cannot validate until apply;
+  the prompt answered by `--yes` or the precondition overridden by `--force`]
 
 ## Help
 
@@ -96,5 +100,10 @@ old and new spellings share flag values or use separate constructors.
 - [ ] A mistyped group action exits 2.
 - [ ] Old and new spellings match on output, exit codes, wire calls, help, and
       completion; the notice goes to stderr per the recorded rule.
+- [ ] On a synthetic target, preview reports the intended change without
+      applying it locally or remotely; verify an empty plan and any documented
+      probe effects too. Check both spellings of any alias. Reject contradictory
+      values in either order before mutation. Confirm `--yes` and `--force`, when
+      offered, do not turn preview into apply.
 
 Evidence: [checks run and results; why any surface is not applicable].
