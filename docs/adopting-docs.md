@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:01:38Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:12:00Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -32,7 +32,8 @@ has been independently verified. Use draft for intentionally provisional
 content. If a retired page is retained, set `status: deprecated` and link to
 its replacement when one exists, optionally using `superseded_by`. Unknown
 status strings are preserved, never interpreted as stable; current-knowledge
-views exclude them. Kenn requires status to be a nonempty string when present. The check
+views exclude them. Null, empty string, and empty list status values mean
+omitted; other present values must be strings. The check
 cannot infer retirement from a filename or age. The fixer never sets or changes
 status.
 

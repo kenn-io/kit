@@ -83,7 +83,7 @@ func (b *frontmatterBlock) okfProblems() []string {
 			p = append(p, k+" must be a non-empty string")
 		}
 	}
-	if status := b.fields["status"]; status != nil &&
+	if status := b.fields["status"]; !emptyOptional(status) &&
 		!validString(status) {
 		p = append(p, "status must be a non-empty string")
 	}

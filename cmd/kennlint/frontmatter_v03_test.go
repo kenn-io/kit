@@ -78,7 +78,7 @@ func TestOKFV03FixPreservesExtensions(t *testing.T) {
 }
 
 func TestOKFV03ReviewMetadata(t *testing.T) {
-	for _, source := range []string{"", "sources: null\n", "sources: ''\n", "sources: []\n"} {
+	for _, source := range []string{"", "sources: null\n", "sources: ''\n", "sources: []\n", "status: null\n", "status: ''\n", "status: []\n"} {
 		before, err := parseFrontmatter([]byte(goodOKF))
 		require.NoError(t, err)
 		after, err := parseFrontmatter([]byte(strings.Replace(goodOKF, "type: Guide\n", source+"type: Guide\n", 1)))
