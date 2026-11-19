@@ -72,7 +72,7 @@ func halfvec(v vector.Vector) (string, error) {
 
 // SaveVectors atomically checks the document revision, replaces chunks, and stamps it.
 func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision any, vectors []vector.ChunkVector) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -108,11 +108,23 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	if !matches {
 		return vector.ErrStale
 	}
-	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE doc_key=$1`, s.chunks(id)), doc); err != nil {
+	deleteQuery := fmt.Sprintf(`DELETE FROM %s WHERE doc_key=$1`, s.chunkTable(id))
+	deleteArgs := []any{doc}
+	if s.schema.SharedChunks {
+		deleteQuery += " AND generation_id=$2"
+		deleteArgs = append(deleteArgs, id)
+	}
+	if _, err = tx.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
 		return err
 	}
 	if len(vectors) > 0 {
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) SELECT $1,chunk_index,embedding::%s.halfvec FROM unnest($2::bigint[],$3::text[]) AS chunks(chunk_index,embedding)`, s.chunks(id), postgres.QuoteIdentifier(s.ext)), doc, indexes, halfvecs); err != nil {
+		insertQuery := fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) SELECT $1,chunk_index,embedding::%s.halfvec FROM unnest($2::bigint[],$3::text[]) AS chunks(chunk_index,embedding)`, s.chunkTable(id), postgres.QuoteIdentifier(s.ext))
+		insertArgs := []any{doc, indexes, halfvecs}
+		if s.schema.SharedChunks {
+			insertQuery = fmt.Sprintf(`INSERT INTO %s (generation_id,doc_key,chunk_index,embedding) SELECT $4,$1,chunk_index,embedding::%s.halfvec FROM unnest($2::bigint[],$3::text[]) AS chunks(chunk_index,embedding)`, s.chunkTable(id), postgres.QuoteIdentifier(s.ext))
+			insertArgs = append(insertArgs, id)
+		}
+		if _, err = tx.ExecContext(ctx, insertQuery, insertArgs...); err != nil {
 			return err
 		}
 	}
@@ -173,18 +185,20 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 	if err != nil {
 		return nil, err
 	}
-	reclaimed, err := s.lockChunks(ctx, tx, gen, row)
-	if err != nil {
-		return nil, fmt.Errorf("lock generation storage: %w", err)
-	}
-	if reclaimed {
-		return nil, nil
-	}
-	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL hnsw.ef_search = %d`, min(max(limit, 40), 1000))); err != nil {
-		return nil, err
-	}
-	if _, err = tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
-		return nil, err
+	if !s.schema.SharedChunks {
+		reclaimed, err := s.lockChunks(ctx, tx, gen, row)
+		if err != nil {
+			return nil, fmt.Errorf("lock generation storage: %w", err)
+		}
+		if reclaimed {
+			return nil, nil
+		}
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL hnsw.ef_search = %d`, min(max(limit, 40), 1000))); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
+			return nil, err
+		}
 	}
 	rows, err := tx.QueryContext(ctx, sqlText, args...)
 	if err != nil {
@@ -259,8 +273,14 @@ func (s *Store[K, G]) candidateQuery(id int64, query vector.Vector, limit int, p
 	limitArg := len(args) + 1
 	args = append(args, limit)
 	distance := fmt.Sprintf(`c.embedding OPERATOR(%s.<=>) $1::%s.halfvec`, ext, ext)
-	text := fmt.Sprintf(`SELECT candidate.doc_key,candidate.revision,candidate.score,candidate.chunk_index FROM (SELECT c.doc_key,stamp.revision,1-(%s) AS score,c.chunk_index FROM %s c JOIN %s d ON d.%s=c.doc_key JOIN %s stamp ON stamp.generation_id=$2 AND stamp.doc_key=d.%s WHERE stamp.revision IS NOT DISTINCT FROM d.%s%s ORDER BY %s LIMIT $%d) candidate ORDER BY candidate.score DESC,candidate.doc_key`,
-		distance, s.chunks(id), docs, key, s.stamps(), key, postgres.QuoteIdentifier(s.schema.RevisionColumn), predicateSQL, distance, limitArg)
+	filter := ""
+	order := distance
+	if s.schema.SharedChunks {
+		filter = " AND c.generation_id=$2"
+		order += ",c.doc_key"
+	}
+	text := fmt.Sprintf(`SELECT candidate.doc_key,candidate.revision,candidate.score,candidate.chunk_index FROM (SELECT c.doc_key,stamp.revision,1-(%s) AS score,c.chunk_index FROM %s c JOIN %s d ON d.%s=c.doc_key JOIN %s stamp ON stamp.generation_id=$2 AND stamp.doc_key=d.%s WHERE stamp.revision IS NOT DISTINCT FROM d.%s%s%s ORDER BY %s LIMIT $%d) candidate ORDER BY candidate.score DESC,candidate.doc_key`,
+		distance, s.chunkTable(id), docs, key, s.stamps(), key, postgres.QuoteIdentifier(s.schema.RevisionColumn), filter, predicateSQL, order, limitArg)
 	return text, args, nil
 }
 

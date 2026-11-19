@@ -224,17 +224,16 @@ pipeline. Preserve these invariants when changing it.
 - `pgvector.New` attaches without DDL; `Install` owns setup. Source keys must
   be unique, and revisions must change when content is replaced. Deleting a
   source row cascades to its stamps and vectors; `TRUNCATE` requires `CASCADE`.
-- Re-ensuring an existing generation with the same model needs no DDL.
-  `EnsureGeneration` refuses `retired`, and `Activate` retires the others
-  without dropping anything. `Reclaim` frees a retired generation's chunk
-  table and stamps; it requires an owner role. `QueryGeneration` holds an
-  access-share table lock until the query ends, so reclamation waits for an
-  in-flight query. A query using a stale generation list returns no hits if
-  reclamation completed before it locked the retired table.
+- Default storage uses a chunk table and HNSW index per generation.
+  `EnsureGeneration` refuses retired generations, `Reclaim` drops their table,
+  and queries hold an access-share lock until they finish.
+- Shared storage uses a caller-installed chunk table. `EnsureGeneration` can
+  restore a retired generation, `Reclaim` deletes its rows, and queries take
+  no table lock. Writes use `Schema.Begin` when supplied.
 - `PendingForGeneration` and `SaveVectors` return `ErrRetired` for retired
   generations. `SaveVectors` and `QueryGeneration` reject non-finite or
   zero-norm vectors before PostgreSQL converts them to halfvec.
-- The candidate query orders by distance alone so the HNSW index is used.
+- The default candidate query orders by distance alone so the HNSW index is used.
   Freshness is checked during the index scan; do not add a tie-break to that
   inner `ORDER BY`.
 - `Activate` counts uncovered documents and publishes in one transaction. An
