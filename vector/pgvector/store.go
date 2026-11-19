@@ -72,15 +72,12 @@ func halfvec(v vector.Vector) (string, error) {
 
 // SaveVectors atomically checks the document revision, replaces chunks, and stamps it.
 func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision any, vectors []vector.ChunkVector) error {
-	tx, err := s.beginWithOptions(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err = s.lockGeneration(ctx, tx, gen, true); err != nil {
-		return err
-	}
-	row, err := s.lookup(ctx, tx, gen, false)
+	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err
 	}

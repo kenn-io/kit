@@ -237,9 +237,6 @@ pipeline. Preserve these invariants when changing it.
 - `PendingForGeneration` and `SaveVectors` return `ErrRetired` for retired
   generations. `SaveVectors` and `QueryGeneration` reject non-finite or
   zero-norm vectors before PostgreSQL converts them to halfvec.
-- `SaveDocuments` requires READ COMMITTED and holds document and shared lifecycle
-  locks until the caller's transaction ends. Retire and reclaim through Store
-  methods so they wait for saves.
 - The default candidate query orders by distance alone so the HNSW index is used.
   Freshness is checked during the index scan; do not add a tie-break to that
   inner `ORDER BY`.

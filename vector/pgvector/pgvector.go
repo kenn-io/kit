@@ -1,13 +1,9 @@
 // Package pgvector implements vector.Store using PostgreSQL and pgvector.
 // The caller owns the database connection and documents table. RevisionColumn
 // must change whenever document content changes, including when a deleted
-// document key is reused for replacement content. Retire and reclaim generations
-// through Store methods so they coordinate with in-flight saves. SaveDocuments
-// requires READ COMMITTED, schema USAGE, SELECT on generations, SELECT and
-// UPDATE on documents, SELECT, INSERT, UPDATE, and DELETE on stamps, and SELECT,
-// INSERT, and DELETE on chunks. Its locks last until the caller commits or rolls
-// back. A caller deleting a document before saving may deadlock with Reclaim;
-// PostgreSQL aborts one side.
+// document key is reused for replacement content. SaveDocuments requires schema
+// USAGE, SELECT on generations, SELECT and UPDATE on documents, SELECT, INSERT,
+// UPDATE, and DELETE on stamps, and SELECT, INSERT, and DELETE on chunks.
 package pgvector
 
 import (
@@ -136,14 +132,10 @@ func (s *Store[K, G]) chunkTable(id int64) string {
 }
 
 func (s *Store[K, G]) begin(ctx context.Context) (*sql.Tx, error) {
-	return s.beginWithOptions(ctx, nil)
-}
-
-func (s *Store[K, G]) beginWithOptions(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
 	if s.schema.Begin != nil {
-		return s.schema.Begin(ctx, opts)
+		return s.schema.Begin(ctx, nil)
 	}
-	return s.db.BeginTx(ctx, opts)
+	return s.db.BeginTx(ctx, nil)
 }
 
 func (s *Store[K, G]) covered(doc, stamp string) string {
