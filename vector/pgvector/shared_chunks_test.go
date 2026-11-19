@@ -19,22 +19,28 @@ func TestSharedChunksPrepopulatedKitSchema(t *testing.T) {
 	require.NoError(t, pgvector.Install(ctx, db, schema))
 	_, err := pgvector.New[int64, string](ctx, db, schema)
 	require.ErrorContains(t, err, "vectors_chunks")
-	_, err = db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index bigint NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index));
- INSERT INTO docs VALUES (1,'a',1),(2,'b',1);
- INSERT INTO vectors_generations(id,gen_key,fingerprint,dimension,state) VALUES (1,'a','fingerprint',2,'active');
- INSERT INTO vectors_stamps VALUES (1,1,1),(1,2,1);
- INSERT INTO vectors_chunks VALUES (1,1,0,'[1,0]'),(1,2,0,'[0,1]')`)
+	_, err = db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index bigint NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1),(2,'b',1)`)
+	require.NoError(t, err)
+	model := vector.Generation{Model: "a", Dimensions: 2}
+	gen := model.Fingerprint()
+	initial, err := pgvector.New[int64, string](ctx, db, schema)
+	require.NoError(t, err)
+	require.NoError(t, initial.EnsureGeneration(ctx, gen, model, vector.StateActive))
+	var id int64
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT id FROM vectors_generations WHERE gen_key=$1`, gen).Scan(&id))
+	_, err = db.ExecContext(ctx, `INSERT INTO vectors_stamps VALUES ($1,1,1),($1,2,1)`, id)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO vectors_chunks VALUES ($1,1,0,'[1,0]'),($1,2,0,'[0,1]')`, id)
 	require.NoError(t, err)
 	store, err := pgvector.New[int64, string](ctx, db, schema)
 	require.NoError(t, err)
-	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+	hits, err := store.QueryGeneration(ctx, gen, vector.Vector{1, 0}, 10)
 	require.NoError(t, err)
 	require.Len(t, hits, 2)
 	assert.Equal(t, int64(1), hits[0].Doc)
 	assert.InDelta(t, 1, hits[0].Score, 0.001)
 	assert.Equal(t, int64(2), hits[1].Doc)
 	assert.InDelta(t, 0, hits[1].Score, 0.001)
-
 }
 
 func TestSharedChunksDMLRole(t *testing.T) {

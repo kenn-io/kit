@@ -73,7 +73,7 @@ func (s *Store[K, G]) ensureStorage(ctx context.Context, tx *sql.Tx, id int64, d
 	return nil
 }
 
-// EnsureGeneration registers a model and creates its chunk table and HNSW index.
+// EnsureGeneration registers a model. Default storage creates a chunk table and HNSW index.
 // An existing generation with the same model needs no sequence value and no DDL.
 // The state must be pending, building, or active. Shared storage permits
 // re-ensuring a retired generation as building.
