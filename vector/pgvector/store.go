@@ -77,58 +77,12 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	row, err := s.lookup(ctx, tx, gen, true)
+	stale, err := s.SaveDocuments(ctx, tx, gen, []Document[K]{{Doc: doc, Revision: revision, Vectors: vectors}})
 	if err != nil {
 		return err
 	}
-	if row.state == vector.StateRetired {
-		return vector.ErrRetired
-	}
-	id := row.id
-	halfvecs := make([]string, len(vectors))
-	indexes := make([]int64, len(vectors))
-	for i, cv := range vectors {
-		if len(cv.Vector) != row.dim {
-			return fmt.Errorf("chunk %d has %d dimensions, expected %d", cv.ChunkIndex, len(cv.Vector), row.dim)
-		}
-		halfvecs[i], err = halfvec(cv.Vector)
-		if err != nil {
-			return fmt.Errorf("chunk %d: %w", cv.ChunkIndex, err)
-		}
-		indexes[i] = int64(cv.ChunkIndex)
-	}
-	var matches bool
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR SHARE`, postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), doc, revision).Scan(&matches)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("document %v missing: %w", doc, vector.ErrStale)
-	}
-	if err != nil {
-		return err
-	}
-	if !matches {
+	if len(stale) != 0 {
 		return vector.ErrStale
-	}
-	deleteQuery := fmt.Sprintf(`DELETE FROM %s WHERE doc_key=$1`, s.chunkTable(id))
-	deleteArgs := []any{doc}
-	if s.schema.SharedChunks {
-		deleteQuery += " AND generation_id=$2"
-		deleteArgs = append(deleteArgs, id)
-	}
-	if _, err = tx.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
-		return err
-	}
-	if len(vectors) > 0 {
-		cols, vals, args := "doc_key", "$1", []any{doc, indexes, halfvecs}
-		if s.schema.SharedChunks {
-			cols, vals, args = "generation_id,doc_key", "$4,$1", append(args, id)
-		}
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (%s,chunk_index,embedding) SELECT %s,chunk_index,embedding::%s.halfvec FROM unnest($2::bigint[],$3::text[]) AS chunks(chunk_index,embedding)`, s.chunkTable(id), cols, vals, postgres.QuoteIdentifier(s.ext)), args...); err != nil {
-			return err
-		}
-	}
-	_, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (generation_id,doc_key,revision) SELECT $1,%s,%s FROM %s WHERE %s=$2 ON CONFLICT (generation_id,doc_key) DO UPDATE SET revision=excluded.revision`, s.stamps(), postgres.QuoteIdentifier(s.schema.IDColumn), postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), id, doc)
-	if err != nil {
-		return err
 	}
 	return tx.Commit()
 }

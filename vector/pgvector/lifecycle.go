@@ -46,6 +46,16 @@ func knownState(state vector.State) bool {
 	}
 }
 
+// lockLifecycle coordinates saves with retirement and reclamation until tx ends.
+func (s *Store[K, G]) lockLifecycle(ctx context.Context, tx *sql.Tx, shared bool) error {
+	lock := "pg_advisory_xact_lock"
+	if shared {
+		lock += "_shared"
+	}
+	_, err := tx.ExecContext(ctx, "SELECT "+lock+"(hashtextextended('kit/pgvector/' || to_regclass($1)::oid::text, 0))", s.generations())
+	return err
+}
+
 // insertGeneration adds a missing generation. A concurrent insert is read back instead.
 func (s *Store[K, G]) insertGeneration(ctx context.Context, tx *sql.Tx, gen G, fingerprint string, dimensions int, state vector.State) (generationRow, error) {
 	r := generationRow{fingerprint: fingerprint, dim: dimensions, state: state}
@@ -125,6 +135,9 @@ func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vecto
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.lockLifecycle(ctx, tx, false); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err
@@ -146,6 +159,9 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.lockLifecycle(ctx, tx, false); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err
@@ -176,6 +192,9 @@ func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
 		return fmt.Errorf("begin generation reclamation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.lockLifecycle(ctx, tx, false); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err

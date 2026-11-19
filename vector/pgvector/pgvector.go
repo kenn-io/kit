@@ -1,7 +1,8 @@
 // Package pgvector implements vector.Store using PostgreSQL and pgvector.
 // The caller owns the database connection and documents table. RevisionColumn
 // must change whenever document content changes, including when a deleted
-// document key is reused for replacement content.
+// document key is reused for replacement content. Retire and reclaim generations
+// through Store methods so they coordinate with in-flight saves.
 package pgvector
 
 import (
