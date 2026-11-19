@@ -3,7 +3,7 @@ type: Guide
 title: Adopting the Kenn documentation profile
 description: The Kenn documentation profile guide has moved to guides/adopting-docs.md.
 status: deprecated
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:17:59Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:26:52Z" }
 superseded_by: guides/adopting-docs.md
 ---
 

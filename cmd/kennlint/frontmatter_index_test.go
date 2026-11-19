@@ -164,7 +164,7 @@ func TestRootSkillSkipsManagedIndexes(t *testing.T) {
 	repo.Run("add", ".")
 	var out, errs bytes.Buffer
 	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test"}, &out, &errs)
-	require.NoError(t, err)
+	require.ErrorContains(t, err, "root SKILL.md")
 	assert.Zero(t, n, errs.String())
 	for _, file := range []string{"index.md", "references/index.md"} {
 		got, err := os.ReadFile(file)
@@ -364,4 +364,32 @@ func TestIndexReviewBundleBoundaries(t *testing.T) {
 	assert.NotContains(t, string(got), ".drafts")
 	assert.NotContains(t, string(got), ".hidden")
 	assert.NotContains(t, string(got), ".page.md")
+}
+
+func TestIndexReviewExternalPageAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	external := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(external, "SKILL.md"), []byte(skillHeader), 0o600))
+	target := filepath.Join(external, "resource.md")
+	require.NoError(t, os.WriteFile(target, []byte(goodOKF), 0o600))
+	repo.WriteFile("docs/index.md", indexBegin+"\nold\n"+indexEnd+"\n")
+	repo.WriteFile("docs/local.md", goodOKF)
+	require.NoError(t, os.Symlink(target, "docs/imported.md"))
+	repo.Run("add", ".")
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "docs/index.md"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Zero(t, n, errs.String())
+	got, err := os.ReadFile("docs/index.md")
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "(local.md)")
+	assert.NotContains(t, string(got), "imported.md")
+	got, err = os.ReadFile(target)
+	require.NoError(t, err)
+	assert.Equal(t, goodOKF, string(got))
 }

@@ -145,10 +145,6 @@ func refreshTrackedIndex(root, file string, files []string, skillDirs map[string
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, false, nil
 	}
-	excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes)
-	if err != nil || excluded {
-		return nil, false, err
-	}
 	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
 	if err != nil {
 		return nil, false, err
