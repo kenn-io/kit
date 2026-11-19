@@ -3,9 +3,11 @@
 // must change whenever document content changes, including when a deleted
 // document key is reused for replacement content. Retire and reclaim generations
 // through Store methods so they coordinate with in-flight saves. SaveDocuments
-// requires READ COMMITTED, SELECT on generations, and UPDATE on documents. Its
-// locks last until the caller commits or rolls back. A caller deleting a
-// document before saving may deadlock with Reclaim; PostgreSQL aborts one side.
+// requires READ COMMITTED, schema USAGE, SELECT on generations, SELECT and
+// UPDATE on documents, SELECT, INSERT, UPDATE, and DELETE on stamps, and SELECT,
+// INSERT, and DELETE on chunks. Its locks last until the caller commits or rolls
+// back. A caller deleting a document before saving may deadlock with Reclaim;
+// PostgreSQL aborts one side.
 package pgvector
 
 import (
