@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,12 +46,32 @@ func parseTimestamp(n *yaml.Node) (time.Time, bool) {
 	if n == nil || n.Kind != yaml.ScalarNode || (n.Tag != "!!str" && n.Tag != "!!timestamp") {
 		return time.Time{}, false
 	}
+	return parseTimestampString(n.Value)
+}
+
+func parseTimestampString(value string) (time.Time, bool) {
 	layout := time.RFC3339
-	if len(n.Value) == len(time.DateOnly) {
+	if len(value) == len(time.DateOnly) {
 		layout = time.DateOnly
 	}
-	parsed, err := time.Parse(layout, strings.ToUpper(n.Value))
-	return parsed, err == nil
+	value = strings.ToUpper(value)
+	parsed, err := time.Parse(layout, value)
+	return parsed, err == nil && validRFC3339Offset(value)
+}
+
+// validRFC3339Offset rejects numeric offsets that RFC 3339 forbids but Go's
+// parser accepts: hours above 23 and minutes above 59.
+func validRFC3339Offset(value string) bool {
+	if len(value) < len("+00:00") {
+		return true
+	}
+	offset := value[len(value)-len("+00:00"):]
+	if offset[0] != '+' && offset[0] != '-' {
+		return true
+	}
+	hours, hoursErr := strconv.Atoi(offset[1:3])
+	minutes, minutesErr := strconv.Atoi(offset[4:])
+	return hoursErr == nil && minutesErr == nil && hours <= 23 && minutes <= 59
 }
 
 func mappingField(n *yaml.Node, key string) *yaml.Node {

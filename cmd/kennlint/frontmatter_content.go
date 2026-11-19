@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"reflect"
 	"regexp"
+	"strings"
+	"time"
 
 	"github.com/yuin/goldmark/v2/ast"
 	"github.com/yuin/goldmark/v2/extension"
@@ -41,7 +43,7 @@ func stripProvenance(header map[string]any) {
 // in a block containing inline HTML is preserved conservatively.
 func canonicalHTML(src []byte) string {
 	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
-	root := parser.New(parser.WithExtensions(extension.NewGFMParser())).Parse(src)
+	root := parser.New(parser.WithExtensions(extension.NewGFMParser(), extension.NewFootnoteParser())).Parse(src)
 	_ = ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if entering {
 			// Inline HTML tags are siblings of their text, including nested Markdown.
@@ -62,32 +64,93 @@ func canonicalHTML(src []byte) string {
 		return ast.WalkContinue, nil
 	})
 	var rendered bytes.Buffer
-	_ = html.New(html.WithUnsafe(), html.WithExtensions(extension.NewGFMHTMLRenderer())).Render(&rendered, src, root)
+	_ = html.New(html.WithUnsafe(), html.WithExtensions(extension.NewGFMHTMLRenderer(), extension.NewFootnoteHTMLRenderer())).Render(&rendered, src, root)
 	return rendered.String()
 }
 
 var proseSpace = regexp.MustCompile(`[ \t\n\f]+`)
 
+// OKF v0.3 §11.2: an empty or null value is an absent key, and a list field
+// accepts one item as a scalar. List members are never dropped, and the
+// values of x- extension keys are kept as written.
+var (
+	listFields = []string{"tags", "sources", "parameters"}
+	// absentMappings are defined mapping fields whose empty form is also absent.
+	absentMappings = map[string]bool{"usage_window": true, "executor": true, "attester": true}
+)
+
 func canonicalMetadata(header map[string]any) {
 	stripProvenance(header)
-	if emptyOptionalValue(header["status"]) {
-		delete(header, "status")
-	}
 	// Verification records a review, not a change to the generated content.
 	delete(header, "verified")
-	switch sources := header["sources"].(type) {
-	case nil:
-		delete(header, "sources")
-	case string:
-		if sources == "" {
-			delete(header, "sources")
+	pruneAbsent(header)
+	for _, key := range listFields {
+		if value, ok := header[key]; ok {
+			if _, isList := value.([]any); !isList {
+				header[key] = []any{value}
+			}
 		}
-	case []any:
-		if len(sources) == 0 {
-			delete(header, "sources")
+	}
+	canonicalTimestamps(header)
+}
+
+func pruneAbsent(m map[string]any) {
+	for key, value := range m {
+		if !strings.HasPrefix(key, "x-") {
+			pruneNested(value)
 		}
+		if emptyOptionalValue(value) || (absentMappings[key] && emptyMapping(value)) {
+			delete(m, key)
+		}
+	}
+}
+
+func emptyMapping(value any) bool {
+	m, ok := value.(map[string]any)
+	return ok && len(m) == 0
+}
+
+func pruneNested(value any) {
+	switch v := value.(type) {
 	case map[string]any:
-		header["sources"] = []any{sources}
+		pruneAbsent(v)
+	case []any:
+		for _, item := range v {
+			pruneNested(item)
+		}
+	}
+}
+
+// canonicalTimestamps rewrites the OKF timestamp keys as UTC instants, so quoted
+// and YAML-native forms and equivalent offsets compare equal.
+func canonicalTimestamps(header map[string]any) {
+	canonicalInstants(header, "stale_after")
+	canonicalWindow(header)
+	entries, _ := header["sources"].([]any)
+	for _, entry := range entries {
+		if source, ok := entry.(map[string]any); ok {
+			canonicalInstants(source, "last_modified")
+			canonicalWindow(source)
+		}
+	}
+}
+
+func canonicalWindow(owner map[string]any) {
+	if window, ok := owner["usage_window"].(map[string]any); ok {
+		canonicalInstants(window, "from", "to")
+	}
+}
+
+func canonicalInstants(m map[string]any, keys ...string) {
+	for _, key := range keys {
+		switch v := m[key].(type) {
+		case time.Time:
+			m[key] = v.UTC().Format(time.RFC3339Nano)
+		case string:
+			if parsed, ok := parseTimestampString(v); ok {
+				m[key] = parsed.UTC().Format(time.RFC3339Nano)
+			}
+		}
 	}
 }
 
