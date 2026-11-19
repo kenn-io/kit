@@ -102,9 +102,3 @@ func TestBuildersRejectAPlaceholderArgumentMismatch(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "source predicate has 0 placeholders and 1 args")
 }
-
-func TestIdentifierHelpers(t *testing.T) {
-	assert.True(t, postgres.ValidIdentifier("docs_1"))
-	assert.False(t, postgres.ValidIdentifier("bad-name"))
-	assert.Equal(t, `"odd""schema"`, postgres.QuoteIdentifier(`odd"schema`))
-}

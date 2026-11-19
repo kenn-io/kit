@@ -119,3 +119,9 @@ func TestLexicalConfigAllowsOneSchemaQualifier(t *testing.T) {
 		require.Error(t, err, cfg)
 	}
 }
+
+func TestIdentifierHelpers(t *testing.T) {
+	assert.True(t, ValidIdentifier("docs_1"))
+	assert.False(t, ValidIdentifier("bad-name"))
+	assert.Equal(t, `"odd""schema"`, QuoteIdentifier(`odd"schema`))
+}

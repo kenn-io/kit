@@ -93,6 +93,7 @@ func TestEnsureGenerationRejectsUnknownState(t *testing.T) {
 	ctx := t.Context()
 	err := store.EnsureGeneration(ctx, "a", vector.Generation{Model: "a", Dimensions: 2}, vector.State("future"))
 	require.EqualError(t, err, `invalid generation state "future"`)
+	require.EqualError(t, store.EnsureGeneration(ctx, "c", vector.Generation{Dimensions: 2}, vector.StateRetired), `invalid generation state "retired"`)
 
 	gens, err := store.LiveGenerations(ctx)
 	require.NoError(t, err)
@@ -130,36 +131,6 @@ func TestQueryGenerationWithPredicateFiltersBeforeLimit(t *testing.T) {
 	require.Len(t, hits, 1)
 	assert.Equal(t, int64(2), hits[0].Doc)
 	assert.EqualValues(t, 7, hits[0].Revision)
-}
-
-func TestRetiredGenerationStaysQueryableAndRejectsWrites(t *testing.T) {
-	_, store := setupActiveStore(t)
-	ctx := t.Context()
-	fill := func(gen string) {
-		pending, err := store.PendingForGeneration(ctx, gen, nil, 10)
-		require.NoError(t, err)
-		require.Len(t, pending, 2)
-		for _, doc := range pending {
-			require.NoError(t, store.SaveVectors(ctx, gen, doc.Doc, doc.Revision, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
-		}
-	}
-	fill("a")
-	require.NoError(t, store.EnsureGeneration(ctx, "b", vector.Generation{Dimensions: 2}, vector.StateBuilding))
-	fill("b")
-	require.NoError(t, store.Activate(ctx, "b"))
-
-	// The retired generation keeps its storage, so an in-flight search still answers.
-	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
-	require.NoError(t, err)
-	require.Len(t, hits, 2)
-	require.NoError(t, store.Reclaim(ctx, "a"))
-	_, err = store.PendingForGeneration(ctx, "a", nil, 10)
-	require.ErrorIs(t, err, vector.ErrRetired)
-	err = store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}})
-	require.ErrorIs(t, err, vector.ErrRetired)
-	require.ErrorIs(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateBuilding), vector.ErrRetired)
-	require.ErrorIs(t, store.Activate(ctx, "a"), vector.ErrRetired)
-	require.EqualError(t, store.EnsureGeneration(ctx, "c", vector.Generation{Dimensions: 2}, vector.StateRetired), `invalid generation state "retired"`)
 }
 
 func TestReclaimWaitsForQueryAndHandlesStaleGenerationList(t *testing.T) {
@@ -219,7 +190,7 @@ func TestReclaimWaitsForQueryAndHandlesStaleGenerationList(t *testing.T) {
 		require.NoError(t, result.err)
 		require.Len(t, result.hits, 2)
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "query did not finish after releasing its advisory lock")
+		require.FailNow(t, "query did not finish after releasing its table lock")
 	}
 	select {
 	case err := <-reclaimDone:
@@ -237,6 +208,13 @@ func TestReclaimWaitsForQueryAndHandlesStaleGenerationList(t *testing.T) {
 	var stampCount int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_stamps WHERE generation_id=(SELECT id FROM vectors_generations WHERE gen_key=$1)`, oldGen).Scan(&stampCount))
 	assert.Zero(t, stampCount)
+
+	_, err = store.PendingForGeneration(ctx, "a", nil, 10)
+	require.ErrorIs(t, err, vector.ErrRetired)
+	err = store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}})
+	require.ErrorIs(t, err, vector.ErrRetired)
+	require.ErrorIs(t, store.EnsureGeneration(ctx, "a", vector.Generation{Model: "a", Dimensions: 2}, vector.StateBuilding), vector.ErrRetired)
+	require.ErrorIs(t, store.Activate(ctx, "a"), vector.ErrRetired)
 }
 
 func TestDirectVectorMethodsRejectInvalidVectors(t *testing.T) {
@@ -252,8 +230,6 @@ func TestDirectVectorMethodsRejectInvalidVectors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, store := setupActiveStore(t)
 			ctx := t.Context()
-			require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
-
 			err := store.SaveVectors(ctx, "a", 2, 1, []vector.ChunkVector{{Vector: tc.vector}})
 			require.ErrorContains(t, err, tc.want)
 			_, err = store.QueryGeneration(ctx, "a", tc.vector, 10)
@@ -262,70 +238,21 @@ func TestDirectVectorMethodsRejectInvalidVectors(t *testing.T) {
 	}
 }
 
-func TestFillAndSearchAcrossPartialGenerationActivation(t *testing.T) {
-	db, store := setup(t)
+func TestActivateRequiresFullGenerationCoverage(t *testing.T) {
+	_, store := setupActiveStore(t)
 	ctx := t.Context()
-	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'alpha',1),(2,'beta',1)`)
+	require.NoError(t, store.EnsureGeneration(ctx, "b", vector.Generation{Dimensions: 2}, vector.StateBuilding))
+	require.NoError(t, store.SaveVectors(ctx, "b", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	require.ErrorIs(t, store.Activate(ctx, "b"), vector.ErrUncovered)
+	gens, err := store.LiveGenerations(ctx)
 	require.NoError(t, err)
+	assert.Equal(t, []string{"b", "a"}, gens)
 
-	oldEncoder := func(_ context.Context, texts []string) ([][]float32, error) {
-		vectors := make([][]float32, len(texts))
-		for i, text := range texts {
-			switch text {
-			case "alpha", "find":
-				vectors[i] = []float32{1, 0}
-			case "beta":
-				vectors[i] = []float32{0, 1}
-			}
-		}
-		return vectors, nil
-	}
-	newEncoder := func(_ context.Context, texts []string) ([][]float32, error) {
-		vectors := make([][]float32, len(texts))
-		for i, text := range texts {
-			switch text {
-			case "alpha":
-				vectors[i] = []float32{0, 0, 1}
-			case "beta", "find":
-				vectors[i] = []float32{1, 0, 0}
-			}
-		}
-		return vectors, nil
-	}
-	encoders := map[string]vector.EncodeFunc{"old": oldEncoder, "new": newEncoder}
-	oldGeneration := vector.Generation{Model: "old", Dimensions: 2}
-	newGeneration := vector.Generation{Model: "new", Dimensions: 3}
-	require.NoError(t, store.EnsureGeneration(ctx, "old", oldGeneration, vector.StateActive))
-	stats, err := vector.Fill(ctx, store, "old", oldEncoder)
+	require.NoError(t, store.SaveVectors(ctx, "b", 2, 1, []vector.ChunkVector{{Vector: vector.Vector{0, 1}}}))
+	require.NoError(t, store.Activate(ctx, "b"))
+	gens, err = store.LiveGenerations(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 2, stats.Documents)
-	require.NoError(t, store.EnsureGeneration(ctx, "new", newGeneration, vector.StateBuilding))
-
-	stats, err = vector.Fill(ctx, store, "new", newEncoder, vector.WithFillDocumentLimit[int64](1))
-	require.NoError(t, err)
-	assert.Equal(t, 1, stats.Documents)
-	require.ErrorIs(t, store.Activate(ctx, "new"), vector.ErrUncovered)
-	var searched []string
-	searchEncoder := func(gen string) vector.EncodeFunc {
-		searched = append(searched, gen)
-		return encoders[gen]
-	}
-	hits, err := vector.Search(ctx, store, "find", searchEncoder, vector.SearchOptions{PerGeneration: 10})
-	require.NoError(t, err)
-	require.Len(t, hits, 2)
-	assert.Equal(t, []string{"new", "old"}, searched)
-	assert.Equal(t, []int64{1, 2}, []int64{hits[0].Doc, hits[1].Doc})
-
-	stats, err = vector.Fill(ctx, store, "new", newEncoder)
-	require.NoError(t, err)
-	assert.Equal(t, 1, stats.Documents)
-	require.NoError(t, store.Activate(ctx, "new"))
-	searched = nil
-	hits, err = vector.Search(ctx, store, "find", searchEncoder, vector.SearchOptions{PerGeneration: 10})
-	require.NoError(t, err)
-	assert.Equal(t, []string{"new"}, searched)
-	require.Len(t, hits, 2)
-	assert.Equal(t, []int64{2, 1}, []int64{hits[0].Doc, hits[1].Doc})
+	assert.Equal(t, []string{"b"}, gens)
 }
 
 func TestStaleEdited(t *testing.T) {
@@ -425,7 +352,7 @@ func TestNewWithDMLOnlyRole(t *testing.T) {
 func TestSchemaRejectsLongPrefix(t *testing.T) {
 	db, _ := setup(t)
 	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: strings.Repeat("x", 31)}
-	require.Error(t, pgvector.Install(t.Context(), db, schema))
+	require.ErrorContains(t, pgvector.Install(t.Context(), db, schema), `prefix "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" is too long`)
 	schema.Prefix = strings.Repeat("x", 30)
 	require.NoError(t, pgvector.Install(t.Context(), db, schema))
 	store, err := pgvector.New[int64, string](t.Context(), db, schema)
@@ -505,9 +432,8 @@ func TestIncompatibleCatalog(t *testing.T) {
 }
 
 func TestStampDeleteUsesDocumentIndex(t *testing.T) {
-	db, store := setup(t)
+	db, _ := setup(t)
 	ctx := t.Context()
-	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateBuilding))
 	_, err := db.ExecContext(ctx, `INSERT INTO docs SELECT i, 'doc', 1 FROM generate_series(1,10000) i; INSERT INTO vectors_stamps SELECT 1, i, 1 FROM generate_series(1,10000) i; ANALYZE vectors_stamps`)
 	require.NoError(t, err)
 	plan := explain(t, db, `DELETE FROM vectors_stamps WHERE doc_key=5000`)
