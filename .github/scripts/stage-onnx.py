@@ -24,11 +24,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--os', default=platform.system().lower())
 parser.add_argument('--arch', default='arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'amd64')
 parser.add_argument('--output', type=pathlib.Path, required=True)
+parser.add_argument('--cache-dir', type=pathlib.Path)
 args = parser.parse_args()
 target, library, output_library, digest, provider_digest = targets[(args.os, args.arch)]
 root = args.output
 root.mkdir(parents=True, exist_ok=True)
-archive = root.parent / 'microsoft.ml.onnxruntime.1.23.2.nupkg'
+cache = args.cache_dir or root.parent
+cache.mkdir(parents=True, exist_ok=True)
+archive = cache / 'microsoft.ml.onnxruntime.1.23.2.nupkg'
 if not archive.exists():
     subprocess.run(curl + ['--output', str(archive), 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/' + archive.name], check=True)
 
