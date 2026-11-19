@@ -22,6 +22,19 @@ type Schema struct {
 	ContentColumn  string
 	RevisionColumn string
 	Prefix         string
+	// SharedChunks uses a caller-installed {prefix}_chunks table with generation_id
+	// bigint, doc_key matching the document key type and referencing it with
+	// ON DELETE CASCADE, chunk_index integer or bigint, and embedding unbounded
+	// halfvec. Its primary key is (generation_id, doc_key, chunk_index).
+	// Without a caller-installed vector index, shared searches are exact. Kit
+	// creates or tunes no vector index on this table; callers own any index they
+	// add and its search behavior. Without the cascade, deleted documents' vectors
+	// remain in storage but are never returned. The default uses a chunk table
+	// and HNSW index per generation.
+	SharedChunks bool
+	// Begin opens write transactions; the store commits or rolls them back.
+	// If nil, the store opens transactions on the database pool.
+	Begin func(context.Context, *sql.TxOptions) (*sql.Tx, error)
 }
 
 func (s *Schema) validate() error {
@@ -37,13 +50,13 @@ func (s *Schema) validate() error {
 	return nil
 }
 
-func extensionSchema(ctx context.Context, db *sql.DB) (string, error) {
+func extensionSchema(ctx context.Context, db *sql.DB, shared bool) (string, error) {
 	var schema, version string
 	err := db.QueryRowContext(ctx, `SELECT n.nspname, e.extversion FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='vector'`).Scan(&schema, &version)
 	if err != nil {
 		return "", fmt.Errorf("find pgvector: %w", err)
 	}
-	if !supportedVersion(version) {
+	if !shared && !supportedVersion(version) {
 		return "", fmt.Errorf("pgvector 0.8.0 or later required for iterative scans (found %s)", version)
 	}
 	return schema, nil
@@ -82,13 +95,19 @@ func New[K comparable, G ~string](ctx context.Context, db *sql.DB, schema Schema
 	if db == nil {
 		return nil, errors.New("db is nil")
 	}
-	ext, err := extensionSchema(ctx, db)
+	ext, err := extensionSchema(ctx, db, schema.SharedChunks)
 	if err != nil {
 		return nil, err
 	}
 	s := &Store[K, G]{db: db, schema: schema, ext: ext}
 	if err := checkCatalog(ctx, db, schema); err != nil {
 		return nil, err
+	}
+	if schema.SharedChunks {
+		name := schema.Prefix + "_chunks"
+		if err := checkTable(ctx, db, name, "generation_id,doc_key,chunk_index,embedding"); err != nil {
+			return nil, fmt.Errorf("check table %s: %w", name, err)
+		}
 	}
 	return s, nil
 }
@@ -101,6 +120,20 @@ func (s *Store[K, G]) stamps() string { return postgres.QuoteIdentifier(s.schema
 
 func (s *Store[K, G]) chunks(id int64) string {
 	return postgres.QuoteIdentifier(fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id))
+}
+
+func (s *Store[K, G]) chunkTable(id int64) string {
+	if s.schema.SharedChunks {
+		return postgres.QuoteIdentifier(s.schema.Prefix + "_chunks")
+	}
+	return s.chunks(id)
+}
+
+func (s *Store[K, G]) begin(ctx context.Context) (*sql.Tx, error) {
+	if s.schema.Begin != nil {
+		return s.schema.Begin(ctx, nil)
+	}
+	return s.db.BeginTx(ctx, nil)
 }
 
 func (s *Store[K, G]) covered(doc, stamp string) string {

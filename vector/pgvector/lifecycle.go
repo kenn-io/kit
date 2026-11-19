@@ -73,10 +73,10 @@ func (s *Store[K, G]) ensureStorage(ctx context.Context, tx *sql.Tx, id int64, d
 	return nil
 }
 
-// EnsureGeneration registers a model and creates its chunk table and HNSW index.
+// EnsureGeneration registers a model. Default storage creates a chunk table and HNSW index.
 // An existing generation with the same model needs no sequence value and no DDL.
-// The state must be pending, building, or active; a retired generation is never
-// re-ensured and returns ErrRetired.
+// The state must be pending, building, or active. Shared storage permits
+// re-ensuring a retired generation as building.
 func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.Generation, state vector.State) error {
 	if state != vector.StatePending && state != vector.StateBuilding && state != vector.StateActive {
 		return fmt.Errorf("invalid generation state %q", state)
@@ -84,7 +84,7 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if model.Dimensions <= 0 || model.Dimensions > 4000 {
 		return fmt.Errorf("invalid generation dimension %d", model.Dimensions)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -96,7 +96,7 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if err != nil {
 		return err
 	}
-	if row.state == vector.StateRetired {
+	if row.state == vector.StateRetired && (!s.schema.SharedChunks || state != vector.StateBuilding) {
 		return vector.ErrRetired
 	}
 	if row.fingerprint != model.Fingerprint() || row.dim != model.Dimensions {
@@ -105,8 +105,10 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2`, s.generations()), state, row.id); err != nil {
 		return err
 	}
-	if err = s.ensureStorage(ctx, tx, row.id, model.Dimensions); err != nil {
-		return err
+	if !s.schema.SharedChunks {
+		if err = s.ensureStorage(ctx, tx, row.id, model.Dimensions); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -118,7 +120,7 @@ func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vecto
 	if !knownState(state) {
 		return fmt.Errorf("invalid generation state %q", state)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -139,7 +141,7 @@ func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vecto
 // Activate publishes a fully covered generation and retires the others. Retired
 // generations keep their storage.
 func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -166,11 +168,10 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 	return tx.Commit()
 }
 
-// Reclaim drops a retired generation's chunk table and stamps while keeping
-// its generation row. It requires a role that owns the managed tables. A
-// query's ACCESS SHARE lock keeps the chunk table until that query finishes.
+// Reclaim removes a retired generation's chunks and stamps while keeping
+// its generation row. Default storage requires a role that owns the tables.
 func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin generation reclamation: %w", err)
 	}
@@ -182,7 +183,13 @@ func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
 	if row.state != vector.StateRetired {
 		return fmt.Errorf("generation %v is %s; reclaim only a retired generation", gen, row.state)
 	}
-	if _, err = tx.ExecContext(ctx, "DROP TABLE IF EXISTS "+s.chunks(row.id)); err != nil {
+	q := "DROP TABLE IF EXISTS " + s.chunks(row.id)
+	args := []any{}
+	if s.schema.SharedChunks {
+		q = "DELETE FROM " + s.chunkTable(row.id) + " WHERE generation_id=$1"
+		args = append(args, row.id)
+	}
+	if _, err = tx.ExecContext(ctx, q, args...); err != nil {
 		return fmt.Errorf("drop retired vectors for generation %v: %w", gen, err)
 	}
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE generation_id=$1`, s.stamps()), row.id); err != nil {
