@@ -393,3 +393,57 @@ func TestIndexReviewExternalPageAlias(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, goodOKF, string(got))
 }
+
+func TestIndexReviewAncestorSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	for _, boundary := range []string{"external", "skill", "excluded", "internal"} {
+		t.Run(boundary, func(t *testing.T) {
+			isolateFrontmatterGit(t)
+			repo := gittest.NewRepoWithCommit(t)
+			t.Chdir(repo.Root)
+			const protected = "# Protected index\n" + indexBegin + "\noriginal protected text\n" + indexEnd + "\n"
+			repo.WriteFile("docs/index.md", indexBegin+"\nold\n"+indexEnd+"\n")
+			repo.WriteFile("docs/local.md", strings.Replace(goodOKF, "A page", "Local page", 1))
+			repo.WriteFile("docs/import/index.md", protected)
+			repo.WriteFile("docs/import/page.md", goodOKF)
+			targetDir := t.TempDir()
+			switch boundary {
+			case "skill":
+				repo.WriteFile("skills/a/SKILL.md", skillHeader)
+				targetDir = filepath.Join(repo.Root, "skills", "a", "references")
+			case "excluded":
+				targetDir = filepath.Join(repo.Root, "excluded")
+			case "internal":
+				targetDir = filepath.Join(repo.Root, "other")
+			}
+			require.NoError(t, os.MkdirAll(targetDir, 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(targetDir, "index.md"), []byte(protected), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(targetDir, "page.md"), []byte(goodOKF), 0o600))
+			repo.Run("add", ".")
+			require.NoError(t, os.RemoveAll("docs/import"))
+			require.NoError(t, os.Symlink(targetDir, "docs/import"))
+			for _, selection := range []string{"docs/import/index.md", "docs"} {
+				var out, errs bytes.Buffer
+				n, err := runFrontmatter(t.Context(), []string{"-fix", "-exclude", "excluded/**", selection}, &out, &errs)
+				require.NoError(t, err)
+				assert.Zero(t, n, errs.String())
+				got, err := os.ReadFile(filepath.Join(targetDir, "index.md"))
+				require.NoError(t, err)
+				assert.Equal(t, protected, string(got), "%s: %s", boundary, selection)
+				got, err = os.ReadFile(filepath.Join(targetDir, "page.md"))
+				require.NoError(t, err)
+				assert.Equal(t, goodOKF, string(got), "%s: %s", boundary, selection)
+				got, err = os.ReadFile("docs/index.md")
+				require.NoError(t, err)
+				assert.Contains(t, string(got), "(local.md)", "ordinary index still regenerates")
+				if boundary == "internal" {
+					assert.Contains(t, string(got), "(import/page.md)", "eligible alias pages stay indexed")
+				} else {
+					assert.NotContains(t, string(got), "import/page.md")
+				}
+			}
+		})
+	}
+}

@@ -477,3 +477,96 @@ func TestSkillReviewAnchoredSnapshots(t *testing.T) {
 		assert.Empty(t, after.skillProblems())
 	}
 }
+
+func TestSkillReviewWholeRootSelections(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("SKILL.md", skillHeader)
+	const resource = "# Portable resource\n"
+	for _, file := range []string{"references/x.md", "assets/t.md", "docs/page.md"} {
+		repo.WriteFile(file, resource)
+	}
+	repo.Run("add", ".")
+	for _, selection := range []string{".", "./", repo.Root} {
+		t.Run(selection, func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				args []string
+			}{
+				{"unlisted", []string{selection}},
+				{"fix", []string{"-fix", "-by", "human:test", selection}},
+				{"listed", []string{"-managed-skill", "SKILL.md", selection}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var out, errs bytes.Buffer
+					n, err := runFrontmatter(t.Context(), tc.args, &out, &errs)
+					if tc.name == "listed" {
+						require.NoError(t, err)
+					} else {
+						require.ErrorContains(t, err, "root SKILL.md")
+					}
+					assert.Zero(t, n, errs.String())
+					assert.NotContains(t, errs.String(), "references/x.md")
+					assert.NotContains(t, errs.String(), "assets/t.md")
+				})
+			}
+		})
+	}
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"docs/page.md"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "explicit ordinary document paths remain readable")
+	assert.Contains(t, errs.String(), "docs/page.md")
+	for _, file := range []string{"references/x.md", "assets/t.md", "docs/page.md"} {
+		got, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, resource, string(got), file)
+	}
+}
+
+func TestFrontmatterReviewAncestorSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	for _, boundary := range []string{"external", "skill", "excluded", "ordinary"} {
+		t.Run(boundary, func(t *testing.T) {
+			isolateFrontmatterGit(t)
+			repo := gittest.NewRepoWithCommit(t)
+			t.Chdir(repo.Root)
+			repo.WriteFile("docs/import/page.md", "# Tracked page\n")
+			const resource = "# Protected page\nPortable body\n"
+			targetDir := filepath.Join(repo.Root, "other")
+			switch boundary {
+			case "external":
+				targetDir = t.TempDir()
+			case "skill":
+				repo.WriteFile("skills/a/SKILL.md", skillHeader)
+				targetDir = filepath.Join(repo.Root, "skills", "a", "references")
+			case "excluded":
+				targetDir = filepath.Join(repo.Root, "excluded")
+			}
+			require.NoError(t, os.MkdirAll(targetDir, 0o700))
+			target := filepath.Join(targetDir, "page.md")
+			require.NoError(t, os.WriteFile(target, []byte(resource), 0o600))
+			repo.Run("add", ".")
+			require.NoError(t, os.RemoveAll("docs/import"))
+			require.NoError(t, os.Symlink(targetDir, "docs/import"))
+			var out, errs bytes.Buffer
+			n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-description", "Description", "-type-rule", "**=Guide", "-exclude", "excluded/**", "docs/import/page.md"}, &out, &errs)
+			if boundary == "ordinary" {
+				require.NoError(t, err)
+				assert.Zero(t, n, errs.String())
+			} else {
+				require.ErrorContains(t, err, "exactly one selected file")
+			}
+			got, readErr := os.ReadFile(target)
+			require.NoError(t, readErr)
+			if boundary == "ordinary" {
+				assert.Contains(t, string(got), "generated:")
+			} else {
+				assert.Equal(t, resource, string(got), boundary)
+			}
+		})
+	}
+}

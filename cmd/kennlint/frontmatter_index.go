@@ -136,14 +136,14 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 }
 
 func refreshTrackedIndex(root, file string, files []string, skillDirs map[string]struct{}, excludes []string) ([]byte, bool, error) {
-	info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(file)))
-	if err != nil {
+	// An index alias, through a linked final element or ancestor directory, can
+	// point into imported or excluded content. Only directly owned index files
+	// may be regenerated.
+	if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(file))); err != nil {
 		return nil, false, err
 	}
-	// Index aliases can point into imported bundles outside the repository.
-	// Only directly owned index files may be regenerated.
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, false, nil
+	if excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes); err != nil || excluded {
+		return nil, false, err
 	}
 	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
 	if err != nil {
