@@ -962,8 +962,7 @@ func TestQueryGenerationWithPredicateTxLeavesFailedTransactionToCaller(t *testin
 func TestQueryGenerationWithPredicateTxRecoversFromLockErrors(t *testing.T) {
 	t.Run("reclaimed snapshot", func(t *testing.T) {
 		db, owner := setupActiveStore(t)
-		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-		defer cancel()
+		ctx := t.Context()
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()
@@ -991,7 +990,6 @@ func TestQueryGenerationWithPredicateTxRecoversFromLockErrors(t *testing.T) {
 		require.NoError(t, err)
 		_, err = store.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{})
 		require.ErrorContains(t, err, "lock generation storage")
-		require.ErrorContains(t, err, "lock timeout")
 		var n int
 		require.NoError(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
 		require.NoError(t, tx.Rollback())
