@@ -30,8 +30,7 @@ func (b *frontmatterBlock) fixSkill(by string) (bool, map[string]string) {
 		// Block nodes appended to a flow root would encode as flow.
 		return false, map[string]string{"metadata": "frontmatter must be a block mapping to fix a skill"}
 	}
-	m := writableMappingField(root, "metadata")
-	b.fields["metadata"] = m
+	m := b.fields["metadata"]
 	if m == nil {
 		m = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		appendField(root, "metadata", m)

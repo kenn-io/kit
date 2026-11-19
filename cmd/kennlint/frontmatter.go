@@ -128,6 +128,9 @@ func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
 	if err := b.doc.Decode(&fields); err != nil {
 		return nil, fmt.Errorf("invalid frontmatter YAML: %w", err)
 	}
+	// Freeze alias uses as independent values before any fixer can mutate an
+	// anchor or remove its defining field. Unknown extensions retain their values.
+	materializeYAMLAliases(&b.doc)
 	b.fields = make(map[string]*yaml.Node)
 	content := b.doc.Content[0].Content
 	for i := 0; i < len(content); i += 2 {
@@ -198,7 +201,11 @@ func (b *frontmatterBlock) encode() ([]byte, bool, error) {
 		return nil, false, err
 	}
 	result := []byte("---" + b.newline + strings.ReplaceAll(header.String(), "\n", b.newline) + "---" + b.newline)
-	return append(result, b.body...), true, nil
+	result = append(result, b.body...)
+	if _, err := parseFrontmatter(result); err != nil {
+		return nil, false, fmt.Errorf("encoded frontmatter is invalid: %w", err)
+	}
+	return result, true, nil
 }
 
 // frontmatterTracked lists tracked Markdown files and the directories that
@@ -240,6 +247,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	excludes := frontmatterExcludes{
 		"**/README.md", "**/AGENTS.md", "**/CLAUDE.md", "docs/releases/**",
 		"**/CHANGELOG*.md", "**/changelog*.md",
+		"**/release-notes.md", "**/RELEASE-NOTES.md", "**/release_notes.md", "**/RELEASE_NOTES.md",
 		".github/**", "**/testdata/**", "vendor/**", "node_modules/**",
 	}
 	var managedSkills frontmatterExcludes

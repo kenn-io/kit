@@ -130,3 +130,58 @@ func TestOKFV03ReservedChangedGate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, n, errs.String())
 }
+
+func TestOKFV03AnchoredExtensionFix(t *testing.T) {
+	for _, header := range []string{
+		"last_edited: &old 2026-11-17\nx-snapshot: *old\n",
+		"generated: &generation {x-tag: [one, 2]}\nx-snapshot: *generation\n",
+	} {
+		t.Run(header, func(t *testing.T) {
+			isolateFrontmatterGit(t)
+			repo := gittest.NewRepoWithCommit(t)
+			t.Chdir(repo.Root)
+			src := "---\ntype: Guide\ntitle: Page\ndescription: Useful\n" + header + "---\n# Page\n"
+			before, err := parseFrontmatter([]byte(src))
+			require.NoError(t, err)
+			var original map[string]any
+			require.NoError(t, before.doc.Decode(&original))
+			repo.WriteFile("page.md", src)
+			repo.Run("add", "page.md")
+			var out, errs bytes.Buffer
+			n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test"}, &out, &errs)
+			require.NoError(t, err)
+			assert.Zero(t, n, errs.String())
+			got, err := os.ReadFile("page.md")
+			require.NoError(t, err)
+			after, err := parseFrontmatter(got)
+			require.NoError(t, err, "encoded metadata must remain readable")
+			var values map[string]any
+			require.NoError(t, after.doc.Decode(&values))
+			assert.Equal(t, original["x-snapshot"], values["x-snapshot"])
+			assert.Empty(t, after.okfProblems())
+		})
+	}
+}
+
+func TestOKFV03NativeReleaseNotes(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	const src = "# Release notes\nNative format\n"
+	files := []string{"docs/release-notes.md", "release-notes.md", "pkg/RELEASE-NOTES.md", "pkg/RELEASE_NOTES.md", "pkg/release_notes.md"}
+	for _, file := range files {
+		repo.WriteFile(file, src)
+	}
+	repo.Run("add", ".")
+	var out, errs bytes.Buffer
+	for _, args := range [][]string{nil, {"-fix", "-by", "human:test", "-type-rule", "**=Guide"}} {
+		n, err := runFrontmatter(t.Context(), args, &out, &errs)
+		require.NoError(t, err)
+		assert.Zero(t, n, errs.String())
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, src, string(data), file)
+	}
+}
