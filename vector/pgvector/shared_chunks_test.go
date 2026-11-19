@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/search/sqlquery"
 	"go.kenn.io/kit/vector"
 	"go.kenn.io/kit/vector/pgvector"
 )
@@ -41,6 +42,14 @@ func TestSharedChunksPrepopulatedKitSchema(t *testing.T) {
 	assert.InDelta(t, 1, hits[0].Score, 0.001)
 	assert.Equal(t, int64(2), hits[1].Doc)
 	assert.InDelta(t, 0, hits[1].Score, 0.001)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	hits, err = store.QueryGenerationWithPredicateTx(ctx, tx, gen, vector.Vector{1, 0}, 1, sqlquery.Predicate{SQL: "d.id = ?", Args: []any{int64(2)}})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, int64(2), hits[0].Doc)
+	require.NoError(t, tx.Commit())
 }
 
 func TestSharedChunksSaveDocumentsKeepsOtherGeneration(t *testing.T) {

@@ -187,9 +187,9 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 	return hits, nil
 }
 
-// QueryGenerationWithPredicateTx searches the caller's transaction. After a SQL
-// error, the caller must roll it back. The chunk lock lasts until the transaction
-// ends; SET LOCAL also affects later vector queries in that transaction.
+// QueryGenerationWithPredicateTx searches the caller's transaction. After a
+// query SQL error, the caller must roll it back. The chunk lock lasts until the
+// transaction ends; SET LOCAL also affects later vector queries in it.
 func (s *Store[K, G]) QueryGenerationWithPredicateTx(ctx context.Context, tx *sql.Tx, gen G, query vector.Vector, limit int, predicate sqlquery.Predicate) ([]vector.Hit[K], error) {
 	if tx == nil {
 		return nil, errors.New("pgvector: transaction is nil")
@@ -219,8 +219,14 @@ func (s *Store[K, G]) queryGenerationWithPredicate(ctx context.Context, tx *sql.
 			if reclaimed {
 				return nil, true, nil
 			}
-		} else if _, err := tx.ExecContext(ctx, "LOCK TABLE "+s.chunks(row.id)+" IN ACCESS SHARE MODE"); err != nil {
-			return nil, false, fmt.Errorf("lock generation storage: %w", err)
+		} else {
+			reclaimed, err := s.lockChunksTx(ctx, tx, row.id)
+			if err != nil {
+				return nil, false, fmt.Errorf("lock generation storage: %w", err)
+			}
+			if reclaimed {
+				return nil, true, nil
+			}
 		}
 		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL hnsw.ef_search = %d`, min(max(limit, 40), 1000))); err != nil {
 			return nil, false, err
@@ -245,7 +251,7 @@ func (s *Store[K, G]) queryGenerationWithPredicate(ctx context.Context, tx *sql.
 }
 
 func (s *Store[K, G]) lockChunks(ctx context.Context, tx *sql.Tx, gen G, row generationRow) (bool, error) {
-	_, err := tx.ExecContext(ctx, "LOCK TABLE "+s.chunks(row.id)+" IN ACCESS SHARE MODE")
+	err := s.lockChunkTable(ctx, tx, row.id)
 	if err == nil {
 		return false, nil
 	}
@@ -269,6 +275,40 @@ func (s *Store[K, G]) lockChunks(ctx context.Context, tx *sql.Tx, gen G, row gen
 	if !exists {
 		return true, nil
 	}
+	return false, err
+}
+
+func (s *Store[K, G]) lockChunkTable(ctx context.Context, tx *sql.Tx, id int64) error {
+	_, err := tx.ExecContext(ctx, "LOCK TABLE "+s.chunks(id)+" IN ACCESS SHARE MODE")
+	return err
+}
+
+// lockChunksTx recovers a missing chunk table without leaving the caller's snapshot.
+func (s *Store[K, G]) lockChunksTx(ctx context.Context, tx *sql.Tx, id int64) (bool, error) {
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT pgvector_chunk_lock`); err != nil {
+		return false, err
+	}
+	lockErr := s.lockChunkTable(ctx, tx, id)
+	if lockErr != nil {
+		if ctx.Err() != nil {
+			return false, lockErr
+		}
+		if _, err := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT pgvector_chunk_lock`); err != nil {
+			return false, errors.Join(lockErr, err)
+		}
+		var missing bool
+		if err := tx.QueryRowContext(ctx, `SELECT to_regclass($1) IS NULL`, s.chunks(id)).Scan(&missing); err != nil {
+			return false, errors.Join(lockErr, err)
+		}
+		if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT pgvector_chunk_lock`); err != nil {
+			return false, errors.Join(lockErr, err)
+		}
+		if !missing {
+			return false, lockErr
+		}
+		return true, nil
+	}
+	_, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT pgvector_chunk_lock`)
 	return false, err
 }
 
