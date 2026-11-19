@@ -72,19 +72,76 @@ func halfvec(v vector.Vector) (string, error) {
 
 // SaveVectors atomically checks the document revision, replaces chunks, and stamps it.
 func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision any, vectors []vector.ChunkVector) error {
-	tx, err := s.begin(ctx)
+	tx, err := s.beginWithOptions(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	stale, err := s.SaveDocuments(ctx, tx, gen, []Document[K]{{Doc: doc, Revision: revision, Vectors: vectors}})
+	if err = s.lockLifecycle(ctx, tx, true); err != nil {
+		return err
+	}
+	row, err := s.lookup(ctx, tx, gen, false)
 	if err != nil {
 		return err
 	}
-	if len(stale) != 0 {
-		return vector.ErrStale
+	if row.state == vector.StateRetired {
+		return vector.ErrRetired
+	}
+	if err = s.saveDocument(ctx, tx, row, doc, revision, vectors); err != nil {
+		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store[K, G]) saveDocument(ctx context.Context, tx *sql.Tx, row generationRow, doc K, revision any, vectors []vector.ChunkVector) error {
+	var err error
+	id := row.id
+	halfvecs := make([]string, len(vectors))
+	indexes := make([]int64, len(vectors))
+	for i, cv := range vectors {
+		if len(cv.Vector) != row.dim {
+			return fmt.Errorf("document %v chunk %d has %d dimensions, expected %d", doc, cv.ChunkIndex, len(cv.Vector), row.dim)
+		}
+		halfvecs[i], err = halfvec(cv.Vector)
+		if err != nil {
+			return fmt.Errorf("document %v chunk %d: %w", doc, cv.ChunkIndex, err)
+		}
+		indexes[i] = int64(cv.ChunkIndex)
+	}
+	var matches bool
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR NO KEY UPDATE`, postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), doc, revision).Scan(&matches)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("document %v missing: %w", doc, vector.ErrStale)
+	}
+	if err != nil {
+		return err
+	}
+	if !matches {
+		return vector.ErrStale
+	}
+	deleteQuery := fmt.Sprintf(`DELETE FROM %s WHERE doc_key=$1`, s.chunkTable(id))
+	deleteArgs := []any{doc}
+	if s.schema.SharedChunks {
+		deleteQuery += " AND generation_id=$2"
+		deleteArgs = append(deleteArgs, id)
+	}
+	if _, err = tx.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
+		return err
+	}
+	if len(vectors) > 0 {
+		cols, vals, args := "doc_key", "$1", []any{doc, indexes, halfvecs}
+		if s.schema.SharedChunks {
+			cols, vals, args = "generation_id,doc_key", "$4,$1", append(args, id)
+		}
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (%s,chunk_index,embedding) SELECT %s,chunk_index,embedding::%s.halfvec FROM unnest($2::bigint[],$3::text[]) AS chunks(chunk_index,embedding)`, s.chunkTable(id), cols, vals, postgres.QuoteIdentifier(s.ext)), args...); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (generation_id,doc_key,revision) SELECT $1,%s,%s FROM %s WHERE %s=$2 ON CONFLICT (generation_id,doc_key) DO UPDATE SET revision=excluded.revision`, s.stamps(), postgres.QuoteIdentifier(s.schema.IDColumn), postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), id, doc)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // LiveGenerations returns building generations before active generations, newest first.

@@ -668,7 +668,7 @@ func TestSaveDocumentsUUIDKeysAndStaleValidation(t *testing.T) {
 	docs[0].Revision = "old"
 	docs[0].Vectors[0].Vector = vector.Vector{1}
 	_, err = store.SaveDocuments(ctx, tx, "a", docs)
-	require.ErrorContains(t, err, "dimensions")
+	require.ErrorContains(t, err, "document ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB chunk 0")
 	require.NoError(t, tx.Rollback())
 }
 
@@ -721,8 +721,23 @@ func TestSaveDocumentsWithRuntimeGrants(t *testing.T) {
 	})
 	var schema string
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&schema))
-	_, err = db.ExecContext(ctx, `GRANT USAGE ON SCHEMA `+schema+` TO `+role+`; GRANT SELECT, DELETE ON docs TO `+role+`; GRANT SELECT ON vectors_generations TO `+role+`; GRANT SELECT, INSERT, UPDATE, DELETE ON vectors_stamps, vectors_chunks_g1 TO `+role)
+	_, err = db.ExecContext(ctx, `GRANT USAGE ON SCHEMA `+schema+` TO `+role+`; GRANT SELECT, UPDATE ON docs TO `+role+`; GRANT SELECT ON vectors_generations TO `+role+`; GRANT SELECT, INSERT, UPDATE, DELETE ON vectors_stamps TO `+role+`; GRANT SELECT, INSERT, DELETE ON vectors_chunks_g1 TO `+role)
 	require.NoError(t, err)
+	var canUpdate bool
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT has_table_privilege($1,'vectors_generations','UPDATE')`, role).Scan(&canUpdate))
+	require.False(t, canUpdate)
+	u, err := url.Parse(os.Getenv("KIT_POSTGRES_TEST_DSN"))
+	require.NoError(t, err)
+	q := u.Query()
+	q.Set("search_path", schema)
+	q.Set("role", role)
+	u.RawQuery = q.Encode()
+	runtimeDB, err := sql.Open("pgx", u.String())
+	require.NoError(t, err)
+	defer func() { _ = runtimeDB.Close() }()
+	runtimeStore, err := pgvector.New[int64, string](ctx, runtimeDB, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
+	require.NoError(t, err)
+	require.NoError(t, runtimeStore.SaveVectors(ctx, "a", 2, 1, []vector.ChunkVector{{Vector: vector.Vector{0, 1}}}))
 	tx, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
@@ -731,11 +746,17 @@ func TestSaveDocumentsWithRuntimeGrants(t *testing.T) {
 	stale, err := store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 1, Vectors: []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}}})
 	require.NoError(t, err)
 	require.Empty(t, stale)
+	var pid int
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid))
+	done := make(chan error, 1)
+	go func() { done <- store.SetGenerationState(ctx, "a", vector.StateRetired) }()
+	require.Eventually(t, func() bool {
+		var blocked bool
+		err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&blocked)
+		return err == nil && blocked
+	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, tx.Commit())
-	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
-	require.NoError(t, err)
-	require.Len(t, hits, 1)
-	require.Equal(t, int64(1), hits[0].Doc)
+	require.NoError(t, <-done)
 }
 
 func TestSaveDocumentsBlocksRetirement(t *testing.T) {
@@ -792,23 +813,134 @@ func TestSaveVectorsCoordinatesWithBatch(t *testing.T) {
 	require.Equal(t, 2, hits[0].ChunkIndex)
 }
 
-func TestSaveDocumentsKeepsEmbeddedRevisionDuringEdit(t *testing.T) {
+func TestSaveDocumentsTransactionWithEdit(t *testing.T) {
 	db, store := setupActiveStore(t)
 	ctx := t.Context()
-	tx, err := db.BeginTx(ctx, nil)
+	for _, commit := range []bool{false, true} {
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, `UPDATE docs SET body='changed', revision=2 WHERE id=1`)
+		require.NoError(t, err)
+		stale, err := store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 2, Vectors: []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}}})
+		require.NoError(t, err)
+		require.Empty(t, stale)
+		if commit {
+			require.NoError(t, tx.Commit())
+		} else {
+			require.NoError(t, tx.Rollback())
+		}
+		hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+		require.NoError(t, err)
+		pending, err := store.PendingForGeneration(ctx, "a", nil, 10)
+		require.NoError(t, err)
+		if commit {
+			require.Len(t, hits, 1)
+			require.Equal(t, int64(1), hits[0].Doc)
+			require.Len(t, pending, 1)
+		} else {
+			require.Empty(t, hits)
+			require.Len(t, pending, 2)
+			require.Equal(t, "cat", pending[0].Content)
+		}
+	}
+}
+
+func TestSaveDocumentsIsolationAndRepeatedKeys(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx := t.Context()
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	require.NoError(t, err)
-	defer func() { _ = tx.Rollback() }()
-	_, err = store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 1, Vectors: []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}}})
+	_, err = store.SaveDocuments(ctx, tx, "a", nil)
+	require.ErrorContains(t, err, "requires READ COMMITTED")
+	require.NoError(t, tx.Rollback())
+	tx, err = db.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `UPDATE docs SET body='changed', revision=2 WHERE id=1`)
+	_, err = store.SaveDocuments(ctx, tx, "missing", nil)
+	require.ErrorIs(t, err, vector.ErrGenerationNotFound)
+	require.NoError(t, tx.Rollback())
+	tx, err = db.BeginTx(ctx, nil)
 	require.NoError(t, err)
+	stale, err := store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{
+		{Doc: 1, Revision: 1, Vectors: []vector.ChunkVector{{ChunkIndex: 1, Vector: vector.Vector{1, 0}}}},
+		{Doc: 1, Revision: 1, Vectors: []vector.ChunkVector{{ChunkIndex: 2, Vector: vector.Vector{0, 1}}}},
+	})
+	require.NoError(t, err)
+	require.Empty(t, stale)
 	require.NoError(t, tx.Commit())
 	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
 	require.NoError(t, err)
-	require.Empty(t, hits)
+	require.Len(t, hits, 1)
+	require.Equal(t, 2, hits[0].ChunkIndex)
+}
+
+func TestSaveDocumentsDelayedOldRevision(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx := t.Context()
+	newer, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = newer.Rollback() }()
+	_, err = newer.ExecContext(ctx, `UPDATE docs SET body='new', revision=2 WHERE id=1`)
+	require.NoError(t, err)
+	_, err = store.SaveDocuments(ctx, newer, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 2, Vectors: []vector.ChunkVector{{ChunkIndex: 2, Vector: vector.Vector{1, 0}}}}})
+	require.NoError(t, err)
+	older, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = older.Rollback() }()
+	var pid int
+	require.NoError(t, older.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid))
+	type result struct {
+		stale []int64
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		stale, err := store.SaveDocuments(ctx, older, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 1, Vectors: []vector.ChunkVector{{ChunkIndex: 1, Vector: vector.Vector{0, 1}}}}})
+		done <- result{stale, err}
+	}()
+	require.Eventually(t, func() bool {
+		var blocked bool
+		err := db.QueryRowContext(ctx, `SELECT cardinality(pg_blocking_pids($1)) > 0`, pid).Scan(&blocked)
+		return err == nil && blocked
+	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, newer.Commit())
+	r := <-done
+	require.NoError(t, r.err)
+	require.Equal(t, []int64{1}, r.stale)
+	require.NoError(t, older.Commit())
+	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	require.Equal(t, 2, hits[0].ChunkIndex)
+}
+
+func TestSaveDocumentsOverlappingBatches(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx := t.Context()
+	first, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = first.Rollback() }()
+	docs := []pgvector.Document[int64]{{Doc: 1, Revision: 1}, {Doc: 2, Revision: 1}}
+	_, err = store.SaveDocuments(ctx, first, "a", docs)
+	require.NoError(t, err)
+	second, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = second.Rollback() }()
+	var pid int
+	require.NoError(t, second.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid))
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.SaveDocuments(ctx, second, "a", []pgvector.Document[int64]{{Doc: 2, Revision: 1}, {Doc: 1, Revision: 1}})
+		done <- err
+	}()
+	require.Eventually(t, func() bool {
+		var blocked bool
+		err := db.QueryRowContext(ctx, `SELECT cardinality(pg_blocking_pids($1)) > 0`, pid).Scan(&blocked)
+		return err == nil && blocked
+	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, first.Commit())
+	require.NoError(t, <-done)
+	require.NoError(t, second.Commit())
 	pending, err := store.PendingForGeneration(ctx, "a", nil, 10)
 	require.NoError(t, err)
-	require.Len(t, pending, 2)
-	require.Equal(t, int64(1), pending[0].Doc)
-	require.Equal(t, "changed", pending[0].Content)
+	require.Empty(t, pending)
 }
