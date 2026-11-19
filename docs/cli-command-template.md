@@ -1,6 +1,8 @@
 ---
+type: Guide
 title: "CLI command design template"
 description: "Worksheet and review checklist for designing a CLI command or command family."
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:55:50Z" }
 last_edited: 2026-11-19
 ---
 
