@@ -219,10 +219,8 @@ func (s *Store[K, G]) queryGenerationWithPredicate(ctx context.Context, tx *sql.
 			if reclaimed {
 				return nil, true, nil
 			}
-		} else {
-			if err := s.lockChunksTx(ctx, tx, row.id); err != nil {
-				return nil, false, fmt.Errorf("lock generation storage: %w", err)
-			}
+		} else if err := s.lockChunksTx(ctx, tx, row.id); err != nil {
+			return nil, false, fmt.Errorf("lock generation storage: %w", err)
 		}
 		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL hnsw.ef_search = %d`, min(max(limit, 40), 1000))); err != nil {
 			return nil, false, err
