@@ -136,10 +136,15 @@ metadata:
   status: deprecated # only when the skill has been retired
 ```
 
-Keep the skill timestamp quoted so its YAML type is string.
+Keep the skill timestamp quoted so its YAML type is string; this Kenn
+loader constraint is stricter than ordinary OKF documents, which also accept
+native YAML timestamps. Quoted offsets and dates are accepted as above.
 Omitted `metadata.status` means stable; use draft for provisional skills. If a
 retired skill is retained, set `metadata.status: deprecated` and link to its
-replacement when one exists. The fixer leaves status and native fields alone.
+replacement when one exists. Unknown status strings remain unchanged and
+are excluded from current knowledge, as for ordinary documents. Extension
+keys are permitted inside `metadata` and `metadata.generated`, including `x-`
+keys. The fixer leaves status and native fields alone.
 The `-fix` option re-encodes the header, preserving native values while their
 layout, such as indentation and folded scalars, may change.
 

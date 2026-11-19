@@ -91,7 +91,7 @@ func (b *frontmatterBlock) okfProblems() []string {
 }
 
 func validStatus(n *yaml.Node) bool {
-	return validString(n) && (n.Value == "stable" || n.Value == "draft" || n.Value == "deprecated")
+	return validString(n)
 }
 
 // generatedProblems checks a generated mapping; the skill profile also

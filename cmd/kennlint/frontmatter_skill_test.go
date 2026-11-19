@@ -34,7 +34,7 @@ func TestSkillProfileShapes(t *testing.T) {
 		{"flow generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1), ""},
 		{"scalar generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: x", 1), "metadata.generated must be a mapping"},
 		{"bare at", strings.ReplaceAll(skillHeader, "\"", ""), "metadata.generated.at must be a quoted string, for example \"2026-11-17T19:00:00Z\""},
-		{"status invalid", strings.Replace(skillHeader, "---\nBody", "  status: retired\n---\nBody", 1), "metadata.status must be one of stable, draft, or deprecated"},
+		{"status unknown", strings.Replace(skillHeader, "---\nBody", "  status: retired\n---\nBody", 1), ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -262,7 +262,7 @@ func TestSkillFixRefusesIncompleteProfile(t *testing.T) {
 		{"by only", "metadata:\n  type: Skill\n  generated:\n    by: human:old\n", "human:new", "supply both"},
 		{"at only", "metadata:\n  type: Skill\n  generated:\n    at: \"2020-01-01T00:00:00Z\"\n", "human:new", "supply both"},
 		{"wrong type", "metadata:\n  type: wrong\n", "human:test", ""},
-		{"invalid status", "metadata:\n  type: Skill\n  status: retired\n", "human:test", ""},
+		{"invalid status", "metadata:\n  type: Skill\n  status: []\n", "human:test", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, err := parseFrontmatter([]byte("---\n" + tc.header + "---\nBody\n"))
@@ -327,4 +327,31 @@ func TestFrontmatterDocumentSymlinkSkillExclusions(t *testing.T) {
 	data, err := os.ReadFile("other/page.md")
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "type: Guide")
+}
+
+func TestSkillV03TimestampsAndExtensions(t *testing.T) {
+	for _, timestamp := range []string{"2026-11-17", "2026-11-17T13:00:00+01:00"} {
+		b, err := parseFrontmatter([]byte(strings.ReplaceAll(skillHeader, "2026-11-17T12:00:00Z", timestamp)))
+		require.NoError(t, err)
+		assert.Empty(t, b.skillProblems())
+	}
+	src := "---\nname: example\ndescription: Useful\nx-root: {nested: [one, true, 2]}\nmetadata:\n  x-sync: {targets: [one, two]}\n  generated:\n    x-audit: [original, true]\n---\n# Skill\n"
+	b, err := parseFrontmatter([]byte(src))
+	require.NoError(t, err)
+	var before map[string]any
+	require.NoError(t, b.doc.Decode(&before))
+	changed, _ := b.fixSkill("human:test")
+	require.True(t, changed)
+	data, _, err := b.encode()
+	require.NoError(t, err)
+	after, err := parseFrontmatter(data)
+	require.NoError(t, err)
+	var values map[string]any
+	require.NoError(t, after.doc.Decode(&values))
+	assert.Equal(t, before["x-root"], values["x-root"])
+	m := before["metadata"].(map[string]any)
+	v := values["metadata"].(map[string]any)
+	assert.Equal(t, m["x-sync"], v["x-sync"])
+	assert.Equal(t, m["generated"].(map[string]any)["x-audit"], v["generated"].(map[string]any)["x-audit"])
+	assert.Empty(t, after.skillProblems())
 }

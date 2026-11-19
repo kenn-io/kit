@@ -13,7 +13,7 @@ func (b *frontmatterBlock) skillProblems() []string {
 	}
 	p = append(p, generatedProblems(mappingField(m, "generated"), "metadata.generated", true)...)
 	if n := mappingField(m, "status"); n != nil && !validStatus(n) {
-		p = append(p, "metadata.status must be one of stable, draft, or deprecated")
+		p = append(p, "metadata.status must be a non-empty string")
 	}
 	return p
 }
