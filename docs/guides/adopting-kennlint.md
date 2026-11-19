@@ -2,7 +2,7 @@
 type: Guide
 title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
-generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:25:53Z" }
 ---
 
 # Adopting the shared Go lint policy (kennlint)

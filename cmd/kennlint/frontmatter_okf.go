@@ -111,7 +111,7 @@ func generatedProblems(g *yaml.Node, path string) []string {
 }
 
 func fillGenerated(parent *yaml.Node, by, path string, complete bool) (bool, map[string]string) {
-	g := writableMappingField(parent, "generated")
+	g := mappingField(parent, "generated")
 	oldBy, oldAt := mappingField(g, "by"), mappingField(g, "at")
 	if (oldBy == nil) != (oldAt == nil) {
 		missing := "at"
@@ -175,8 +175,7 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 			return false, nil
 		}
 	}
-	g := writableMappingField(b.doc.Content[0], "generated")
-	b.fields["generated"] = g
+	g := b.fields["generated"]
 	oldBy, oldAt := mappingField(g, "by"), mappingField(g, "at")
 	_, validAt := parseTimestamp(oldAt)
 	if (g != nil && g.Kind != yaml.MappingNode) || (oldBy != nil && !validString(oldBy)) || (oldAt != nil && !validAt) {
@@ -246,25 +245,16 @@ func resolveYAML(n *yaml.Node) *yaml.Node {
 	return n
 }
 
-// writableMappingField detaches an aliased field before filling it, preserving
-// the extension or other field that owns its anchor.
-func writableMappingField(parent *yaml.Node, key string) *yaml.Node {
-	parent = resolveYAML(parent)
-	if parent == nil || parent.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i < len(parent.Content); i += 2 {
-		if parent.Content[i].Value != key {
-			continue
+// materializeYAMLAliases keeps each alias use independent before a fixer can
+// change its anchor. This also preserves aliases whose definitions are removed.
+func materializeYAMLAliases(n *yaml.Node) {
+	for i, child := range n.Content {
+		if child.Kind == yaml.AliasNode {
+			n.Content[i] = cloneYAMLValue(child)
+		} else {
+			materializeYAMLAliases(child)
 		}
-		n := parent.Content[i+1]
-		if n.Kind == yaml.AliasNode {
-			n = cloneYAMLValue(n)
-			parent.Content[i+1] = n
-		}
-		return n
 	}
-	return nil
 }
 
 func cloneYAMLValue(n *yaml.Node) *yaml.Node {

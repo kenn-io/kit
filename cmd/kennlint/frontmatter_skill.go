@@ -4,8 +4,8 @@ import "gopkg.in/yaml.v3"
 
 func (b *frontmatterBlock) skillProblems() []string {
 	m := b.fields["metadata"]
-	if m == nil || m.Kind != yaml.MappingNode || m.Style&yaml.FlowStyle != 0 {
-		return []string{"metadata must be a block mapping"}
+	if m == nil || m.Kind != yaml.MappingNode {
+		return []string{"metadata must be a mapping"}
 	}
 	var p []string
 	if n := mappingField(m, "type"); n == nil || !validString(n) || n.Value != "Skill" {
@@ -26,12 +26,8 @@ func (b *frontmatterBlock) fixSkill(by string) (bool, map[string]string) {
 	if len(b.skillProblems()) == 0 {
 		return false, nil
 	}
-	if root.Style&yaml.FlowStyle != 0 {
-		// Block nodes appended to a flow root would encode as flow.
-		return false, map[string]string{"metadata": "frontmatter must be a block mapping to fix a skill"}
-	}
-	m := writableMappingField(root, "metadata")
-	b.fields["metadata"] = m
+
+	m := b.fields["metadata"]
 	if m == nil {
 		m = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		appendField(root, "metadata", m)
