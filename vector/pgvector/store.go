@@ -287,9 +287,6 @@ func (s *Store[K, G]) lockChunksTx(ctx context.Context, tx *sql.Tx, id int64) er
 	}
 	lockErr := s.lockChunkTable(ctx, tx, id)
 	if lockErr != nil {
-		if ctx.Err() != nil {
-			return lockErr
-		}
 		if _, err := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT pgvector_chunk_lock`); err != nil {
 			return errors.Join(lockErr, err)
 		}
