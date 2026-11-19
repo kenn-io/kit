@@ -48,8 +48,8 @@ provider workflows to this repo unless the package already owns that concern.
 - Never name private downstream projects or other private codebases in public
   artifacts. Describe reusable requirements generically and scrub public
   surfaces before publishing.
-- Follow the [docs profile and lifecycle guide](docs/adopting-docs.md); mark
-  retired docs deprecated and link replacements.
+- When creating or meaningfully updating [Kenn docs](docs/adopting-docs.md), set `generated: { by, at }` to the actual editor (coding tool/model for agent edits) and current UTC time; leave formatting-only edits alone.
+- Mark retained retired docs `status: deprecated` and link replacements when available.
 
 ## Go Conventions
 
