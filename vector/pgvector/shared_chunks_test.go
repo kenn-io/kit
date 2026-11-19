@@ -43,6 +43,37 @@ func TestSharedChunksPrepopulatedKitSchema(t *testing.T) {
 	assert.InDelta(t, 0, hits[1].Score, 0.001)
 }
 
+func TestSharedChunksSaveDocumentsKeepsOtherGeneration(t *testing.T) {
+	db, _ := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1)`)
+	require.NoError(t, err)
+	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors", SharedChunks: true}
+	store, err := pgvector.New[int64, string](ctx, db, schema)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Model: "a", Dimensions: 2}, vector.StateActive))
+	require.NoError(t, store.EnsureGeneration(ctx, "b", vector.Generation{Model: "b", Dimensions: 2}, vector.StateBuilding))
+	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	require.NoError(t, store.SaveVectors(ctx, "b", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{0, 1}}}))
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	stale, err := store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 1, Revision: 1, Vectors: []vector.ChunkVector{{Vector: vector.Vector{0, 1}}}}})
+	require.NoError(t, err)
+	require.Empty(t, stale)
+	require.NoError(t, tx.Commit())
+	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{0, 1}, 10)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, int64(1), hits[0].Doc)
+	assert.InDelta(t, 1, hits[0].Score, 0.001)
+	hits, err = store.QueryGeneration(ctx, "b", vector.Vector{0, 1}, 10)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, int64(1), hits[0].Doc)
+	assert.InDelta(t, 1, hits[0].Score, 0.001)
+}
+
 func TestSharedChunksDMLRole(t *testing.T) {
 	db, _ := setup(t)
 	ctx := t.Context()

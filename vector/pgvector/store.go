@@ -84,6 +84,14 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	if row.state == vector.StateRetired {
 		return vector.ErrRetired
 	}
+	if err = s.saveDocument(ctx, tx, row, doc, revision, vectors); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store[K, G]) saveDocument(ctx context.Context, tx *sql.Tx, row generationRow, doc K, revision any, vectors []vector.ChunkVector) error {
+	var err error
 	id := row.id
 	halfvecs := make([]string, len(vectors))
 	indexes := make([]int64, len(vectors))
@@ -98,7 +106,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		indexes[i] = int64(cv.ChunkIndex)
 	}
 	var matches bool
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR SHARE`, postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), doc, revision).Scan(&matches)
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR NO KEY UPDATE`, postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), doc, revision).Scan(&matches)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("document %v missing: %w", doc, vector.ErrStale)
 	}
@@ -127,10 +135,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		}
 	}
 	_, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (generation_id,doc_key,revision) SELECT $1,%s,%s FROM %s WHERE %s=$2 ON CONFLICT (generation_id,doc_key) DO UPDATE SET revision=excluded.revision`, s.stamps(), postgres.QuoteIdentifier(s.schema.IDColumn), postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), id, doc)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
+	return err
 }
 
 // LiveGenerations returns building generations before active generations, newest first.
