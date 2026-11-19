@@ -139,3 +139,25 @@ func TestSharedChunksDMLRole(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, hits, 1)
 }
+
+func TestSharedChunksMatchesDefaultRanking(t *testing.T) {
+	db, normal := setup(t)
+	ctx := t.Context()
+	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "shared", SharedChunks: true}
+	require.NoError(t, pgvector.Install(ctx, db, schema))
+	_, err := db.ExecContext(ctx, `CREATE TABLE shared_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1),(2,'b',1),(3,'c',1)`)
+	require.NoError(t, err)
+	shared, err := pgvector.New[int64, string](ctx, db, schema)
+	require.NoError(t, err)
+	for _, store := range []*pgvector.Store[int64, string]{normal, shared} {
+		require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateBuilding))
+		for id, v := range map[int64]vector.Vector{1: {1, 0}, 2: {0, 1}, 3: {1, 1}} {
+			require.NoError(t, store.SaveVectors(ctx, "a", id, 1, []vector.ChunkVector{{Vector: v}}))
+		}
+	}
+	expected, err := normal.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 3)
+	require.NoError(t, err)
+	actual, err := shared.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 3)
+	require.NoError(t, err)
+	require.Equal(t, expected, actual)
+}
