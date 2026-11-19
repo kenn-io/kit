@@ -27,6 +27,7 @@ func TestNormalizedMetadata(t *testing.T) {
 		{name: "null source usage_window", before: "sources: [{resource: /a.md}]\n", after: "sources: [{resource: /a.md, usage_window: null}]\n"},
 		{name: "null parameter member", before: "parameters: [{name: year, type: integer}]\n", after: "parameters: [{name: year, type: integer, required: null}]\n"},
 		{name: "extension value changes", before: "x-owner: a\n", after: "x-owner: b\n", different: true},
+		{name: "unprefixed extension content kept", before: "custom: {a: null}\n", after: "custom: {}\n", different: true},
 		{name: "extension content kept", before: "x-owner: {a: null}\n", after: "x-owner: {}\n", different: true},
 		{name: "null list member kept", before: "tags: [null]\n", after: "tags: []\n", different: true},
 		{name: "source author appears", before: "sources: [{resource: /a.md}]\n", after: "sources: [{resource: /a.md, author: me}]\n", different: true},

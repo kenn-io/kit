@@ -16,8 +16,6 @@ import (
 var ErrNoFrontmatter = errors.New("missing opening --- frontmatter delimiter")
 
 // Document contains an editable YAML mapping and the uninterpreted Markdown body.
-// Parse expands aliases into independent values so an edit cannot change another
-// field that referred to the same anchor.
 type Document struct {
 	Metadata yaml.Node
 	Body     []byte
@@ -34,6 +32,7 @@ func New(body []byte) *Document {
 }
 
 // Parse reads a single delimited mapping and retains the remaining bytes as the body.
+// Metadata must use direct values. Anchors and aliases are unsupported.
 // Body shares its backing array with src.
 func Parse(src []byte) (*Document, error) {
 	line, content, _ := bytes.Cut(src, []byte("\n"))
@@ -70,37 +69,32 @@ func Parse(src []byte) (*Document, error) {
 		return nil, errors.New("frontmatter must be a YAML mapping")
 	}
 	d.Metadata = *doc.Content[0]
-	// yaml.Node alone accepts duplicate keys and cyclic aliases. Decode before
-	// expanding any aliases so yaml.v3 checks both.
+	if err := prepareMapping(&d.Metadata); err != nil {
+		return nil, err
+	}
+	// Decoding into a map also checks for duplicate keys at every depth.
 	var values map[string]any
 	if err := d.Metadata.Decode(&values); err != nil {
 		return nil, fmt.Errorf("invalid frontmatter YAML: %w", err)
 	}
-	expandAliases(&d.Metadata)
 	return d, nil
 }
 
-func expandAliases(n *yaml.Node) {
-	for i, child := range n.Content {
-		if child.Kind == yaml.AliasNode {
-			n.Content[i] = cloneValue(child.Alias)
-		} else {
-			expandAliases(child)
+func prepareMapping(n *yaml.Node) error {
+	if n.Anchor != "" || n.Kind == yaml.AliasNode {
+		return errors.New("frontmatter does not support YAML anchors and aliases")
+	}
+	// yaml.v3 assigns a YAML 1.1 merge tag to plain <<. In the YAML 1.2
+	// core schema used by OKF it is a string.
+	if n.Tag == "!!merge" && n.Value == "<<" {
+		n.Tag = "!!str"
+	}
+	for _, child := range n.Content {
+		if err := prepareMapping(child); err != nil {
+			return err
 		}
 	}
-}
-
-func cloneValue(n *yaml.Node) *yaml.Node {
-	if n.Kind == yaml.AliasNode {
-		return cloneValue(n.Alias)
-	}
-	clone := *n
-	clone.Anchor = ""
-	clone.Content = make([]*yaml.Node, len(n.Content))
-	for i, child := range n.Content {
-		clone.Content[i] = cloneValue(child)
-	}
-	return &clone
+	return nil
 }
 
 // Field looks up a path of mapping keys. It returns nil if the path is absent.

@@ -34,10 +34,25 @@ func (r *frontmatterRules) Set(s string) error {
 	return nil
 }
 
-var frontmatterNow = time.Now
+func typeForFile(rules frontmatterRules, file string) (kind, problem string) {
+	var first frontmatterRule
+	for _, rule := range rules {
+		if !frontmatterGlob(rule.glob, file) {
+			continue
+		}
+		if first.kind != "" && first.kind != rule.kind {
+			return "", fmt.Sprintf("type rules disagree: %s=%s, %s=%s", first.glob, first.kind, rule.glob, rule.kind)
+		}
+		first = rule
+	}
+	if first.kind == "" {
+		return "", "add type: or a matching -type-rule"
+	}
+	return first.kind, ""
+}
 
 func appendField(n *yaml.Node, key string, value *yaml.Node) {
-	n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value)
+	n.Content = append(n.Content, stringNode(key), value)
 }
 
 func stringNode(s string) *yaml.Node {
@@ -111,43 +126,23 @@ func fixOKF(b *okf.Document, file string, rules frontmatterRules, by, descriptio
 	}
 	changed := false
 	root := &b.Metadata
-	put := func(k, v string) {
-		if b.Field(k) == nil && strings.TrimSpace(v) != "" {
-			n := stringNode(v)
-			appendField(root, k, n)
-			changed = true
+	put := func(key, value, missing string) {
+		if value == "" {
+			notes[key] = missing
+			return
 		}
+		appendField(root, key, stringNode(value))
+		changed = true
 	}
 	if b.Field("type") == nil {
-		var matches []string
-		kind := ""
-		ambiguous := false
-		for _, r := range rules {
-			if frontmatterGlob(r.glob, file) {
-				matches = append(matches, r.glob+"="+r.kind)
-				if kind != "" && kind != r.kind {
-					ambiguous = true
-				}
-				kind = r.kind
-			}
-		}
-		if ambiguous {
-			notes["type"] = "type rules disagree: " + strings.Join(matches, ", ")
-		} else if kind == "" {
-			notes["type"] = "add type: or a matching -type-rule"
-		} else {
-			put("type", kind)
-		}
+		kind, problem := typeForFile(rules, file)
+		put("type", kind, problem)
 	}
 	if b.Field("title") == nil {
-		put("title", headingTitle(b.Body))
-		if b.Field("title") == nil {
-			notes["title"] = "add title: (first block is not an H1)"
-		}
+		put("title", headingTitle(b.Body), "add title: (first block is not an H1)")
 	}
-	put("description", description)
 	if b.Field("description") == nil {
-		notes["description"] = "supply -description TEXT"
+		put("description", description, "supply -description TEXT")
 	}
 	if (oldBy == nil) != (oldAt == nil) {
 		missing := "generated.by"
@@ -155,22 +150,26 @@ func fixOKF(b *okf.Document, file string, rules frontmatterRules, by, descriptio
 			missing = "generated.at"
 		}
 		notes[missing] = missing + " is missing; supply both generated.by and generated.at by hand"
-	} else if oldBy == nil {
-		if by == "" {
-			notes["generated.by"] = "generated.by: supply -by ACTOR"
-		} else if okf.NonEmptyString(b.Field("type")) && okf.NonEmptyString(b.Field("title")) && okf.NonEmptyString(b.Field("description")) {
-			if g == nil {
-				g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-				appendField(root, "generated", g)
-			}
-			g.Style |= yaml.FlowStyle
-			appendField(g, "by", stringNode(by))
-			appendField(g, "at", stringNode(frontmatterNow().UTC().Truncate(time.Second).Format(time.RFC3339)))
-			if i := slices.Index(root.Content, b.Field("last_edited")); i > 0 {
-				root.Content = slices.Delete(root.Content, i-1, i+1)
-			}
-			changed = true
-		}
+		return changed, notes
 	}
-	return changed, notes
+	if oldBy != nil {
+		return changed, notes
+	}
+	if by == "" {
+		notes["generated.by"] = "generated.by: supply -by ACTOR"
+	}
+	if len(notes) != 0 {
+		return changed, notes
+	}
+	if g == nil {
+		g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		appendField(root, "generated", g)
+	}
+	g.Style |= yaml.FlowStyle
+	appendField(g, "by", stringNode(by))
+	appendField(g, "at", stringNode(time.Now().UTC().Format(time.RFC3339)))
+	if i := slices.Index(root.Content, b.Field("last_edited")); i > 0 {
+		root.Content = slices.Delete(root.Content, i-1, i+1)
+	}
+	return true, notes
 }

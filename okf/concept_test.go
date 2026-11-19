@@ -9,6 +9,23 @@ import (
 	"go.kenn.io/kit/okf"
 )
 
+func TestConceptFields(t *testing.T) {
+	for _, tc := range []struct{ fields, problem string }{
+		{"type: Custom\nstatus: future", ""},
+		{"type: Guide\nstatus: []", ""},
+		{"type: Guide\nstatus: 42", "status must be a non-empty string"},
+		{"title: Page", "type must be a non-empty string"},
+	} {
+		doc, err := okf.Parse([]byte("---\n" + tc.fields + "\n---\n"))
+		require.NoError(t, err)
+		if tc.problem == "" {
+			assert.Empty(t, doc.ConceptProblems())
+		} else {
+			assert.Contains(t, doc.ConceptProblems(), tc.problem)
+		}
+	}
+}
+
 func TestConceptSources(t *testing.T) {
 	cases := []struct {
 		name, sources, problem string
@@ -27,8 +44,8 @@ func TestConceptSources(t *testing.T) {
 		{"empty resource", "sources: [{resource: ' '}]\n", "sources[0].resource must be a non-empty string"},
 		{"numeric resource", "sources: [{resource: 42}]\n", "sources[0].resource must be a non-empty string"},
 		{"mapping resource", "sources: [{resource: {url: page}}]\n", "sources[0].resource must be a non-empty string"},
-		{"empty ID", "sources: [{id: '', resource: page}]\n", "sources[0].id must be a non-empty string"},
-		{"null ID", "sources: [{id: null, resource: page}]\n", "sources[0].id must be a non-empty string"},
+		{"empty ID", "sources: [{id: '', resource: page}]\n", ""},
+		{"null ID", "sources: [{id: null, resource: page}]\n", ""},
 		{"numeric ID", "sources: [{id: 1, resource: page}]\n", "sources[0].id must be a non-empty string"},
 		{"duplicate ID", "sources: [{id: same, resource: a}, {id: same, resource: b}]\n", "sources[1].id must be unique within sources"},
 	}

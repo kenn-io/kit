@@ -30,7 +30,7 @@ func sourcesProblems(sources *yaml.Node) []string {
 		if !NonEmptyString(mappingField(source, "resource")) {
 			problems = append(problems, entry+".resource must be a non-empty string")
 		}
-		if id := mappingField(source, "id"); id != nil {
+		if id := mappingField(source, "id"); id != nil && !emptyOptional(id) {
 			if !NonEmptyString(id) {
 				problems = append(problems, entry+".id must be a non-empty string")
 			} else if _, exists := ids[id.Value]; exists {
