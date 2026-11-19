@@ -230,7 +230,8 @@ pipeline. Preserve these invariants when changing it.
   `doc_key` matching the document key and cascading on delete, `chunk_index`
   integer or bigint, unbounded halfvec `embedding`, and primary key
   `(generation_id, doc_key, chunk_index)`. Kit manages no vector index there.
-  Retired generations return only as building; `Reclaim` deletes their rows.
+  `EnsureGeneration` restores retired generations only as building;
+  `SetGenerationState` cannot restore them. `Reclaim` deletes their rows.
 - `PendingForGeneration` and `SaveVectors` return `ErrRetired` for retired
   generations. `SaveVectors` and `QueryGeneration` reject non-finite or
   zero-norm vectors before PostgreSQL converts them to halfvec.
