@@ -220,12 +220,8 @@ func (s *Store[K, G]) queryGenerationWithPredicate(ctx context.Context, tx *sql.
 				return nil, true, nil
 			}
 		} else {
-			reclaimed, err := s.lockChunksTx(ctx, tx, row.id)
-			if err != nil {
+			if err := s.lockChunksTx(ctx, tx, row.id); err != nil {
 				return nil, false, fmt.Errorf("lock generation storage: %w", err)
-			}
-			if reclaimed {
-				return nil, true, nil
 			}
 		}
 		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL hnsw.ef_search = %d`, min(max(limit, 40), 1000))); err != nil {
@@ -283,33 +279,26 @@ func (s *Store[K, G]) lockChunkTable(ctx context.Context, tx *sql.Tx, id int64) 
 	return err
 }
 
-// lockChunksTx recovers a missing chunk table without leaving the caller's snapshot.
-func (s *Store[K, G]) lockChunksTx(ctx context.Context, tx *sql.Tx, id int64) (bool, error) {
+// lockChunksTx keeps lock errors from aborting the caller's transaction.
+func (s *Store[K, G]) lockChunksTx(ctx context.Context, tx *sql.Tx, id int64) error {
 	if _, err := tx.ExecContext(ctx, `SAVEPOINT pgvector_chunk_lock`); err != nil {
-		return false, err
+		return err
 	}
 	lockErr := s.lockChunkTable(ctx, tx, id)
 	if lockErr != nil {
 		if ctx.Err() != nil {
-			return false, lockErr
+			return lockErr
 		}
 		if _, err := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT pgvector_chunk_lock`); err != nil {
-			return false, errors.Join(lockErr, err)
-		}
-		var missing bool
-		if err := tx.QueryRowContext(ctx, `SELECT to_regclass($1) IS NULL`, s.chunks(id)).Scan(&missing); err != nil {
-			return false, errors.Join(lockErr, err)
+			return errors.Join(lockErr, err)
 		}
 		if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT pgvector_chunk_lock`); err != nil {
-			return false, errors.Join(lockErr, err)
+			return errors.Join(lockErr, err)
 		}
-		if !missing {
-			return false, lockErr
-		}
-		return true, nil
+		return lockErr
 	}
 	_, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT pgvector_chunk_lock`)
-	return false, err
+	return err
 }
 
 // candidateQuery selects the nearest fresh chunks and returns their stamp revision.

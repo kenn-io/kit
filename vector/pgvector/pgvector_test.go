@@ -991,9 +991,8 @@ func TestQueryGenerationWithPredicateTxReclaimedSnapshot(t *testing.T) {
 	require.NoError(t, owner.Reclaim(ctx, "a"))
 	queryCtx, queryCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer queryCancel()
-	hits, err := store.QueryGenerationWithPredicateTx(queryCtx, tx, "a", vector.Vector{1, 0}, 10, sqlquery.Predicate{})
-	require.NoError(t, err)
-	assert.Empty(t, hits)
+	_, err = store.QueryGenerationWithPredicateTx(queryCtx, tx, "a", vector.Vector{1, 0}, 10, sqlquery.Predicate{})
+	require.ErrorContains(t, err, "lock generation storage")
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT body FROM docs WHERE id=1`).Scan(&body))
 	assert.Equal(t, "cat", body)
 	require.NoError(t, tx.Commit())
@@ -1028,14 +1027,10 @@ func TestQueryGenerationWithPredicateTxReclaimRace(t *testing.T) {
 		}, 5*time.Second, 10*time.Millisecond)
 	}
 	waitForLock(`DROP TABLE IF EXISTS "vectors_chunks_g1"`)
-	type result struct {
-		hits []vector.Hit[int64]
-		err  error
-	}
-	queryDone := make(chan result, 1)
+	queryDone := make(chan error, 1)
 	go func() {
-		hits, err := store.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 10, sqlquery.Predicate{})
-		queryDone <- result{hits, err}
+		_, err := store.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 10, sqlquery.Predicate{})
+		queryDone <- err
 	}()
 	waitForLock(`LOCK TABLE "vectors_chunks_g1" IN ACCESS SHARE MODE`)
 	require.NoError(t, blocker.Rollback())
@@ -1046,12 +1041,27 @@ func TestQueryGenerationWithPredicateTxReclaimRace(t *testing.T) {
 		require.NoError(t, ctx.Err())
 	}
 	select {
-	case result := <-queryDone:
-		require.NoError(t, result.err)
-		assert.Empty(t, result.hits)
+	case err := <-queryDone:
+		require.ErrorContains(t, err, "lock generation storage")
 	case <-ctx.Done():
 		require.NoError(t, ctx.Err())
 	}
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT body FROM docs WHERE id=1`).Scan(&body))
+	assert.Equal(t, "cat", body)
+	require.NoError(t, tx.Commit())
+}
+
+func TestQueryGenerationWithPredicateTxMissingActiveTable(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `DROP TABLE vectors_chunks_g1`)
+	require.NoError(t, err)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = store.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{})
+	require.ErrorContains(t, err, "lock generation storage")
+	var body string
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT body FROM docs WHERE id=1`).Scan(&body))
 	assert.Equal(t, "cat", body)
 	require.NoError(t, tx.Commit())
