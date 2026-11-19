@@ -245,9 +245,10 @@ func (s *Store[K, G]) lockChunks(ctx context.Context, tx *sql.Tx, gen G, row gen
 }
 
 // candidateQuery selects the nearest fresh chunks and returns their stamp revision.
-// The inner ORDER BY is the distance alone so PostgreSQL can walk the HNSW index; ties are
-// broken by document key after the candidate limit. The freshness check runs during the
-// index scan, and hnsw.iterative_scan keeps scanning until the limit is filled.
+// The inner ORDER BY is distance alone; ties are broken by document key after
+// the candidate limit. Default storage uses an HNSW index and iterative scans
+// to fill the limit while checking freshness. Shared storage searches exactly
+// when the caller has not installed a vector index.
 func (s *Store[K, G]) candidateQuery(id int64, query vector.Vector, limit int, predicate sqlquery.Predicate) (string, []any, error) {
 	ext, docs, key := postgres.QuoteIdentifier(s.ext), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)
 	queryVector, err := halfvec(query)

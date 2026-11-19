@@ -229,9 +229,11 @@ pipeline. Preserve these invariants when changing it.
 - Shared storage uses a caller-installed chunk table with `generation_id bigint`,
   `doc_key` matching the document key and cascading on delete, `chunk_index`
   integer or bigint, unbounded halfvec `embedding`, and primary key
-  `(generation_id, doc_key, chunk_index)`. Kit manages no vector index there.
-  `EnsureGeneration` restores retired generations only as building;
-  `SetGenerationState` cannot restore them. `Reclaim` deletes their rows.
+  `(generation_id, doc_key, chunk_index)`. Without an app-installed vector
+  index, searches are exact. Apps own any index they add and its search
+  behavior. Kit creates or tunes none. `EnsureGeneration` restores retired
+  generations only as building; `SetGenerationState` cannot restore them.
+  `Reclaim` deletes their rows.
 - `PendingForGeneration` and `SaveVectors` return `ErrRetired` for retired
   generations. `SaveVectors` and `QueryGeneration` reject non-finite or
   zero-norm vectors before PostgreSQL converts them to halfvec.

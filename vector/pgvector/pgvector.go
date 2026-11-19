@@ -26,11 +26,14 @@ type Schema struct {
 	// bigint, doc_key matching the document key type and referencing it with
 	// ON DELETE CASCADE, chunk_index integer or bigint, and embedding unbounded
 	// halfvec. Its primary key is (generation_id, doc_key, chunk_index).
-	// Shared storage is searched exactly; Kit never creates or tunes a vector
-	// index on it. Without the cascade, deleted documents' vectors remain in
-	// storage but are never returned.
+	// Without a caller-installed vector index, shared searches are exact. Kit
+	// creates or tunes no vector index on this table; callers own any index they
+	// add and its search behavior. Without the cascade, deleted documents' vectors
+	// remain in storage but are never returned. The default uses a chunk table
+	// and HNSW index per generation.
 	SharedChunks bool
 	// Begin opens write transactions; the store commits or rolls them back.
+	// If nil, the store opens transactions on the database pool.
 	Begin func(context.Context, *sql.TxOptions) (*sql.Tx, error)
 }
 
