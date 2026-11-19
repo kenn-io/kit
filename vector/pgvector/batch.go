@@ -47,17 +47,7 @@ func (s *Store[K, G]) SaveDocuments(ctx context.Context, tx *sql.Tx, gen G, docs
 		keys[i] = doc.Doc
 	}
 	key := postgres.QuoteIdentifier(s.schema.IDColumn)
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT 1 FROM %s WHERE %s=ANY($1) ORDER BY %s FOR NO KEY UPDATE`, postgres.QuoteIdentifier(s.schema.DocsTable), key, key), keys)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-	}
-	err = rows.Err()
-	if closeErr := rows.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SELECT 1 FROM %s WHERE %s=ANY($1) ORDER BY %s FOR NO KEY UPDATE`, postgres.QuoteIdentifier(s.schema.DocsTable), key, key), keys); err != nil {
 		return nil, err
 	}
 	var stale []K
