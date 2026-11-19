@@ -584,3 +584,60 @@ func TestQuotedExtensionSchema(t *testing.T) {
 	require.Len(t, hits, 1)
 	assert.Equal(t, int64(1), hits[0].Doc)
 }
+
+func TestSaveDocuments(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx := t.Context()
+	require.NoError(t, store.SaveVectors(ctx, "a", 2, 1, []vector.ChunkVector{{Vector: vector.Vector{0, 1}}}))
+	_, err := db.ExecContext(ctx, `UPDATE docs SET revision=2 WHERE id=2`)
+	require.NoError(t, err)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	docs := []pgvector.Document[int64]{
+		{Doc: 1, Revision: 1, Vectors: []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}},
+		{Doc: 2, Revision: 1, Vectors: []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}},
+		{Doc: 3, Revision: 1},
+	}
+	stale, err := store.SaveDocuments(ctx, tx, "a", docs)
+	require.NoError(t, err)
+	require.Equal(t, []int64{2, 3}, stale)
+	require.NoError(t, tx.Rollback())
+	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+	require.NoError(t, err)
+	require.Empty(t, hits)
+	tx, err = db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	stale, err = store.SaveDocuments(ctx, tx, "a", docs)
+	require.NoError(t, err)
+	require.Equal(t, []int64{2, 3}, stale)
+	require.NoError(t, tx.Commit())
+	hits, err = store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	require.Equal(t, int64(1), hits[0].Doc)
+}
+
+func TestSaveDocumentsTextRevisions(t *testing.T) {
+	db, _ := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `CREATE TABLE text_docs (id TEXT PRIMARY KEY, body TEXT, revision TEXT); INSERT INTO text_docs VALUES ('one','cat','new'),('two','dog',NULL)`)
+	require.NoError(t, err)
+	schema := pgvector.Schema{DocsTable: "text_docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "text_vectors"}
+	require.NoError(t, pgvector.Install(ctx, db, schema))
+	store, err := pgvector.New[string, string](ctx, db, schema)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	stale, err := store.SaveDocuments(ctx, tx, "a", []pgvector.Document[string]{
+		{Doc: "one", Revision: "old", Vectors: []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}},
+		{Doc: "two", Revision: nil, Vectors: []vector.ChunkVector{{Vector: vector.Vector{0, 1}}}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"one"}, stale)
+	require.NoError(t, tx.Commit())
+	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{0, 1}, 10)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	require.Equal(t, "two", hits[0].Doc)
+}
