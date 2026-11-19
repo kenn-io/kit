@@ -12,7 +12,6 @@ verification records belong in kata and pull request discussion.
 
 - [Adopting Bombadil for UI property tests](adopting-bombadil.md)
 - [Secret sources](secrets.md)
-
 - [Task-based command discovery](../clisearch/README.md)
 - [Local embedding server installation](kennembed.md)
 - [Adopting packed content storage](adopting-packstore.md)

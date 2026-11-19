@@ -28,7 +28,7 @@ and CI budget. Before exploration:
 - Disable or fake outbound email, payments, uploads and other external effects.
   A local frontend connected to a production backend is not a safe fixture.
 - Reset application state before each run and before reproducing a failure.
-- Keep the exploration boundary narrow. In v0.7.10 the initial origin is the
+- Keep the exploration boundary narrow. In v0.8.0 the initial origin is the
   default boundary; `--allow-url` replaces that boundary. Navigation limits are
   not a network firewall and do not make destructive same-origin actions safe.
 - Treat traces and screenshots as potentially sensitive. Retain only synthetic
@@ -36,11 +36,11 @@ and CI budget. Before exploration:
 
 ## Install in the adopting application
 
-The commands below target Bombadil **v0.7.10**. Install it in the application's
+The commands below target Bombadil **v0.8.0**. Install it in the application's
 frontend package, not Kit's module root, and commit the lockfile:
 
 ```sh
-npm install --save-dev --save-exact @antithesishq/bombadil@0.7.10
+npm install --save-dev --save-exact @antithesishq/bombadil@0.8.0
 ./node_modules/.bin/bombadil --version
 ./node_modules/.bin/bombadil browser test --help
 ```
@@ -51,7 +51,7 @@ an npm package. See the [installation manual](https://antithesishq.github.io/bom
 for current platform requirements. Do not invent a Homebrew dependency or
 silently disable the browser sandbox to make a test launch.
 
-Pin the version and check its CLI help when upgrading. In v0.7.10 the
+Pin the version and check its CLI help when upgrading. In v0.8.0 the
 specification is a **positional argument**, not `--specification`.
 
 ## Write application properties
@@ -66,12 +66,13 @@ import { always } from "@antithesishq/bombadil";
 import { extract } from "@antithesishq/bombadil/browser";
 export * from "@antithesishq/bombadil/browser/defaults";
 
-const session = extract(({ document }) => {
+const session = extract(({ document, window }) => {
   const authenticated = document.documentElement.dataset.session === "authenticated";
   const logout = document.querySelector<HTMLButtonElement>('[data-testid="logout"]');
   return {
     authenticated,
-    logoutEnabled: !!logout && !logout.matches(":disabled") && logout.getClientRects().length > 0,
+    logoutEnabled: !!logout && !logout.matches(":disabled") && logout.getClientRects().length > 0
+      && window.getComputedStyle(logout).visibility === "visible",
   };
 });
 export const authenticatedSessionHasLogout = always(
@@ -80,8 +81,9 @@ export const authenticatedSessionHasLogout = always(
 ```
 
 Adapt both selectors to the actual UI contract. This checks for a rendered,
-enabled logout control while authenticated; it does not prove the control is
-unobscured or that logout invalidates the server session. Test those separately.
+enabled logout control whose computed `visibility` is `visible` while
+authenticated. It does not prove the control is fully opaque or unobscured,
+or that logout invalidates the server session. Test those separately.
 For a menu-based logout flow, model opening the menu and eventual access rather
 than requiring the control to be rendered in every state.
 
@@ -99,24 +101,31 @@ listening at `127.0.0.1:4173`, run a bounded smoke check:
 
 ```sh
 mkdir -p .bombadil
+run_dir=$(mktemp -d .bombadil/smoke.XXXXXX) || exit 1
+trace_file="$run_dir/trace.bin"
 ./node_modules/.bin/bombadil browser test \
   --headless --exit-on-violation --time-limit 1m \
-  --output-path .bombadil/smoke \
+  --output-path "$trace_file" \
   http://127.0.0.1:4173 bombadil/specification.ts
 ```
 
-Use a fresh output directory for each run; do not hide a prior failure by replacing
-its evidence. Add `.bombadil/` to the application's `.gitignore`. In v0.7.10 the output path
-is a directory containing `trace.jsonl` and screenshots. Later versions may use
-a different format; check the pinned release rather than copying commands from
-the development branch.
+Use a fresh output file for each run; the example creates a unique parent
+directory. Add `.bombadil/` to the application's `.gitignore`. In v0.8.0,
+`--output-path` names a compressed binary trace file with embedded screenshots;
+its parent directory must exist. For fuzz campaigns it names a file base, such
+as `run.bin`, producing `run-0.bin`, `run-1.bin`, and so on. Traces from earlier
+releases are incompatible with v0.8.0. Use `bombadil trace "$trace_file" --json`
+to produce JSONL for processing rather than reading the binary directly. See the
+[v0.8.0 release notes](https://github.com/antithesishq/bombadil/releases/tag/v0.8.0).
 
 Inspect a failure and reproduce it against reset fixture state:
 
 ```sh
-./node_modules/.bin/bombadil browser inspect .bombadil/smoke
+./node_modules/.bin/bombadil browser inspect "$trace_file"
+replay_dir=$(mktemp -d .bombadil/replay.XXXXXX) || exit 1
 ./node_modules/.bin/bombadil browser test \
-  --headless --reproduce .bombadil/smoke \
+  --headless --reproduce "$trace_file" \
+  --output-path "$replay_dir/trace.bin" \
   http://127.0.0.1:4173 bombadil/specification.ts
 ```
 
