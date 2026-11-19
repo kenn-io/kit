@@ -22,15 +22,13 @@ func ValidIdentifier(s string) bool {
 // QuoteIdentifier quotes a PostgreSQL identifier.
 func QuoteIdentifier(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-func validIdentifier(s string) bool { return ValidIdentifier(s) }
-func quote(s string) string         { return QuoteIdentifier(s) }
-
-// rebase replaces anonymous ? placeholders with PostgreSQL $n placeholders.
+// RebasePlaceholders replaces anonymous ? placeholders with PostgreSQL $n placeholders.
 // A ? inside a string, escape string, dollar quote, quoted identifier, or
 // comment stays literal. ?? outside those regions is one literal ? and does
-// not consume a placeholder number. n is the last used index and the result
-// is the new one.
-func rebase(fragment string, n int) (string, int) {
+// not consume a placeholder number. start is the last used index and the
+// result is the new one.
+func RebasePlaceholders(fragment string, start int) (string, int) {
+	n := start
 	var b strings.Builder
 	b.Grow(len(fragment))
 	for i := 0; i < len(fragment); {
@@ -186,7 +184,7 @@ func dollarTagByte(c byte, first bool) bool {
 }
 
 func checkIdentifier(kind, value string) error {
-	if !validIdentifier(value) {
+	if !ValidIdentifier(value) {
 		return fmt.Errorf("postgres: invalid %s %q", kind, value)
 	}
 	return nil

@@ -118,13 +118,13 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 		return sqlquery.Query{}, errors.New("postgres: tsquery args require SQL")
 	}
 
-	projection := []string{"d." + quote(req.Mapping.SourceKey) + " AS doc_key"}
+	projection := []string{"d." + QuoteIdentifier(req.Mapping.SourceKey) + " AS doc_key"}
 	if req.RevisionColumn != "" {
-		projection = append(projection, "d."+quote(req.RevisionColumn)+" AS revision")
+		projection = append(projection, "d."+QuoteIdentifier(req.RevisionColumn)+" AS revision")
 	}
 	projection = append(projection, rank+"("+vector+", q.tsq) AS score")
 	for _, col := range req.ExtraSourceCols {
-		projection = append(projection, "d."+quote(col.Name)+" AS "+quote(col.As))
+		projection = append(projection, "d."+QuoteIdentifier(col.Name)+" AS "+QuoteIdentifier(col.As))
 	}
 
 	var querySQL string
@@ -132,7 +132,7 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 	var args []any
 	if strings.TrimSpace(req.TSQuery) != "" {
 		var last int
-		querySQL, last = rebase(req.TSQuery, 0)
+		querySQL, last = RebasePlaceholders(req.TSQuery, 0)
 		if err := checkArgs("tsquery", last, len(req.TSQueryArgs)); err != nil {
 			return sqlquery.Query{}, err
 		}
@@ -146,7 +146,7 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 	var predSQL string
 	if predicate != "" {
 		var last int
-		predSQL, last = rebase(predicate, n)
+		predSQL, last = RebasePlaceholders(predicate, n)
 		if err := checkArgs("source predicate", last-n, len(req.SourcePredicate.Args)); err != nil {
 			return sqlquery.Query{}, err
 		}
@@ -158,7 +158,7 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "SELECT %s FROM %s AS d CROSS JOIN (SELECT %s AS tsq) AS q WHERE %s @@ q.tsq",
-		strings.Join(projection, ", "), quote(req.Mapping.SourceTable), querySQL, vector)
+		strings.Join(projection, ", "), QuoteIdentifier(req.Mapping.SourceTable), querySQL, vector)
 	if predSQL != "" {
 		b.WriteString(" AND (")
 		b.WriteString(predSQL)
@@ -174,7 +174,7 @@ func checkTextSearchConfig(value string) error {
 		return fmt.Errorf("postgres: invalid text search config %q", value)
 	}
 	for _, part := range parts {
-		if !validIdentifier(part) {
+		if !ValidIdentifier(part) {
 			return fmt.Errorf("postgres: invalid text search config %q", value)
 		}
 	}

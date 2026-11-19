@@ -24,10 +24,10 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, after *K,
 	cursor := ""
 	if after != nil {
 		args = append(args, *after)
-		cursor = " AND d." + quote(s.schema.IDColumn) + " > $2"
+		cursor = " AND d." + postgres.QuoteIdentifier(s.schema.IDColumn) + " > $2"
 	}
 	args = append(args, limit)
-	q := fmt.Sprintf(`SELECT d.%s,d.%s,d.%s FROM %s d LEFT JOIN %s stamp ON stamp.generation_id=$1 AND stamp.doc_key=d.%s WHERE NOT %s%s ORDER BY d.%s LIMIT $%d`, quote(s.schema.IDColumn), quote(s.schema.ContentColumn), quote(s.schema.RevisionColumn), quote(s.schema.DocsTable), s.stamps(), quote(s.schema.IDColumn), s.covered("d", "stamp"), cursor, quote(s.schema.IDColumn), len(args))
+	q := fmt.Sprintf(`SELECT d.%s,d.%s,d.%s FROM %s d LEFT JOIN %s stamp ON stamp.generation_id=$1 AND stamp.doc_key=d.%s WHERE NOT %s%s ORDER BY d.%s LIMIT $%d`, postgres.QuoteIdentifier(s.schema.IDColumn), postgres.QuoteIdentifier(s.schema.ContentColumn), postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), s.stamps(), postgres.QuoteIdentifier(s.schema.IDColumn), s.covered("d", "stamp"), cursor, postgres.QuoteIdentifier(s.schema.IDColumn), len(args))
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -71,9 +71,6 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	if err != nil {
 		return err
 	}
-	if row.state == vector.StateRetired {
-		return vector.ErrRetired
-	}
 	id := row.id
 	for _, cv := range vectors {
 		if len(cv.Vector) != row.dim {
@@ -81,7 +78,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		}
 	}
 	var matches bool
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR SHARE`, quote(s.schema.RevisionColumn), quote(s.schema.DocsTable), quote(s.schema.IDColumn)), doc, revision).Scan(&matches)
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR SHARE`, postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), doc, revision).Scan(&matches)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("document %v missing: %w", doc, vector.ErrStale)
 	}
@@ -95,11 +92,11 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		return err
 	}
 	for _, cv := range vectors {
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), quote(s.ext)), doc, cv.ChunkIndex, halfvec(cv.Vector)); err != nil {
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), postgres.QuoteIdentifier(s.ext)), doc, cv.ChunkIndex, halfvec(cv.Vector)); err != nil {
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (generation_id,doc_key,revision) SELECT $1,%s,%s FROM %s WHERE %s=$2 ON CONFLICT (generation_id,doc_key) DO UPDATE SET revision=excluded.revision`, s.stamps(), quote(s.schema.IDColumn), quote(s.schema.RevisionColumn), quote(s.schema.DocsTable), quote(s.schema.IDColumn)), id, doc)
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (generation_id,doc_key,revision) SELECT $1,%s,%s FROM %s WHERE %s=$2 ON CONFLICT (generation_id,doc_key) DO UPDATE SET revision=excluded.revision`, s.stamps(), postgres.QuoteIdentifier(s.schema.IDColumn), postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), id, doc)
 	if err != nil {
 		return err
 	}
@@ -108,7 +105,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 
 // LiveGenerations returns building generations before active generations, newest first.
 func (s *Store[K, G]) LiveGenerations(ctx context.Context) ([]G, error) {
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT gen_key, state FROM %s ORDER BY CASE WHEN state=$1 THEN 0 ELSE 1 END,id DESC`, s.generations()), vector.StateBuilding)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT gen_key,state FROM %s WHERE state IN ($1,$2) OR state NOT IN ($3,$1,$2,$4) ORDER BY CASE WHEN state=$1 THEN 0 WHEN state=$2 THEN 1 ELSE 2 END,id DESC`, s.generations()), vector.StateBuilding, vector.StateActive, vector.StatePending, vector.StateRetired)
 	if err != nil {
 		return nil, err
 	}
@@ -120,8 +117,8 @@ func (s *Store[K, G]) LiveGenerations(ctx context.Context) ([]G, error) {
 		if err := rows.Scan(&gen, &state); err != nil {
 			return nil, err
 		}
-		if !validState(state) {
-			return nil, fmt.Errorf("generation %v has unknown state %q", gen, state)
+		if !knownState(state) {
+			return nil, fmt.Errorf("generation %v has unknown generation state %q", gen, state)
 		}
 		if state == vector.StateBuilding || state == vector.StateActive {
 			gens = append(gens, gen)
@@ -130,16 +127,16 @@ func (s *Store[K, G]) LiveGenerations(ctx context.Context) ([]G, error) {
 	return gens, rows.Err()
 }
 
-// QueryGeneration returns current chunk hits ordered by cosine similarity.
+// QueryGeneration returns current chunk hits ordered by cosine similarity. Stale
+// chunks are filtered while the index is scanned, so they do not take result slots.
 func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.Vector, limit int) ([]vector.Hit[K], error) {
 	return s.QueryGenerationWithPredicate(ctx, gen, query, limit, sqlquery.Predicate{})
 }
 
-// QueryGenerationWithPredicate is QueryGeneration with a caller filter that applies before the
-// candidate limit, together with the freshness check. The filter's SQL refers to chunk rows as d
-// (d.doc_key, d.chunk_index) and binds values with ? placeholders. A retired generation whose
-// storage was reclaimed has no hits.
-func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, query vector.Vector, limit int, filter sqlquery.Predicate) ([]vector.Hit[K], error) {
+// QueryGenerationWithPredicate applies a trusted source filter before the
+// candidate limit. The predicate refers to the documents table as d and uses
+// anonymous ? placeholders.
+func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, query vector.Vector, limit int, predicate sqlquery.Predicate) ([]vector.Hit[K], error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -152,10 +149,16 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 	if len(query) != row.dim {
 		return nil, fmt.Errorf("query has %d dimensions, expected %d", len(query), row.dim)
 	}
-	if row.state == vector.StateRetired {
-		if exists, err := s.storageExists(ctx, tx, row.id); err != nil || !exists {
-			return nil, err
-		}
+	sqlText, args, err := s.candidateQuery(row.id, query, limit, predicate)
+	if err != nil {
+		return nil, err
+	}
+	reclaimed, err := s.lockChunks(ctx, tx, gen, row)
+	if err != nil {
+		return nil, fmt.Errorf("lock generation storage: %w", err)
+	}
+	if reclaimed {
+		return nil, nil
 	}
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL hnsw.ef_search = %d`, min(max(limit, 40), 1000))); err != nil {
 		return nil, err
@@ -163,11 +166,7 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 	if _, err = tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
 		return nil, err
 	}
-	q, err := s.candidateQuery(row.id, query, limit, filter)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := tx.QueryContext(ctx, q.SQL, q.Args...)
+	rows, err := tx.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -185,19 +184,60 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 	return hits, nil
 }
 
-// candidateQuery selects the nearest fresh chunks that pass filter, then joins their stamp revision.
-func (s *Store[K, G]) candidateQuery(id int64, query vector.Vector, limit int, filter sqlquery.Predicate) (sqlquery.Query, error) {
-	predicate := sqlquery.Predicate{SQL: fmt.Sprintf(`EXISTS (SELECT 1 FROM %s src JOIN %s stamp ON stamp.generation_id=? AND stamp.doc_key=src.%s WHERE src.%s=d.doc_key AND %s)`, quote(s.schema.DocsTable), s.stamps(), quote(s.schema.IDColumn), quote(s.schema.IDColumn), s.covered("src", "stamp")), Args: []any{id}}
-	if strings.TrimSpace(filter.SQL) != "" {
-		predicate.SQL = "(" + predicate.SQL + ") AND (" + filter.SQL + ")"
+func (s *Store[K, G]) lockChunks(ctx context.Context, tx *sql.Tx, gen G, row generationRow) (bool, error) {
+	_, err := tx.ExecContext(ctx, "LOCK TABLE "+s.chunks(row.id)+" IN ACCESS SHARE MODE")
+	if err == nil {
+		return false, nil
 	}
-	predicate.Args = append(predicate.Args, filter.Args...)
-	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id), SourceKey: "doc_key", VectorColumn: "embedding"}, Query: halfvec(query), VectorType: "halfvec", TypeSchema: s.ext, SourcePredicate: predicate, ExtraSourceCols: []sqlquery.Column{{Name: "chunk_index", As: "chunk_index"}}, CandidateLimit: limit})
-	if err != nil {
-		return sqlquery.Query{}, err
+	if ctx.Err() != nil {
+		return false, errors.Join(err, ctx.Err())
 	}
-	q.SQL = fmt.Sprintf(`SELECT c.doc_key,stamp.revision,c.score,c.chunk_index FROM (%s) c JOIN %s stamp ON stamp.generation_id=$2 AND stamp.doc_key=c.doc_key ORDER BY c.score DESC,c.doc_key`, q.SQL, s.stamps())
-	return q, nil
+	if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+		return false, errors.Join(err, fmt.Errorf("rollback failed query transaction: %w", rollbackErr))
+	}
+	current, lookupErr := s.lookup(ctx, s.db, gen, false)
+	if lookupErr != nil {
+		return false, errors.Join(err, lookupErr)
+	}
+	if current.state != vector.StateRetired {
+		return false, err
+	}
+	var exists bool
+	if checkErr := s.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, s.chunks(current.id)).Scan(&exists); checkErr != nil {
+		return false, errors.Join(err, fmt.Errorf("check retired generation storage: %w", checkErr))
+	}
+	if !exists {
+		return true, nil
+	}
+	return false, err
+}
+
+// candidateQuery selects the nearest fresh chunks and returns their stamp revision.
+// The inner ORDER BY is the distance alone so PostgreSQL can walk the HNSW index; ties are
+// broken by document key after the candidate limit. The freshness check runs during the
+// index scan, and hnsw.iterative_scan keeps scanning until the limit is filled.
+func (s *Store[K, G]) candidateQuery(id int64, query vector.Vector, limit int, predicate sqlquery.Predicate) (string, []any, error) {
+	ext, docs, key := postgres.QuoteIdentifier(s.ext), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)
+	args := []any{halfvec(query), id}
+	predicateSQL := strings.TrimSpace(predicate.SQL)
+	if predicateSQL == "" && len(predicate.Args) != 0 {
+		return "", nil, errors.New("pgvector: predicate args require SQL")
+	}
+	if predicateSQL != "" {
+		var last int
+		predicateSQL, last = postgres.RebasePlaceholders(predicateSQL, len(args))
+		if used := last - len(args); used != len(predicate.Args) {
+			return "", nil, fmt.Errorf("pgvector: source predicate has %d placeholders, but %d args", used, len(predicate.Args))
+		}
+		args = append(args, predicate.Args...)
+		predicateSQL = " AND (" + predicateSQL + ")"
+	}
+	limitArg := len(args) + 1
+	args = append(args, limit)
+	distance := fmt.Sprintf(`c.embedding OPERATOR(%s.<=>) $1::%s.halfvec`, ext, ext)
+	text := fmt.Sprintf(`SELECT candidate.doc_key,candidate.revision,candidate.score,candidate.chunk_index FROM (SELECT c.doc_key,stamp.revision,1-(%s) AS score,c.chunk_index FROM %s c JOIN %s d ON d.%s=c.doc_key JOIN %s stamp ON stamp.generation_id=$2 AND stamp.doc_key=d.%s WHERE stamp.revision IS NOT DISTINCT FROM d.%s%s ORDER BY %s LIMIT $%d) candidate ORDER BY candidate.score DESC,candidate.doc_key`,
+		distance, s.chunks(id), docs, key, s.stamps(), key, postgres.QuoteIdentifier(s.schema.RevisionColumn), predicateSQL, distance, limitArg)
+	return text, args, nil
 }
 
 func scanHits[K comparable](rows *sql.Rows) ([]vector.Hit[K], error) {

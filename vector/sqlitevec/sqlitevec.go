@@ -35,7 +35,7 @@ import (
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// State and its values are shared with other vector stores.
+// State is a generation's role in the active/building lifecycle.
 type State = vector.State
 
 const (

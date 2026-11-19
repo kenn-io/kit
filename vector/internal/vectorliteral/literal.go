@@ -1,4 +1,4 @@
-// Package vectorliteral formats float32 vectors for SQL vector extensions.
+// Package vectorliteral formats vectors for storage APIs that accept text literals.
 package vectorliteral
 
 import (
@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Format returns the bracketed representation accepted by vector extensions.
+// Format returns a bracketed, comma-separated float32 literal.
 func Format(vector []float32) string {
 	var b strings.Builder
 	b.WriteByte('[')

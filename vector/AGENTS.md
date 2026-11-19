@@ -225,5 +225,16 @@ pipeline. Preserve these invariants when changing it.
   be unique, and revisions must change when content is replaced. Deleting a
   source row cascades to its stamps and vectors; `TRUNCATE` requires `CASCADE`.
 - Re-ensuring an existing generation with the same model needs no DDL.
-- Scoped predicates run before the candidate limit, alongside freshness.
-- A reclaimed generation contributes no search hits.
+  `EnsureGeneration` refuses `retired`, and `Activate` retires the others
+  without dropping anything. `Reclaim` frees a retired generation's chunk
+  table and stamps; it requires an owner role. `QueryGeneration` holds an
+  access-share table lock until the query ends, so reclamation waits for an
+  in-flight query. A query using a stale generation list returns no hits if
+  reclamation completed before it locked the retired table.
+- The candidate query orders by distance alone so the HNSW index is used.
+  Freshness is checked during the index scan; do not add a tie-break to that
+  inner `ORDER BY`.
+- `Activate` counts uncovered documents and publishes in one transaction. An
+  edit that lands after the count leaves that document pending in the new
+  generation until the next fill, exactly as an edit just after activation
+  does; search never returns its stale vector.

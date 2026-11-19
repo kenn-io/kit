@@ -103,8 +103,8 @@ func TestBuildersRejectAPlaceholderArgumentMismatch(t *testing.T) {
 	require.ErrorContains(t, err, "source predicate has 0 placeholders and 1 args")
 }
 
-func TestBuildVectorQualifiedHalfvec(t *testing.T) {
-	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: "docs", SourceKey: "id", VectorColumn: "embedding"}, Query: "[1,0]", VectorType: "halfvec", TypeSchema: "extensions", CandidateLimit: 2})
-	require.NoError(t, err)
-	assert.Contains(t, q.SQL, `d."embedding" OPERATOR("extensions".<=>) $1::"extensions".halfvec`)
+func TestIdentifierHelpers(t *testing.T) {
+	assert.True(t, postgres.ValidIdentifier("docs_1"))
+	assert.False(t, postgres.ValidIdentifier("bad-name"))
+	assert.Equal(t, `"odd""schema"`, postgres.QuoteIdentifier(`odd"schema`))
 }

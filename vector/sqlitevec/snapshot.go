@@ -13,7 +13,6 @@ import (
 	"go.kenn.io/kit/vector"
 )
 
-// GenerationInfo describes one registered generation.
 type GenerationInfo[G comparable] = vector.GenerationInfo[G]
 
 // Generations lists every registered generation in creation order,

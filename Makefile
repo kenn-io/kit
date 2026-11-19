@@ -50,6 +50,16 @@ GOTESTSUM_SUITE ?= embedserver
 test-embedserver:
 	go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/$(GOTESTSUM_SUITE).json --rerun-fails=2 --rerun-fails-report gotestsum/$(GOTESTSUM_SUITE)-reruns.txt --packages "./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal ./embedclient" -- -race
 
+.PHONY: test-vector-postgres
+# KIT_POSTGRES_TEST_DSN must point to a disposable PostgreSQL cluster.
+test-vector-postgres:
+	@test -n "$$KIT_POSTGRES_TEST_DSN" || { echo "set KIT_POSTGRES_TEST_DSN" >&2; exit 1; }
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/pgvector ./search/postgres" -- -count=1 -p 1
+
+.PHONY: test-vector-sqlite
+test-vector-sqlite:
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/sqlitevec" -- -count=1
+
 lint-workflow-retries:
 	go run ./cmd/kennlint workflow-retries
 
@@ -92,8 +102,3 @@ actions-lock-check: gh-actions-lock-install
 .PHONY: test-embedlocal
 test-embedlocal:
 	go test -race ./embedlocal
-
-.PHONY: test-vector-postgres
-test-vector-postgres:
-	@test -n "$$KIT_POSTGRES_TEST_DSN" || (echo "set KIT_POSTGRES_TEST_DSN"; exit 1)
-	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/pgvector ./search/postgres ./vector/sqlitevec" -- -count=1 -p 1

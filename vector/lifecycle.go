@@ -5,9 +5,7 @@ import (
 	"fmt"
 )
 
-// State is a generation's role in the active/building lifecycle. Only
-// building and active generations are searched; building sorts ahead of
-// active so Merge keeps the newer generation's hit on overlap.
+// State is a generation's role in the active/building lifecycle.
 type State string
 
 const (
@@ -17,29 +15,17 @@ const (
 	StateRetired  State = "retired"
 )
 
-// GenerationInfo describes one registered generation.
-type GenerationInfo[G comparable] struct {
-	Key         G
-	Fingerprint string
-	Dimension   int
-	State       State
-}
-
-// ErrUncovered reports that Activate refused to publish a generation
-// because at least one document is not covered at its current revision.
-// The state change is not committed. Callers retry after a later fill.
+// ErrUncovered reports that activation was refused because a document is not
+// covered at its current revision.
 var ErrUncovered = errors.New("generation has uncovered documents")
 
-// ErrGenerationNotFound reports a generation key that EnsureGeneration never
-// registered.
+// ErrGenerationNotFound reports a generation key that has not been registered.
 var ErrGenerationNotFound = errors.New("generation not ensured")
 
-// ErrRetired reports a retired generation used where only a building or
-// active one is allowed. A retired generation never becomes live again.
+// ErrRetired reports an operation that requires a live generation.
 var ErrRetired = errors.New("generation is retired")
 
-// UncoveredError is the Activate failure for an incomplete generation.
-// Backlog is the number of documents that still need a current stamp.
+// UncoveredError reports how many documents still need a current stamp.
 type UncoveredError struct {
 	Backlog int64
 }
@@ -49,3 +35,11 @@ func (e *UncoveredError) Error() string {
 }
 
 func (e *UncoveredError) Unwrap() error { return ErrUncovered }
+
+// GenerationInfo describes one registered generation.
+type GenerationInfo[G comparable] struct {
+	Key         G
+	Fingerprint string
+	Dimension   int
+	State       State
+}
