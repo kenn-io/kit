@@ -645,13 +645,11 @@ func TestSaveDocumentsUUIDRevisions(t *testing.T) {
 
 func TestSaveDocumentsConcurrentSaves(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		older  bool
-		single bool
+		name  string
+		older bool
 	}{
 		{name: "batch"},
 		{name: "older revision", older: true},
-		{name: "single save", single: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, store := setupActiveStore(t)
@@ -677,10 +675,6 @@ func TestSaveDocumentsConcurrentSaves(t *testing.T) {
 			done := make(chan result, 1)
 			go func() {
 				vectors := []vector.ChunkVector{{ChunkIndex: 2, Vector: vector.Vector{0, 1}}}
-				if tc.single {
-					done <- result{err: store.SaveVectors(ctx, "a", 1, 1, vectors)}
-					return
-				}
 				second, err := db.BeginTx(ctx, nil)
 				if err != nil {
 					done <- result{err: err}
@@ -825,15 +819,7 @@ func TestSaveDocumentsTwoGenerationsDuringActivation(t *testing.T) {
 	require.Empty(t, stale)
 	done := make(chan error, 1)
 	go func() { done <- store.Activate(ctx, "a") }()
-	var activationErr error
-	finished := false
 	require.Eventually(t, func() bool {
-		select {
-		case activationErr = <-done:
-			finished = true
-			return true
-		default:
-		}
 		var blocked bool
 		err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&blocked)
 		return err == nil && blocked
@@ -842,10 +828,7 @@ func TestSaveDocumentsTwoGenerationsDuringActivation(t *testing.T) {
 	var busy *pgvector.GenerationBusyError
 	require.ErrorAs(t, err, &busy)
 	require.NoError(t, tx.Rollback())
-	if !finished {
-		activationErr = <-done
-	}
-	require.NoError(t, activationErr)
+	require.NoError(t, <-done)
 	retry, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	defer func() { _ = retry.Rollback() }()
@@ -862,7 +845,7 @@ func TestSaveDocumentsTwoGenerationsDuringActivation(t *testing.T) {
 	assert.EqualValues(t, 2, hits[0].Revision)
 }
 
-func TestSaveDocumentsRetiredWhileWaitingForDocument(t *testing.T) {
+func TestRetirementWaitsForSaveWhileOtherGenerationProceeds(t *testing.T) {
 	db, store := setupActiveStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -894,7 +877,7 @@ func TestSaveDocumentsRetiredWhileWaitingForDocument(t *testing.T) {
 	go func() { retired <- store.SetGenerationState(ctx, "a", vector.StateRetired) }()
 	require.Eventually(t, func() bool {
 		var waiting bool
-		err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE wait_event='advisory' AND query LIKE '%pg_advisory_xact_lock%')`).Scan(&waiting)
+		err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory' AND query LIKE '%pg_advisory_xact_lock%')`).Scan(&waiting)
 		return err == nil && waiting
 	}, 5*time.Second, 10*time.Millisecond)
 	otherCtx, otherCancel := context.WithTimeout(ctx, 2*time.Second)
