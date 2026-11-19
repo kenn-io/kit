@@ -416,14 +416,11 @@ func TestSearchSkipsStaleNearestNeighbors(t *testing.T) {
 	}
 }
 
-func TestNewWithDMLOnlyRole(t *testing.T) {
-	db, owner := setup(t)
+func dmlOnly(t *testing.T, db *sql.DB) *sql.DB {
+	t.Helper()
 	ctx := t.Context()
-	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'cat',1)`)
-	require.NoError(t, err)
-	require.NoError(t, owner.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
 	role := uniqueName(t, "vec_runtime")
-	_, err = db.ExecContext(ctx, `CREATE ROLE `+role+` LOGIN PASSWORD 'test'`)
+	_, err := db.ExecContext(ctx, `CREATE ROLE `+role+` LOGIN PASSWORD 'test'`)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_, err := db.ExecContext(context.WithoutCancel(t.Context()), `DROP OWNED BY `+role+`; DROP ROLE `+role)
@@ -431,7 +428,7 @@ func TestNewWithDMLOnlyRole(t *testing.T) {
 	})
 	var schemaName string
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&schemaName))
-	_, err = db.ExecContext(ctx, `GRANT USAGE ON SCHEMA `+schemaName+` TO `+role+`; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA `+schemaName+` TO `+role)
+	_, err = db.ExecContext(ctx, `GRANT USAGE ON SCHEMA `+schemaName+` TO `+role+`; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA `+schemaName+` TO `+role+`; GRANT USAGE ON ALL SEQUENCES IN SCHEMA `+schemaName+` TO `+role)
 	require.NoError(t, err)
 	u, err := url.Parse(os.Getenv("KIT_POSTGRES_TEST_DSN"))
 	require.NoError(t, err)
@@ -442,7 +439,16 @@ func TestNewWithDMLOnlyRole(t *testing.T) {
 	runtime, err := sql.Open("pgx", u.String())
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
-	store, err := pgvector.New[int64, string](ctx, runtime, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
+	return runtime
+}
+
+func TestNewWithDMLOnlyRole(t *testing.T) {
+	db, owner := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `INSERT INTO docs VALUES (1,'cat',1)`)
+	require.NoError(t, err)
+	require.NoError(t, owner.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
+	store, err := pgvector.New[int64, string](ctx, dmlOnly(t, db), pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
 	require.NoError(t, err)
 	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
 	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))

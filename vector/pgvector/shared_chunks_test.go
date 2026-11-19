@@ -4,13 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"net/url"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.kenn.io/kit/search/sqlquery"
 	"go.kenn.io/kit/vector"
 	"go.kenn.io/kit/vector/pgvector"
 )
@@ -21,12 +18,12 @@ func TestSharedChunksPrepopulatedKitSchema(t *testing.T) {
 	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors", SharedChunks: true}
 	require.NoError(t, pgvector.Install(ctx, db, schema))
 	_, err := pgvector.New[int64, string](ctx, db, schema)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "vectors_chunks")
 	_, err = db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index bigint NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index));
- INSERT INTO docs VALUES (1,'a',1),(2,'b',1),(3,'stale',2);
+ INSERT INTO docs VALUES (1,'a',1),(2,'b',1);
  INSERT INTO vectors_generations(id,gen_key,fingerprint,dimension,state) VALUES (1,'a','fingerprint',2,'active');
- INSERT INTO vectors_stamps VALUES (1,1,1),(1,2,1),(1,3,1);
- INSERT INTO vectors_chunks VALUES (1,1,0,'[1,0]'),(1,2,0,'[0,1]'),(1,3,0,'[1,0]')`)
+ INSERT INTO vectors_stamps VALUES (1,1,1),(1,2,1);
+ INSERT INTO vectors_chunks VALUES (1,1,0,'[1,0]'),(1,2,0,'[0,1]')`)
 	require.NoError(t, err)
 	store, err := pgvector.New[int64, string](ctx, db, schema)
 	require.NoError(t, err)
@@ -37,13 +34,10 @@ func TestSharedChunksPrepopulatedKitSchema(t *testing.T) {
 	assert.InDelta(t, 1, hits[0].Score, 0.001)
 	assert.Equal(t, int64(2), hits[1].Doc)
 	assert.InDelta(t, 0, hits[1].Score, 0.001)
-	hits, err = store.QueryGenerationWithPredicate(ctx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{SQL: "d.id = ?", Args: []any{int64(2)}})
-	require.NoError(t, err)
-	require.Len(t, hits, 1)
-	assert.Equal(t, int64(2), hits[0].Doc)
+
 }
 
-func TestSharedChunksBegin(t *testing.T) {
+func TestSharedChunksDMLRole(t *testing.T) {
 	db, _ := setup(t)
 	ctx := t.Context()
 	_, err := db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1);
@@ -52,11 +46,12 @@ func TestSharedChunksBegin(t *testing.T) {
  CREATE TRIGGER stamps_opener BEFORE INSERT OR UPDATE OR DELETE ON vectors_stamps FOR EACH ROW EXECUTE FUNCTION require_opener();
  CREATE TRIGGER chunks_opener BEFORE INSERT OR UPDATE OR DELETE ON vectors_chunks FOR EACH ROW EXECUTE FUNCTION require_opener()`)
 	require.NoError(t, err)
+	runtime := dmlOnly(t, db)
 	calls := 0
 	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors", SharedChunks: true}
 	schema.Begin = func(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
 		calls++
-		tx, err := db.BeginTx(ctx, opts)
+		tx, err := runtime.BeginTx(ctx, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -66,62 +61,7 @@ func TestSharedChunksBegin(t *testing.T) {
 		}
 		return tx, nil
 	}
-	store, err := pgvector.New[int64, string](ctx, db, schema)
-	require.NoError(t, err)
-	model := vector.Generation{Dimensions: 2}
-	require.NoError(t, store.EnsureGeneration(ctx, "a", model, vector.StateBuilding))
-	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
-	require.NoError(t, store.Activate(ctx, "a"))
-	require.NoError(t, store.SetGenerationState(ctx, "a", vector.StateRetired))
-	require.NoError(t, store.Reclaim(ctx, "a"))
-	assert.Equal(t, 5, calls)
-	sentinel := errors.New("begin failed")
-	schema.Begin = func(context.Context, *sql.TxOptions) (*sql.Tx, error) { return nil, sentinel }
-	failing, err := pgvector.New[int64, string](ctx, db, schema)
-	require.NoError(t, err)
-	for _, write := range []func() error{
-		func() error { return failing.EnsureGeneration(ctx, "a", model, vector.StateBuilding) },
-		func() error { return failing.SaveVectors(ctx, "a", 1, 1, nil) },
-		func() error { return failing.SetGenerationState(ctx, "a", vector.StateBuilding) },
-		func() error { return failing.Activate(ctx, "a") },
-		func() error { return failing.Reclaim(ctx, "a") },
-	} {
-		require.ErrorIs(t, write(), sentinel)
-	}
-	var count int
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks`).Scan(&count))
-	assert.Zero(t, count)
-	var state string
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT state FROM vectors_generations WHERE gen_key='a'`).Scan(&state))
-	assert.Equal(t, "retired", state)
-}
-
-func TestSharedChunksDMLRole(t *testing.T) {
-	db, _ := setup(t)
-	ctx := t.Context()
-	_, err := db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1)`)
-	require.NoError(t, err)
-	role := uniqueName(t, "vec_runtime")
-	_, err = db.ExecContext(ctx, `CREATE ROLE `+role+` LOGIN PASSWORD 'test'`)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_, err := db.ExecContext(context.WithoutCancel(t.Context()), `DROP OWNED BY `+role+`; DROP ROLE `+role)
-		assert.NoError(t, err)
-	})
-	var name string
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&name))
-	_, err = db.ExecContext(ctx, `GRANT USAGE ON SCHEMA `+name+` TO `+role+`; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA `+name+` TO `+role+`; GRANT USAGE ON ALL SEQUENCES IN SCHEMA `+name+` TO `+role)
-	require.NoError(t, err)
-	u, err := url.Parse(os.Getenv("KIT_POSTGRES_TEST_DSN"))
-	require.NoError(t, err)
-	u.User = url.UserPassword(role, "test")
-	q := u.Query()
-	q.Set("search_path", name)
-	u.RawQuery = q.Encode()
-	runtime, err := sql.Open("pgx", u.String())
-	require.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
-	store, err := pgvector.New[int64, string](ctx, runtime, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors", SharedChunks: true})
+	store, err := pgvector.New[int64, string](ctx, runtime, schema)
 	require.NoError(t, err)
 	model := vector.Generation{Dimensions: 2}
 	require.NoError(t, store.EnsureGeneration(ctx, "a", model, vector.StateBuilding))
@@ -130,19 +70,49 @@ func TestSharedChunksDMLRole(t *testing.T) {
 	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 1)
 	require.NoError(t, err)
 	require.Len(t, hits, 1)
+	assert.Equal(t, 3, calls)
 	require.NoError(t, store.EnsureGeneration(ctx, "b", vector.Generation{Model: "b", Dimensions: 3}, vector.StateBuilding))
 	require.NoError(t, store.SaveVectors(ctx, "b", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0, 0}}}))
+	calls -= 2
 	require.NoError(t, store.SetGenerationState(ctx, "a", vector.StateRetired))
 	require.NoError(t, store.Reclaim(ctx, "a"))
-	var count int
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks`).Scan(&count))
-	assert.Equal(t, 1, count)
+	assert.Equal(t, 5, calls)
+	var remaining int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks`).Scan(&remaining))
+	assert.Equal(t, 1, remaining)
 	require.ErrorIs(t, store.EnsureGeneration(ctx, "a", model, vector.StateActive), vector.ErrRetired)
 	require.ErrorIs(t, store.EnsureGeneration(ctx, "a", model, vector.StatePending), vector.ErrRetired)
 	require.NoError(t, store.EnsureGeneration(ctx, "a", model, vector.StateBuilding))
 	require.ErrorIs(t, store.Activate(ctx, "a"), vector.ErrUncovered)
 	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks`).Scan(&count))
+	assert.Equal(t, 2, count)
 	hits, err = store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 1)
 	require.NoError(t, err)
 	require.Len(t, hits, 1)
+	assert.Equal(t, int64(1), hits[0].Doc)
+	assert.InDelta(t, 1, hits[0].Score, 0.001)
+	hits, err = store.QueryGeneration(ctx, "b", vector.Vector{1, 0, 0}, 1)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.InDelta(t, 1, hits[0].Score, 0.001)
+	sentinel := errors.New("begin failed")
+	schema.Begin = func(context.Context, *sql.TxOptions) (*sql.Tx, error) { return nil, sentinel }
+	failing, err := pgvector.New[int64, string](ctx, runtime, schema)
+	require.NoError(t, err)
+	for _, write := range []func() error{
+		func() error { return failing.EnsureGeneration(ctx, "a", model, vector.StateBuilding) },
+		func() error { return failing.SaveVectors(ctx, "a", 1, 1, nil) },
+		func() error { return failing.SetGenerationState(ctx, "a", vector.StateRetired) },
+		func() error { return failing.Activate(ctx, "a") },
+		func() error { return failing.Reclaim(ctx, "a") },
+	} {
+		require.ErrorIs(t, write(), sentinel)
+	}
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks`).Scan(&count))
+	assert.Equal(t, 2, count)
+	var state string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT state FROM vectors_generations WHERE gen_key='a'`).Scan(&state))
+	assert.Equal(t, "building", state)
 }

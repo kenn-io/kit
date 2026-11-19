@@ -118,13 +118,11 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		return err
 	}
 	if len(vectors) > 0 {
-		insertQuery := fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) SELECT $1,chunk_index,embedding::%s.halfvec FROM unnest($2::bigint[],$3::text[]) AS chunks(chunk_index,embedding)`, s.chunkTable(id), postgres.QuoteIdentifier(s.ext))
-		insertArgs := []any{doc, indexes, halfvecs}
+		cols, vals, args := "doc_key", "$1", []any{doc, indexes, halfvecs}
 		if s.schema.SharedChunks {
-			insertQuery = fmt.Sprintf(`INSERT INTO %s (generation_id,doc_key,chunk_index,embedding) SELECT $4,$1,chunk_index,embedding::%s.halfvec FROM unnest($2::bigint[],$3::text[]) AS chunks(chunk_index,embedding)`, s.chunkTable(id), postgres.QuoteIdentifier(s.ext))
-			insertArgs = append(insertArgs, id)
+			cols, vals, args = "generation_id,doc_key", "$4,$1", append(args, id)
 		}
-		if _, err = tx.ExecContext(ctx, insertQuery, insertArgs...); err != nil {
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (%s,chunk_index,embedding) SELECT %s,chunk_index,embedding::%s.halfvec FROM unnest($2::bigint[],$3::text[]) AS chunks(chunk_index,embedding)`, s.chunkTable(id), cols, vals, postgres.QuoteIdentifier(s.ext)), args...); err != nil {
 			return err
 		}
 	}
