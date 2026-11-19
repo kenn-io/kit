@@ -40,10 +40,14 @@ func validString(n *yaml.Node) bool {
 }
 
 func parseTimestamp(n *yaml.Node) (time.Time, bool) {
-	if n == nil || n.Kind != yaml.ScalarNode || (n.Tag != "!!str" && n.Tag != "!!timestamp") || !strings.HasSuffix(n.Value, "Z") {
+	if n == nil || n.Kind != yaml.ScalarNode || (n.Tag != "!!str" && n.Tag != "!!timestamp") {
 		return time.Time{}, false
 	}
-	parsed, err := time.Parse(time.RFC3339, n.Value)
+	layout := time.RFC3339
+	if len(n.Value) == len(time.DateOnly) {
+		layout = time.DateOnly
+	}
+	parsed, err := time.Parse(layout, n.Value)
 	return parsed, err == nil
 }
 
@@ -77,8 +81,9 @@ func (b *frontmatterBlock) okfProblems() []string {
 			p = append(p, k+" must be a non-empty string")
 		}
 	}
-	if status := b.fields["status"]; status != nil && !validStatus(status) {
-		p = append(p, "status must be one of stable, draft, or deprecated")
+	if status := b.fields["status"]; status != nil &&
+		!validString(status) {
+		p = append(p, "status must be a non-empty string")
 	}
 	p = append(p, generatedProblems(b.fields["generated"], "generated", false)...)
 
@@ -102,7 +107,7 @@ func generatedProblems(g *yaml.Node, path string, skill bool) []string {
 	at := mappingField(g, "at")
 	_, validAt := parseTimestamp(at)
 	if at == nil || !validAt {
-		p = append(p, path+".at must be an RFC 3339 UTC timestamp ending in Z")
+		p = append(p, path+".at must be an RFC 3339 timestamp with an offset or a YYYY-MM-DD date")
 	} else if skill && at.Tag != "!!str" {
 		p = append(p, path+`.at must be a quoted string, for example "2026-11-17T19:00:00Z"`)
 	}
