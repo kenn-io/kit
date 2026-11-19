@@ -223,6 +223,8 @@ pipeline. Preserve these invariants when changing it.
 - `SaveDocuments` requires READ COMMITTED. Roll back on error; retry a busy
   generation in a new transaction. Save documents in a consistent order.
   Stale keys correspond to input entries in order, including repeated keys.
+  An open save transaction holds its generation lock until it ends; lifecycle
+  operations wait. Keep transactions short and use lifecycle deadlines.
 - `pgvector.New` attaches without DDL; `Install` owns setup. Source keys must
   be unique, and revisions must change when content is replaced. Deleting a
   source row cascades to its stamps and vectors; `TRUNCATE` requires `CASCADE`.

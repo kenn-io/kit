@@ -618,6 +618,29 @@ func TestSaveDocuments(t *testing.T) {
 	require.NoError(t, tx.Rollback())
 }
 
+func TestSaveDocumentsPreservesOtherDocuments(t *testing.T) {
+	db, store := setupActiveStore(t)
+	ctx := t.Context()
+	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, `UPDATE docs SET body='changed', revision=2 WHERE id=2`)
+	require.NoError(t, err)
+	stale, err := store.SaveDocuments(ctx, tx, "a", []pgvector.Document[int64]{{Doc: 2, Revision: 2, Vectors: []vector.ChunkVector{{Vector: vector.Vector{0, 1}}}}})
+	require.NoError(t, err)
+	require.Empty(t, stale)
+	require.NoError(t, tx.Commit())
+	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+	require.NoError(t, err)
+	require.Len(t, hits, 2)
+	assert.Equal(t, int64(1), hits[0].Doc)
+	assert.EqualValues(t, 1, hits[0].Revision)
+	assert.InDelta(t, 1, hits[0].Score, 0.001)
+	assert.Equal(t, int64(2), hits[1].Doc)
+	assert.EqualValues(t, 2, hits[1].Revision)
+}
+
 func TestSaveDocumentsUUIDRevisions(t *testing.T) {
 	db, _ := setup(t)
 	ctx := t.Context()
