@@ -102,7 +102,7 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 			rel, ok = file, true
 		}
 		base := path.Base(file)
-		if !ok || base == "index.md" || base == "log.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, excludes) {
+		if !ok || frontmatterHiddenPath(rel) || base == "index.md" || base == "log.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, excludes) {
 			continue
 		}
 		excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes)
@@ -123,7 +123,7 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 		if err != nil {
 			return nil, &indexPageError{file, err}
 		}
-		if status := b.fields["status"]; status != nil && (!validString(status) || (status.Value != "stable" && status.Value != "draft")) {
+		if status := b.fields["status"]; !emptyOptional(status) && (!validString(status) || (status.Value != "stable" && status.Value != "draft")) {
 			continue
 		}
 		title, description := b.fields["title"], b.fields["description"]
@@ -136,6 +136,15 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 }
 
 func refreshTrackedIndex(root, file string, files []string, skillDirs map[string]struct{}, excludes []string) ([]byte, bool, error) {
+	info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(file)))
+	if err != nil {
+		return nil, false, err
+	}
+	// Index aliases can point into imported bundles outside the repository.
+	// Only directly owned index files may be regenerated.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, false, nil
+	}
 	excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes)
 	if err != nil || excluded {
 		return nil, false, err
@@ -154,4 +163,13 @@ func refreshTrackedIndex(root, file string, files []string, skillDirs map[string
 	}
 	updated, changed := renderIndex(src, bounds, pages)
 	return updated, changed, nil
+}
+
+func frontmatterHiddenPath(file string) bool {
+	for part := range strings.SplitSeq(file, "/") {
+		if strings.HasPrefix(part, ".") {
+			return true
+		}
+	}
+	return false
 }

@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:13:57Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:17:59Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -187,10 +187,12 @@ outside the block are neither checked nor rewritten. Run `make fix-frontmatter`
 in Kit to regenerate the list. The read-only check reports stale lists and the
 Make target prints the local fix command. Unmarked indexes are left alone.
 Skills, skill bundle files, deprecated pages, pages with unknown status values,
-README and AGENTS files, and release notes are never listed. Omitted status,
+README and AGENTS files, release notes, and dot-prefixed files or directories
+are never listed. Omitted status,
 `stable`, and `draft` remain eligible. Index regeneration preserves all bytes
 outside the marked body block, including the complete bundle metadata and
 nested extension values. Resolved symlink targets obey the same exclusions
-as their aliases. Retain deprecated pages as linked pointers to preserve public URLs. Repeat
+as their aliases. Symlinked indexes are never regenerated, including aliases
+into imported bundles. Retain deprecated pages as linked pointers to preserve public URLs. Repeat
 the original headings in each pointer so old fragment links land on a heading
 that links to the new section.

@@ -171,7 +171,7 @@ func TestRootSkillSkipsManagedIndexes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, original, string(got))
 	}
-	// A tracked root skill defines the bundle even when deleted from the worktree.
+	// Deleting the root skill restores ordinary document and index checks.
 	require.NoError(t, os.Remove("SKILL.md"))
 	out.Reset()
 	errs.Reset()
@@ -180,7 +180,8 @@ func TestRootSkillSkipsManagedIndexes(t *testing.T) {
 	assert.Zero(t, n, errs.String())
 	got, err := os.ReadFile("index.md")
 	require.NoError(t, err)
-	assert.Equal(t, original, string(got))
+	assert.Contains(t, string(got), "references/example.md")
+	assert.NotContains(t, string(got), "old")
 }
 
 func TestManagedIndexSelectedPageChanges(t *testing.T) {
@@ -323,4 +324,44 @@ func TestIndexResolvedSkillExclusions(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, protected, string(got), file)
 	}
+}
+
+func TestIndexReviewBundleBoundaries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	const protected = "# Imported resource\n" + indexBegin + "\nAuthored skill resource\n" + indexEnd + "\n"
+	external := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(external, "references"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(external, "SKILL.md"), []byte(skillHeader), 0o600))
+	target := filepath.Join(external, "references", "index.md")
+	require.NoError(t, os.WriteFile(target, []byte(protected), 0o600))
+	repo.WriteFile("docs/index.md", indexBegin+"\nold\n"+indexEnd+"\n")
+	repo.WriteFile("docs/visible.md", goodOKF)
+	repo.WriteFile("docs/.drafts/page.md", goodOKF)
+	repo.WriteFile("docs/nested/.hidden/page.md", goodOKF)
+	repo.WriteFile("docs/.page.md", goodOKF)
+	repo.WriteFile("docs/.drafts/index.md", protected)
+	require.NoError(t, os.MkdirAll("docs/import", 0o700))
+	require.NoError(t, os.Symlink(target, "docs/import/index.md"))
+	repo.Run("add", ".")
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "docs"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Zero(t, n, errs.String())
+	got, err := os.ReadFile(target)
+	require.NoError(t, err)
+	assert.Equal(t, protected, string(got))
+	got, err = os.ReadFile("docs/.drafts/index.md")
+	require.NoError(t, err)
+	assert.Equal(t, protected, string(got))
+	got, err = os.ReadFile("docs/index.md")
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "(visible.md)")
+	assert.NotContains(t, string(got), ".drafts")
+	assert.NotContains(t, string(got), ".hidden")
+	assert.NotContains(t, string(got), ".page.md")
 }

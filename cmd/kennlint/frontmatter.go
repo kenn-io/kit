@@ -300,7 +300,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 		// A symlinked SKILL.md is an import and is never checked or rewritten.
 		info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(file)))
-		if errors.Is(err, fs.ErrNotExist) || (skill && err == nil && info.Mode()&os.ModeSymlink != 0) {
+		if errors.Is(err, fs.ErrNotExist) || (err == nil && info.Mode()&os.ModeSymlink != 0 && (skill || path.Base(file) == "index.md")) {
 			continue
 		}
 		if skill {
@@ -360,7 +360,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		reported[file] = len(problems) > 0
 	}
 	for _, file := range files {
-		if rootSkill || path.Base(file) != "index.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, indexExcludes) || !frontmatterIndexSelected(file, selected) {
+		if rootSkill || frontmatterHiddenPath(file) || path.Base(file) != "index.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, indexExcludes) || !frontmatterIndexSelected(file, selected) {
 			continue
 		}
 		updated, stale, err := refreshTrackedIndex(root, file, files, skillDirs, excludes)
@@ -649,7 +649,7 @@ func frontmatterExcludedTarget(root, file string, skillDirs map[string]struct{},
 		return false, nil
 	}
 	target := filepath.ToSlash(rel)
-	if frontmatterInSkillDirectory(target, skillDirs) || !frontmatterSelected(target, nil, excludes) {
+	if frontmatterHiddenPath(target) || frontmatterInSkillDirectory(target, skillDirs) || !frontmatterSelected(target, nil, excludes) {
 		return true, nil
 	}
 	// A differently named alias must not turn an index or log into a concept.
