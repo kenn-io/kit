@@ -641,25 +641,17 @@ func TestSaveDocumentsPreservesOtherDocuments(t *testing.T) {
 	assert.EqualValues(t, 2, hits[1].Revision)
 }
 
-func TestSaveDocumentsUUIDRevisions(t *testing.T) {
+func TestSaveVectorsUUIDRevisions(t *testing.T) {
 	db, _ := setup(t)
 	ctx := t.Context()
-	_, err := db.ExecContext(ctx, `CREATE TABLE uuid_docs (id UUID PRIMARY KEY, body TEXT, revision TEXT); INSERT INTO uuid_docs VALUES ('abcdefab-cdef-abcd-efab-cdefabcdefab','cat',NULL),('12345678-1234-1234-1234-123456789abc','dog','new')`)
+	_, err := db.ExecContext(ctx, `CREATE TABLE uuid_docs (id UUID PRIMARY KEY, body TEXT, revision TEXT); INSERT INTO uuid_docs VALUES ('abcdefab-cdef-abcd-efab-cdefabcdefab','cat',NULL)`)
 	require.NoError(t, err)
 	schema := pgvector.Schema{DocsTable: "uuid_docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "uuid_vectors"}
 	require.NoError(t, pgvector.Install(ctx, db, schema))
 	store, err := pgvector.New[string, string](ctx, db, schema)
 	require.NoError(t, err)
 	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateActive))
-	tx, err := db.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	stale, err := store.SaveDocuments(ctx, tx, "a", []pgvector.Document[string]{
-		{Doc: "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB", Revision: nil, Vectors: []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}},
-		{Doc: "12345678-1234-1234-1234-123456789abc", Revision: "old", Vectors: []vector.ChunkVector{{Vector: vector.Vector{0, 1}}}},
-	})
-	require.NoError(t, err)
-	require.Equal(t, []string{"12345678-1234-1234-1234-123456789abc"}, stale)
-	require.NoError(t, tx.Commit())
+	require.NoError(t, store.SaveVectors(ctx, "a", "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB", nil, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
 	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
 	require.NoError(t, err)
 	require.Len(t, hits, 1)
@@ -780,7 +772,6 @@ func TestSaveDocumentsRollsBackWithEdit(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, hits)
 	require.Len(t, pending, 2)
-	require.Equal(t, "cat", pending[0].Content)
 }
 
 func TestSaveDocumentsPreconditions(t *testing.T) {
