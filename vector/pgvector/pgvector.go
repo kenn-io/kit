@@ -22,7 +22,8 @@ type Schema struct {
 	ContentColumn  string
 	RevisionColumn string
 	Prefix         string
-	// SharedChunks uses a caller-installed table with an unbounded halfvec column.
+	// SharedChunks uses a caller-installed table with an unbounded halfvec column
+	// and a doc_key foreign key to the source document with ON DELETE CASCADE.
 	SharedChunks bool
 	// Begin opens write transactions; the store commits or rolls them back.
 	Begin func(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -152,6 +153,13 @@ func checkCatalog(ctx context.Context, db *sql.DB, schema Schema) error {
 		}
 		if !valid {
 			return fmt.Errorf("check table %s: wrong column types", name)
+		}
+		err = db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_attribute source ON source.attrelid=c.conrelid AND source.attname='doc_key' JOIN pg_attribute target ON target.attrelid=c.confrelid AND target.attname=$3 WHERE c.contype='f' AND c.conrelid=to_regclass($1) AND c.confrelid=to_regclass($2) AND c.conkey=ARRAY[source.attnum] AND c.confkey=ARRAY[target.attnum] AND c.confdeltype='c')`, postgres.QuoteIdentifier(name), postgres.QuoteIdentifier(schema.DocsTable), schema.IDColumn).Scan(&valid)
+		if err != nil {
+			return fmt.Errorf("check table %s document cascade: %w", name, err)
+		}
+		if !valid {
+			return fmt.Errorf("check table %s: doc_key must reference the document key with ON DELETE CASCADE", name)
 		}
 	}
 	return nil

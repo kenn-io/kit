@@ -76,7 +76,7 @@ func (s *Store[K, G]) ensureStorage(ctx context.Context, tx *sql.Tx, id int64, d
 // EnsureGeneration registers a model and creates its chunk table and HNSW index.
 // An existing generation with the same model needs no sequence value and no DDL.
 // The state must be pending, building, or active. Shared storage permits
-// re-ensuring a retired generation.
+// re-ensuring a retired generation as building.
 func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.Generation, state vector.State) error {
 	if state != vector.StatePending && state != vector.StateBuilding && state != vector.StateActive {
 		return fmt.Errorf("invalid generation state %q", state)
@@ -96,7 +96,7 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if err != nil {
 		return err
 	}
-	if row.state == vector.StateRetired && !s.schema.SharedChunks {
+	if row.state == vector.StateRetired && (!s.schema.SharedChunks || state != vector.StateBuilding) {
 		return vector.ErrRetired
 	}
 	if row.fingerprint != model.Fingerprint() || row.dim != model.Dimensions {

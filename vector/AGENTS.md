@@ -227,9 +227,10 @@ pipeline. Preserve these invariants when changing it.
 - Default storage uses a chunk table and HNSW index per generation.
   `EnsureGeneration` refuses retired generations, `Reclaim` drops their table,
   and queries hold an access-share lock until they finish.
-- Shared storage uses a caller-installed chunk table. `EnsureGeneration` can
-  restore a retired generation, `Reclaim` deletes its rows, and queries take
-  no table lock. Writes use `Schema.Begin` when supplied.
+- Shared storage uses a caller-installed chunk table whose `doc_key` has an
+  `ON DELETE CASCADE` foreign key to the documents table. `EnsureGeneration`
+  restores retired generations only as building; `Reclaim` deletes their rows.
+  Queries take no table lock, and writes use `Schema.Begin` when supplied.
 - `PendingForGeneration` and `SaveVectors` return `ErrRetired` for retired
   generations. `SaveVectors` and `QueryGeneration` reject non-finite or
   zero-norm vectors before PostgreSQL converts them to halfvec.

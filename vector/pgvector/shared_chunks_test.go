@@ -32,7 +32,7 @@ func TestSharedChunks(t *testing.T) {
 	db.SetMaxIdleConns(2)
 	_, err = pgvector.New[int64, string](ctx, db, schema)
 	require.Error(t, err)
-	_, err = db.ExecContext(ctx, `DROP TABLE vectors_chunks; CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY (generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1),(2,'b',1),(3,'c',1)`)
+	_, err = db.ExecContext(ctx, `DROP TABLE vectors_chunks; CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY (generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1),(2,'b',1),(3,'c',1)`)
 	require.NoError(t, err)
 	_, err = db.ExecContext(ctx, `CREATE FUNCTION require_opener() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF current_setting('application_name') <> 'shared-test' THEN RAISE EXCEPTION 'opener missing'; END IF; RETURN COALESCE(NEW, OLD); END $$;
  CREATE TRIGGER generations_opener BEFORE INSERT OR UPDATE OR DELETE ON vectors_generations FOR EACH ROW EXECUTE FUNCTION require_opener();
@@ -110,7 +110,7 @@ func TestSharedChunks(t *testing.T) {
 func TestSharedChunksDMLRole(t *testing.T) {
 	db, _ := setup(t)
 	ctx := t.Context()
-	_, err := db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1)`)
+	_, err := db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1)`)
 	require.NoError(t, err)
 	role := uniqueName(t, "vec_runtime")
 	_, err = db.ExecContext(ctx, `CREATE ROLE `+role+` LOGIN PASSWORD 'test'`)
@@ -155,7 +155,7 @@ func TestSharedChunksMatchesDefaultRanking(t *testing.T) {
 	ctx := t.Context()
 	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "shared", SharedChunks: true}
 	require.NoError(t, pgvector.Install(ctx, db, schema))
-	_, err := db.ExecContext(ctx, `CREATE TABLE shared_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1),(2,'b',1),(3,'c',1)`)
+	_, err := db.ExecContext(ctx, `CREATE TABLE shared_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1),(2,'b',1),(3,'c',1)`)
 	require.NoError(t, err)
 	shared, err := pgvector.New[int64, string](ctx, db, schema)
 	require.NoError(t, err)
@@ -170,4 +170,51 @@ func TestSharedChunksMatchesDefaultRanking(t *testing.T) {
 	actual, err := shared.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 3)
 	require.NoError(t, err)
 	require.Equal(t, expected, actual)
+}
+
+func TestSharedChunksReclaimedGenerationCannotEnsureActive(t *testing.T) {
+	db, _ := setup(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL REFERENCES docs(id) ON DELETE CASCADE, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index)); INSERT INTO docs VALUES (1,'a',1)`)
+	require.NoError(t, err)
+	store, err := pgvector.New[int64, string](ctx, db, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors", SharedChunks: true})
+	require.NoError(t, err)
+	model := vector.Generation{Dimensions: 2}
+	require.NoError(t, store.EnsureGeneration(ctx, "a", model, vector.StateBuilding))
+	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	require.NoError(t, store.Activate(ctx, "a"))
+	require.NoError(t, store.SetGenerationState(ctx, "a", vector.StateRetired))
+	require.NoError(t, store.Reclaim(ctx, "a"))
+	require.ErrorIs(t, store.EnsureGeneration(ctx, "a", model, vector.StateActive), vector.ErrRetired)
+	require.ErrorIs(t, store.EnsureGeneration(ctx, "a", model, vector.StatePending), vector.ErrRetired)
+	require.NoError(t, store.EnsureGeneration(ctx, "a", model, vector.StateBuilding))
+	require.Error(t, store.Activate(ctx, "a"))
+}
+
+func TestSharedChunksRequiresDocumentCascade(t *testing.T) {
+	db, _ := setup(t)
+	ctx := t.Context()
+	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors", SharedChunks: true}
+	_, err := db.ExecContext(ctx, `CREATE TABLE vectors_chunks (generation_id bigint NOT NULL, doc_key bigint NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec NOT NULL, PRIMARY KEY(generation_id,doc_key,chunk_index))`)
+	require.NoError(t, err)
+	_, err = pgvector.New[int64, string](ctx, db, schema)
+	require.Error(t, err)
+	_, err = db.ExecContext(ctx, `ALTER TABLE vectors_chunks ADD FOREIGN KEY (doc_key) REFERENCES docs(id)`)
+	require.NoError(t, err)
+	_, err = pgvector.New[int64, string](ctx, db, schema)
+	require.Error(t, err)
+	_, err = db.ExecContext(ctx, `ALTER TABLE vectors_chunks DROP CONSTRAINT vectors_chunks_doc_key_fkey; ALTER TABLE vectors_chunks ADD FOREIGN KEY (doc_key) REFERENCES docs(id) ON DELETE CASCADE; INSERT INTO docs VALUES (1,'a',1)`)
+	require.NoError(t, err)
+	store, err := pgvector.New[int64, string](ctx, db, schema)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, "a", vector.Generation{Dimensions: 2}, vector.StateBuilding))
+	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, []vector.ChunkVector{{Vector: vector.Vector{1, 0}}}))
+	_, err = db.ExecContext(ctx, `DELETE FROM docs WHERE id=1; INSERT INTO docs VALUES (1,'new',2)`)
+	require.NoError(t, err)
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks`).Scan(&count))
+	assert.Zero(t, count)
+	hits, err := store.QueryGeneration(ctx, "a", vector.Vector{1, 0}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, hits)
 }
