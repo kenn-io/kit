@@ -311,6 +311,10 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 				return 0, fmt.Errorf("%s: resolve symlink: %w", file, resolveErr)
 			}
 			if resolveErr == nil {
+				// Imported skills stay outside document management even outside this repository.
+				if isSkillFile(filepath.ToSlash(resolved)) {
+					continue
+				}
 				resolvedRoot, rootErr := pathresolve.EvalSymlinks(root)
 				if rootErr != nil {
 					return 0, fmt.Errorf("resolve repository root: %w", rootErr)
@@ -456,6 +460,23 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 	src, err := os.ReadFile(full)
 	if err != nil {
 		return nil, false, err
+	}
+	if !legacy {
+		switch path.Base(file) {
+		case "log.md":
+			if bytes.HasPrefix(src, []byte("---\n")) || bytes.HasPrefix(src, []byte("---\r\n")) {
+				return []string{"log.md must not have frontmatter"}, false, nil
+			}
+			return nil, false, nil
+		case "index.md":
+			// Reserved indexes are not concepts. A bundle root may carry metadata;
+			// validation and index regeneration leave it untouched.
+			_, err := parseFrontmatter(src)
+			if err != nil && !errors.Is(err, errFrontmatterMissing) {
+				return []string{err.Error()}, false, nil
+			}
+			return nil, false, nil
+		}
 	}
 	b, err := parseFrontmatter(src)
 	skill := isSkillFile(file)

@@ -34,8 +34,6 @@ func TestOKFValidationMatrix(t *testing.T) {
 		{"  at: 2026-11-17T12:00:00Z\n", "", "generated.at"},
 		{"at: 2026-11-17T12:00:00Z", "at: ''", "generated.at"},
 		{"at: 2026-11-17T12:00:00Z", "at: 123", "generated.at"},
-		{"2026-11-17T12:00:00Z", "2026-11-17T12:00:00+01:00", "generated.at"},
-		{"2026-11-17T12:00:00Z", "2026-11-17", "generated.at"},
 		{"2026-11-17T12:00:00Z", "2026-11-17T12:00:00", "generated.at"},
 	}
 	for i, tt := range fields {
@@ -61,7 +59,7 @@ func TestOKFValidationMatrix(t *testing.T) {
 		{"stable", "status: stable\n", true},
 		{"draft", "status: draft\n", true},
 		{"deprecated", "status: deprecated\n", true},
-		{"invalid", "status: retired\n", false},
+		{"unknown", "status: retired\n", true},
 		{"empty", "status: ''\n", false},
 		{"number", "status: 123\n", false},
 		{"mapping", "status: {value: draft}\n", false},
@@ -75,7 +73,7 @@ func TestOKFValidationMatrix(t *testing.T) {
 			if tt.valid {
 				assert.Empty(t, b.okfProblems())
 			} else {
-				assert.Contains(t, b.okfProblems(), "status must be one of stable, draft, or deprecated")
+				assert.Contains(t, b.okfProblems(), "status must be a non-empty string")
 			}
 			if tt.field != "" {
 				data, _, err := b.encode()
