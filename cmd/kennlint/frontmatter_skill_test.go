@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -272,4 +273,54 @@ func TestSkillFixRefusesIncompleteProfile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestManagedSkillPatternOutsideSelection(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("skills/a/SKILL.md", skillHeader)
+	repo.WriteFile("docs/page.md", goodOKF)
+	repo.Run("add", ".")
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-managed-skill", "skills/**/SKILL.md", "docs"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Zero(t, n, errs.String())
+	_, err = runFrontmatter(t.Context(), []string{"-managed-skill", "missing/**/SKILL.md", "docs"}, &out, &errs)
+	require.ErrorContains(t, err, "matches no tracked SKILL.md")
+}
+
+func TestFrontmatterDocumentSymlinkSkillExclusions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	const skill = "---\nname: unlisted\ndescription: Example\n---\nBody\n"
+	const resource = "# Resource\n\nBody\n"
+	repo.WriteFile("skills/a/SKILL.md", skill)
+	repo.WriteFile("skills/a/references/page.md", resource)
+	repo.WriteFile("other/page.md", strings.Replace(goodOKF, "type: Guide\n", "", 1))
+	require.NoError(t, os.MkdirAll("docs", 0o755))
+	for name, target := range map[string]string{
+		"docs/skill.md":    "../skills/a/SKILL.md",
+		"docs/resource.md": "../skills/a/references/page.md",
+		"docs/document.md": "../other/page.md",
+	} {
+		require.NoError(t, os.Symlink(target, name))
+	}
+	repo.Run("add", ".")
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-type-rule", "**=Guide", "docs"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Zero(t, n, errs.String())
+	for name, want := range map[string]string{"skills/a/SKILL.md": skill, "skills/a/references/page.md": resource} {
+		data, err := os.ReadFile(name)
+		require.NoError(t, err)
+		assert.Equal(t, want, string(data), name)
+	}
+	data, err := os.ReadFile("other/page.md")
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "type: Guide")
 }
