@@ -9,27 +9,30 @@ import (
 	"go.kenn.io/kit/vector"
 )
 
+type generationRow struct {
+	id          int64
+	fingerprint string
+	dim         int
+	state       vector.State
+}
+
+// lookup reads a generation row, locking it when lock is set. It wraps ErrGenerationNotFound when none exists.
 func (s *Store[K, G]) lookup(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, gen G, lock bool) (int64, int, vector.State, error) {
-	var id int64
-	var dim int
-	var state vector.State
+}, gen G, lock bool) (generationRow, error) {
+	var r generationRow
 	suffix := ""
 	if lock {
 		suffix = " FOR UPDATE"
 	}
-	err := q.QueryRowContext(ctx, fmt.Sprintf(`SELECT id, dimension, state FROM %s WHERE gen_key=$1%s`, s.generations(), suffix), gen).Scan(&id, &dim, &state)
+	err := q.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,fingerprint,dimension,state FROM %s WHERE gen_key=$1%s`, s.generations(), suffix), gen).Scan(&r.id, &r.fingerprint, &r.dim, &r.state)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, "", fmt.Errorf("generation %v: %w", gen, vector.ErrGenerationNotFound)
+		return r, fmt.Errorf("generation %v: %w", gen, vector.ErrGenerationNotFound)
 	}
-	if err != nil {
-		return 0, 0, "", err
+	if err == nil && !validState(r.state) {
+		err = fmt.Errorf("generation %v has unknown state %q", gen, r.state)
 	}
-	if !validState(state) {
-		return 0, 0, "", fmt.Errorf("generation %v has unknown state %q", gen, state)
-	}
-	return id, dim, state, nil
+	return r, err
 }
 
 func validState(state vector.State) bool {
@@ -40,32 +43,12 @@ func validState(state vector.State) bool {
 	return false
 }
 
-type generationRow struct {
-	id          int64
-	fingerprint string
-	dim         int
-	state       vector.State
-}
-
-// lockGeneration reads and locks a generation row. It wraps ErrGenerationNotFound when none exists.
-func (s *Store[K, G]) lockGeneration(ctx context.Context, tx *sql.Tx, gen G) (generationRow, error) {
-	var r generationRow
-	err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,fingerprint,dimension,state FROM %s WHERE gen_key=$1 FOR UPDATE`, s.generations()), gen).Scan(&r.id, &r.fingerprint, &r.dim, &r.state)
-	if errors.Is(err, sql.ErrNoRows) {
-		return r, fmt.Errorf("generation %v: %w", gen, vector.ErrGenerationNotFound)
-	}
-	if err == nil && !validState(r.state) {
-		err = fmt.Errorf("generation %v has unknown state %q", gen, r.state)
-	}
-	return r, err
-}
-
 // insertGeneration adds a missing generation. A concurrent insert is read back instead.
 func (s *Store[K, G]) insertGeneration(ctx context.Context, tx *sql.Tx, gen G, model vector.Generation, state vector.State) (generationRow, error) {
 	r := generationRow{fingerprint: model.Fingerprint(), dim: model.Dimensions, state: state}
 	err := tx.QueryRowContext(ctx, fmt.Sprintf(`INSERT INTO %s (gen_key,fingerprint,dimension,state) VALUES ($1,$2,$3,$4) ON CONFLICT(gen_key) DO NOTHING RETURNING id`, s.generations()), gen, r.fingerprint, r.dim, state).Scan(&r.id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return s.lockGeneration(ctx, tx, gen)
+		return s.lookup(ctx, tx, gen, true)
 	}
 	return r, err
 }
@@ -81,9 +64,6 @@ func (s *Store[K, G]) reuseGeneration(ctx context.Context, tx *sql.Tx, gen G, r 
 	}
 	if r.fingerprint != model.Fingerprint() || r.dim != model.Dimensions {
 		return false, fmt.Errorf("generation %v has different model", gen)
-	}
-	if r.state == state {
-		return false, nil
 	}
 	_, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2`, s.generations()), state, r.id)
 	return false, err
@@ -124,7 +104,7 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	row, err := s.lockGeneration(ctx, tx, gen)
+	row, err := s.lookup(ctx, tx, gen, true)
 	if errors.Is(err, vector.ErrGenerationNotFound) {
 		row, err = s.insertGeneration(ctx, tx, gen, model, state)
 	}
@@ -151,14 +131,14 @@ func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vecto
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	id, _, current, err := s.lookup(ctx, tx, gen, true)
+	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err
 	}
-	if current == vector.StateRetired && state != current {
+	if row.state == vector.StateRetired && state != row.state {
 		return vector.ErrRetired
 	}
-	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2`, s.generations()), state, id); err != nil {
+	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2`, s.generations()), state, row.id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -171,13 +151,14 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	id, _, state, err := s.lookup(ctx, tx, gen, true)
+	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err
 	}
-	if state == vector.StateRetired {
+	if row.state == vector.StateRetired {
 		return vector.ErrRetired
 	}
+	id := row.id
 	var backlog int64
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s d LEFT JOIN %s stamp ON stamp.generation_id=$1 AND stamp.doc_key=d.%s WHERE NOT %s`, quote(s.schema.DocsTable), s.stamps(), quote(s.schema.IDColumn), s.covered("d", "stamp")), id).Scan(&backlog)
 	if err != nil {
@@ -200,11 +181,12 @@ func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	id, _, state, err := s.lookup(ctx, tx, gen, true)
+	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err
 	}
-	if state != vector.StateRetired {
+	id := row.id
+	if row.state != vector.StateRetired {
 		return fmt.Errorf("generation %v is not retired", gen)
 	}
 	if _, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+s.chunks(id)); err != nil {

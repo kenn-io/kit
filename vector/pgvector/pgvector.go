@@ -68,14 +68,6 @@ func supportedVersion(version string) bool {
 	}
 	var numbers [3]uint64
 	for i, part := range parts {
-		if part == "" {
-			return false
-		}
-		for _, r := range part {
-			if r < '0' || r > '9' {
-				return false
-			}
-		}
 		n, err := strconv.ParseUint(part, 10, 64)
 		if err != nil {
 			return false

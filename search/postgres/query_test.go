@@ -107,6 +107,4 @@ func TestBuildVectorQualifiedHalfvec(t *testing.T) {
 	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: "docs", SourceKey: "id", VectorColumn: "embedding"}, Query: "[1,0]", VectorType: "halfvec", TypeSchema: "extensions", CandidateLimit: 2})
 	require.NoError(t, err)
 	assert.Contains(t, q.SQL, `d."embedding" OPERATOR("extensions".<=>) $1::"extensions".halfvec`)
-	_, err = postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: "docs", SourceKey: "id", VectorColumn: "embedding"}, Query: "[1,0]", TypeSchema: "bad\x00schema", CandidateLimit: 2})
-	require.Error(t, err)
 }

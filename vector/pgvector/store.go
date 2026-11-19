@@ -16,11 +16,11 @@ import (
 
 // PendingForGeneration returns uncovered documents in key order.
 func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, after *K, limit int) ([]vector.Pending[K], error) {
-	id, _, _, err := s.lookup(ctx, s.db, gen, false)
+	row, err := s.lookup(ctx, s.db, gen, false)
 	if err != nil {
 		return nil, err
 	}
-	args := []any{id}
+	args := []any{row.id}
 	cursor := ""
 	if after != nil {
 		args = append(args, *after)
@@ -48,23 +48,16 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, after *K,
 
 // halfvec preserves cosine direction by scaling the largest component to one.
 // Scaling in float64 handles the full range of finite float32 inputs.
-func halfvec(v vector.Vector) (string, error) {
+func halfvec(v vector.Vector) string {
 	var maxComponent float64
 	for _, component := range v {
-		value := math.Abs(float64(component))
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return "", errors.New("vector has a non-finite component")
-		}
-		maxComponent = max(maxComponent, value)
-	}
-	if maxComponent == 0 {
-		return "", errors.New("vector has zero norm")
+		maxComponent = max(maxComponent, math.Abs(float64(component)))
 	}
 	scaled := make([]float32, len(v))
 	for i, component := range v {
 		scaled[i] = float32(float64(component) / maxComponent)
 	}
-	return vectorliteral.Format(scaled), nil
+	return vectorliteral.Format(scaled)
 }
 
 // SaveVectors atomically checks the document revision, replaces chunks, and stamps it.
@@ -74,16 +67,17 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	id, dim, state, err := s.lookup(ctx, tx, gen, true)
+	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err
 	}
-	if state == vector.StateRetired {
+	if row.state == vector.StateRetired {
 		return vector.ErrRetired
 	}
+	id := row.id
 	for _, cv := range vectors {
-		if len(cv.Vector) != dim {
-			return fmt.Errorf("chunk %d has %d dimensions, expected %d", cv.ChunkIndex, len(cv.Vector), dim)
+		if len(cv.Vector) != row.dim {
+			return fmt.Errorf("chunk %d has %d dimensions, expected %d", cv.ChunkIndex, len(cv.Vector), row.dim)
 		}
 	}
 	var matches bool
@@ -101,11 +95,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		return err
 	}
 	for _, cv := range vectors {
-		value, err := halfvec(cv.Vector)
-		if err != nil {
-			return fmt.Errorf("chunk %d: %w", cv.ChunkIndex, err)
-		}
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), quote(s.ext)), doc, cv.ChunkIndex, value); err != nil {
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), quote(s.ext)), doc, cv.ChunkIndex, halfvec(cv.Vector)); err != nil {
 			return err
 		}
 	}
@@ -155,18 +145,15 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	id, dim, state, err := s.lookup(ctx, tx, gen, false)
+	row, err := s.lookup(ctx, tx, gen, false)
 	if err != nil {
 		return nil, err
 	}
-	if len(query) != dim {
-		return nil, fmt.Errorf("query has %d dimensions, expected %d", len(query), dim)
+	if len(query) != row.dim {
+		return nil, fmt.Errorf("query has %d dimensions, expected %d", len(query), row.dim)
 	}
-	if limit <= 0 {
-		return nil, errors.New("limit must be positive")
-	}
-	if state == vector.StateRetired {
-		if exists, err := s.storageExists(ctx, tx, id); err != nil || !exists {
+	if row.state == vector.StateRetired {
+		if exists, err := s.storageExists(ctx, tx, row.id); err != nil || !exists {
 			return nil, err
 		}
 	}
@@ -176,7 +163,7 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 	if _, err = tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
 		return nil, err
 	}
-	q, err := s.candidateQuery(id, query, limit, filter)
+	q, err := s.candidateQuery(row.id, query, limit, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -200,16 +187,12 @@ func (s *Store[K, G]) QueryGenerationWithPredicate(ctx context.Context, gen G, q
 
 // candidateQuery selects the nearest fresh chunks that pass filter, then joins their stamp revision.
 func (s *Store[K, G]) candidateQuery(id int64, query vector.Vector, limit int, filter sqlquery.Predicate) (sqlquery.Query, error) {
-	value, err := halfvec(query)
-	if err != nil {
-		return sqlquery.Query{}, fmt.Errorf("query: %w", err)
-	}
 	predicate := sqlquery.Predicate{SQL: fmt.Sprintf(`EXISTS (SELECT 1 FROM %s src JOIN %s stamp ON stamp.generation_id=? AND stamp.doc_key=src.%s WHERE src.%s=d.doc_key AND %s)`, quote(s.schema.DocsTable), s.stamps(), quote(s.schema.IDColumn), quote(s.schema.IDColumn), s.covered("src", "stamp")), Args: []any{id}}
 	if strings.TrimSpace(filter.SQL) != "" {
 		predicate.SQL = "(" + predicate.SQL + ") AND (" + filter.SQL + ")"
 	}
 	predicate.Args = append(predicate.Args, filter.Args...)
-	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id), SourceKey: "doc_key", VectorColumn: "embedding"}, Query: value, VectorType: "halfvec", TypeSchema: s.ext, SourcePredicate: predicate, ExtraSourceCols: []sqlquery.Column{{Name: "chunk_index", As: "chunk_index"}}, CandidateLimit: limit})
+	q, err := postgres.BuildVector(postgres.VectorRequest{Mapping: postgres.VectorMapping{SourceTable: fmt.Sprintf("%s_chunks_g%d", s.schema.Prefix, id), SourceKey: "doc_key", VectorColumn: "embedding"}, Query: halfvec(query), VectorType: "halfvec", TypeSchema: s.ext, SourcePredicate: predicate, ExtraSourceCols: []sqlquery.Column{{Name: "chunk_index", As: "chunk_index"}}, CandidateLimit: limit})
 	if err != nil {
 		return sqlquery.Query{}, err
 	}
