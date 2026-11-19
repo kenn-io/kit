@@ -955,7 +955,7 @@ func TestQueryGenerationWithPredicateTxLeavesFailedTransactionToCaller(t *testin
 	var n int
 	err = tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n)
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, sql.ErrTxDone)
+	require.NotErrorIs(t, err, sql.ErrTxDone)
 	require.NoError(t, tx.Rollback())
 }
 
