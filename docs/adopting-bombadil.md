@@ -122,6 +122,7 @@ Inspect a failure and reproduce it against reset fixture state:
 
 ```sh
 ./node_modules/.bin/bombadil browser inspect "$trace_file"
+# After inspecting, press Ctrl-C to stop the server before replaying.
 replay_dir=$(mktemp -d .bombadil/replay.XXXXXX) || exit 1
 ./node_modules/.bin/bombadil browser test \
   --headless --reproduce "$trace_file" \
