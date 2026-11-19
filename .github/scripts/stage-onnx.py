@@ -30,7 +30,6 @@ target, library, output_library, digest, provider_digest = targets[(args.os, arg
 root = args.output
 root.mkdir(parents=True, exist_ok=True)
 cache = args.cache_dir or root.parent
-cache.mkdir(parents=True, exist_ok=True)
 archive = cache / 'microsoft.ml.onnxruntime.1.23.2.nupkg'
 if not archive.exists():
     subprocess.run(curl + ['--output', str(archive), 'https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/' + archive.name], check=True)
@@ -63,4 +62,4 @@ if args.os == 'windows':
 # The server's optional face models retain their distribution notices.
 for notice in ('AuraFace-LICENSE', 'YuNet-LICENSE'):
     shutil.copy2(pathlib.Path('.github/licenses') / notice, root / notice)
-print(root / output_library)
+print(next(path for path in root.iterdir() if path.name.startswith(('onnxruntime.', 'libonnxruntime.'))))
