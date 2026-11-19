@@ -558,7 +558,7 @@ func TestFrontmatterReviewAncestorSymlinks(t *testing.T) {
 				require.NoError(t, err)
 				assert.Zero(t, n, errs.String())
 			} else {
-				assert.ErrorContains(t, err, "exactly one selected file")
+				require.ErrorContains(t, err, "exactly one selected file")
 			}
 			got, readErr := os.ReadFile(target)
 			require.NoError(t, readErr)

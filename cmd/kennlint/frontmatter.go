@@ -406,12 +406,10 @@ func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]s
 	if err != nil {
 		return false, fmt.Errorf("resolve repository root: %w", err)
 	}
-	rel, err := filepath.Rel(resolvedRoot, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return true, nil
-	}
+	rel, relErr := filepath.Rel(resolvedRoot, resolved)
+	inside := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	target := filepath.ToSlash(rel)
-	return isSkillFile(target) || frontmatterInSkillDirectory(target, skillDirs) || !frontmatterSelected(target, nil, excludes), nil
+	return !inside || isSkillFile(target) || frontmatterInSkillDirectory(target, skillDirs) || !frontmatterSelected(target, nil, excludes), nil
 }
 
 func frontmatterPaths(root string, args []string) ([]string, error) {

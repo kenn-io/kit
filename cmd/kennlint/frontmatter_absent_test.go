@@ -41,7 +41,7 @@ func TestOKFAbsentEquivalenceIsGeneric(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.meaningful, frontmatterMeaningful(parse(tc.before), parse(tc.after)))
+			assert.Equal(t, tc.meaningful, frontmatterMeaningful(parse(tc.before), parse(tc.after), false))
 		})
 	}
 }
