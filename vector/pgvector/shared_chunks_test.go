@@ -188,7 +188,7 @@ func TestSharedChunksReclaimedGenerationCannotEnsureActive(t *testing.T) {
 	require.ErrorIs(t, store.EnsureGeneration(ctx, "a", model, vector.StateActive), vector.ErrRetired)
 	require.ErrorIs(t, store.EnsureGeneration(ctx, "a", model, vector.StatePending), vector.ErrRetired)
 	require.NoError(t, store.EnsureGeneration(ctx, "a", model, vector.StateBuilding))
-	require.Error(t, store.Activate(ctx, "a"))
+	require.ErrorIs(t, store.Activate(ctx, "a"), vector.ErrUncovered)
 }
 
 func TestSharedChunksRequiresDocumentCascade(t *testing.T) {
