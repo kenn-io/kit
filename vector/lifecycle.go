@@ -35,11 +35,3 @@ func (e *UncoveredError) Error() string {
 }
 
 func (e *UncoveredError) Unwrap() error { return ErrUncovered }
-
-// GenerationInfo describes one registered generation.
-type GenerationInfo[G comparable] struct {
-	Key         G
-	Fingerprint string
-	Dimension   int
-	State       State
-}

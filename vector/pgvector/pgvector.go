@@ -17,12 +17,11 @@ import (
 
 // Schema names the source documents and managed tables.
 type Schema struct {
-	DocsTable         string
-	IDColumn          string
-	ContentColumn     string
-	RevisionColumn    string
-	Prefix            string
-	GenerationKeyType string // PostgreSQL type for G; defaults to text.
+	DocsTable      string
+	IDColumn       string
+	ContentColumn  string
+	RevisionColumn string
+	Prefix         string
 }
 
 func (s *Schema) validate() error {
@@ -67,16 +66,16 @@ func supportedVersion(version string) bool {
 	return numbers[0] > 0 || numbers[1] >= 8
 }
 
-// Store implements vector.Store. K and G must be supported by database/sql.
-// G uses Schema.GenerationKeyType, which defaults to text.
-type Store[K, G comparable] struct {
+// Store implements vector.Store. K must be supported by database/sql; generation
+// keys are stored as text.
+type Store[K comparable, G ~string] struct {
 	db     *sql.DB
 	schema Schema
 	ext    string
 }
 
 // New attaches to installed tables without running DDL.
-func New[K, G comparable](ctx context.Context, db *sql.DB, schema Schema) (*Store[K, G], error) {
+func New[K comparable, G ~string](ctx context.Context, db *sql.DB, schema Schema) (*Store[K, G], error) {
 	if err := schema.validate(); err != nil {
 		return nil, err
 	}
