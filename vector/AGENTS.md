@@ -178,9 +178,8 @@ pipeline. Preserve these invariants when changing it.
 - Lifecycle errors wrap `ErrGenerationNotFound` for a key never ensured and
   `ErrRetired` for a retired generation used as live, so callers match them
   with `errors.Is`.
-- A retired generation never leaves retired. `SetGenerationState` and
-  `EnsureGeneration` refuse any other state, and ensuring it as retired does
-  not recreate reclaimed storage.
+- In default storage, retired generations stay retired. `SetGenerationState` and
+  `EnsureGeneration` refuse to restore them; `Reclaim` leaves their storage gone.
 - `ActiveGeneration` returns the newest active generation by ordinal.
   `LiveGenerations` still returns building generations ahead of active ones.
   Callers that serve only the active generation select it themselves.

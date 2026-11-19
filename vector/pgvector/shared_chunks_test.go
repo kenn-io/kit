@@ -15,7 +15,7 @@ import (
 	"go.kenn.io/kit/vector/pgvector"
 )
 
-func TestSharedChunksExistingIndex(t *testing.T) {
+func TestSharedChunksPrepopulatedKitSchema(t *testing.T) {
 	db, _ := setup(t)
 	ctx := t.Context()
 	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors", SharedChunks: true}
