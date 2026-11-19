@@ -97,11 +97,11 @@ func (s *Store[K, G]) saveDocument(ctx context.Context, tx *sql.Tx, row generati
 	indexes := make([]int64, len(vectors))
 	for i, cv := range vectors {
 		if len(cv.Vector) != row.dim {
-			return fmt.Errorf("document %v chunk %d has %d dimensions, expected %d", doc, cv.ChunkIndex, len(cv.Vector), row.dim)
+			return fmt.Errorf("chunk %d has %d dimensions, expected %d", cv.ChunkIndex, len(cv.Vector), row.dim)
 		}
 		halfvecs[i], err = halfvec(cv.Vector)
 		if err != nil {
-			return fmt.Errorf("document %v chunk %d: %w", doc, cv.ChunkIndex, err)
+			return fmt.Errorf("chunk %d: %w", cv.ChunkIndex, err)
 		}
 		indexes[i] = int64(cv.ChunkIndex)
 	}

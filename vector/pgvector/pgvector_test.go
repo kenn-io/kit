@@ -635,7 +635,8 @@ func TestSaveDocumentsUUIDRevisions(t *testing.T) {
 	tx, err = db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	_, err = store.SaveDocuments(ctx, tx, "a", []pgvector.Document[string]{{Doc: "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB", Revision: "old", Vectors: []vector.ChunkVector{{Vector: vector.Vector{1}}}}})
-	require.ErrorContains(t, err, "document ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB chunk 0")
+	require.ErrorContains(t, err, "save document ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB")
+	require.ErrorContains(t, err, "chunk 0")
 	require.NoError(t, tx.Rollback())
 }
 
