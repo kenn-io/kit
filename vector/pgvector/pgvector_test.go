@@ -962,50 +962,52 @@ func TestQueryGenerationWithPredicateTxLeavesFailedTransactionToCaller(t *testin
 	require.NoError(t, tx.Rollback())
 }
 
-func TestQueryGenerationWithPredicateTxReclaimedSnapshot(t *testing.T) {
-	db, owner := setupActiveStore(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	// Kit can attach a pre-existing chunk table without a document foreign key.
-	// With the key, the snapshot's document lock prevents reclaiming the table.
-	_, err := db.ExecContext(ctx, `ALTER TABLE vectors_chunks_g1 DROP CONSTRAINT vectors_chunks_g1_doc_key_fkey`)
-	require.NoError(t, err)
-	runtime := dmlOnly(t, db)
-	runtime.SetMaxOpenConns(1)
-	store, err := pgvector.New[int64, string](ctx, runtime, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
-	require.NoError(t, err)
-	tx, err := runtime.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
-	require.NoError(t, err)
-	defer func() { _ = tx.Rollback() }()
-	var n int
-	require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM docs`).Scan(&n))
-	require.NoError(t, owner.SetGenerationState(ctx, "a", vector.StateRetired))
-	require.NoError(t, owner.Reclaim(ctx, "a"))
-	queryCtx, queryCancel := context.WithTimeout(ctx, 3*time.Second)
-	defer queryCancel()
-	_, err = store.QueryGenerationWithPredicateTx(queryCtx, tx, "a", vector.Vector{1, 0}, 10, sqlquery.Predicate{})
-	require.ErrorContains(t, err, "lock generation storage")
-	require.NoError(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
-	require.NoError(t, tx.Commit())
-}
-
-func TestQueryGenerationWithPredicateTxReturnsLockError(t *testing.T) {
-	db, store := setupActiveStore(t)
-	ctx := t.Context()
-	blocker, err := db.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	defer func() { _ = blocker.Rollback() }()
-	_, err = blocker.ExecContext(ctx, `LOCK TABLE vectors_chunks_g1 IN ACCESS EXCLUSIVE MODE`)
-	require.NoError(t, err)
-	tx, err := db.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	defer func() { _ = tx.Rollback() }()
-	_, err = tx.ExecContext(ctx, `SET LOCAL lock_timeout='100ms'`)
-	require.NoError(t, err)
-	_, err = store.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{})
-	require.ErrorContains(t, err, "lock timeout")
-	var n int
-	require.NoError(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
-	assert.Equal(t, 1, n)
-	require.NoError(t, tx.Rollback())
+func TestQueryGenerationWithPredicateTxRecoversFromLockErrors(t *testing.T) {
+	t.Run("reclaimed snapshot", func(t *testing.T) {
+		db, owner := setupActiveStore(t)
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		defer cancel()
+		// Kit can attach a pre-existing chunk table without a document foreign key.
+		// With the key, the snapshot's document lock prevents reclaiming the table.
+		_, err := db.ExecContext(ctx, `ALTER TABLE vectors_chunks_g1 DROP CONSTRAINT vectors_chunks_g1_doc_key_fkey`)
+		require.NoError(t, err)
+		runtime := dmlOnly(t, db)
+		runtime.SetMaxOpenConns(1)
+		store, err := pgvector.New[int64, string](ctx, runtime, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
+		require.NoError(t, err)
+		tx, err := runtime.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		var n int
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM docs`).Scan(&n))
+		require.NoError(t, owner.SetGenerationState(ctx, "a", vector.StateRetired))
+		require.NoError(t, owner.Reclaim(ctx, "a"))
+		queryCtx, queryCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer queryCancel()
+		_, err = store.QueryGenerationWithPredicateTx(queryCtx, tx, "a", vector.Vector{1, 0}, 10, sqlquery.Predicate{})
+		require.ErrorContains(t, err, "lock generation storage")
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
+		require.NoError(t, tx.Commit())
+	})
+	t.Run("lock timeout", func(t *testing.T) {
+		db, store := setupActiveStore(t)
+		ctx := t.Context()
+		blocker, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = blocker.Rollback() }()
+		_, err = blocker.ExecContext(ctx, `LOCK TABLE vectors_chunks_g1 IN ACCESS EXCLUSIVE MODE`)
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = tx.ExecContext(ctx, `SET LOCAL lock_timeout='100ms'`)
+		require.NoError(t, err)
+		_, err = store.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{})
+		require.ErrorContains(t, err, "lock generation storage")
+		require.ErrorContains(t, err, "lock timeout")
+		var n int
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
+		assert.Equal(t, 1, n)
+		require.NoError(t, tx.Rollback())
+	})
 }
