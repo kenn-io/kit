@@ -130,7 +130,7 @@ func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
 	b.fields = make(map[string]*yaml.Node)
 	content := b.doc.Content[0].Content
 	for i := 0; i < len(content); i += 2 {
-		b.fields[content[i].Value] = content[i+1]
+		b.fields[content[i].Value] = resolveYAML(content[i+1])
 	}
 	return b, nil
 }
@@ -446,6 +446,9 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 	}
 	var stale []string
 	for _, file := range files {
+		if !legacy && (path.Base(file) == "index.md" || path.Base(file) == "log.md") {
+			continue // Reserved files are never concepts, even with extension metadata.
+		}
 		if !modified[file] {
 			continue
 		}

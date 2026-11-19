@@ -16,8 +16,8 @@ func frontmatterMeaningful(a, b *frontmatterBlock) bool {
 	var x, y map[string]any
 	_ = a.doc.Decode(&x)
 	_ = b.doc.Decode(&y)
-	stripProvenance(x)
-	stripProvenance(y)
+	canonicalMetadata(x)
+	canonicalMetadata(y)
 	return !reflect.DeepEqual(x, y) || canonicalHTML(a.body) != canonicalHTML(b.body)
 }
 
@@ -63,3 +63,23 @@ func canonicalHTML(src []byte) string {
 }
 
 var proseSpace = regexp.MustCompile(`[ \t\n\f]+`)
+
+func canonicalMetadata(header map[string]any) {
+	stripProvenance(header)
+	// Verification records a review, not a change to the generated content.
+	delete(header, "verified")
+	switch sources := header["sources"].(type) {
+	case nil:
+		delete(header, "sources")
+	case string:
+		if sources == "" {
+			delete(header, "sources")
+		}
+	case []any:
+		if len(sources) == 0 {
+			delete(header, "sources")
+		}
+	case map[string]any:
+		header["sources"] = []any{sources}
+	}
+}

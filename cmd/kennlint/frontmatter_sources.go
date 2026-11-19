@@ -9,15 +9,20 @@ import (
 // sourcesProblems validates declared provenance without resolving resources.
 // A resource may be an opaque scope descriptor rather than a URL or path.
 func sourcesProblems(sources *yaml.Node, path string) []string {
-	if sources == nil {
+	sources = resolveYAML(sources)
+	if emptyOptional(sources) {
 		return nil
 	}
-	if sources.Kind != yaml.SequenceNode {
+	entries := sources.Content
+	if sources.Kind == yaml.MappingNode {
+		entries = []*yaml.Node{sources}
+	} else if sources.Kind != yaml.SequenceNode {
 		return []string{path + " must be a sequence"}
 	}
 	var problems []string
 	ids := make(map[string]struct{})
-	for i, source := range sources.Content {
+	for i, source := range entries {
+		source = resolveYAML(source)
 		entry := fmt.Sprintf("%s[%d]", path, i)
 		if source.Kind != yaml.MappingNode {
 			problems = append(problems, entry+" must be a mapping")
@@ -37,4 +42,10 @@ func sourcesProblems(sources *yaml.Node, path string) []string {
 		}
 	}
 	return problems
+}
+
+// emptyOptional follows OKF v0.3's absent-value equivalence for optional fields.
+func emptyOptional(n *yaml.Node) bool {
+	n = resolveYAML(n)
+	return n == nil || n.Tag == "!!null" || (n.Kind == yaml.ScalarNode && n.Tag == "!!str" && n.Value == "") || (n.Kind == yaml.SequenceNode && len(n.Content) == 0)
 }
