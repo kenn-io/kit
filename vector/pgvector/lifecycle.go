@@ -46,13 +46,19 @@ func knownState(state vector.State) bool {
 	}
 }
 
-// lockLifecycle coordinates saves with retirement and reclamation until tx ends.
-func (s *Store[K, G]) lockLifecycle(ctx context.Context, tx *sql.Tx, shared bool) error {
+// lockLifecycle serializes changes to the generation catalog.
+func (s *Store[K, G]) lockLifecycle(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('kit/pgvector/lifecycle/' || to_regclass($1)::oid::text, 0))`, s.generations())
+	return err
+}
+
+// lockGeneration coordinates a generation's saves and lifecycle changes.
+func (s *Store[K, G]) lockGeneration(ctx context.Context, tx *sql.Tx, gen G, shared bool) error {
 	lock := "pg_advisory_xact_lock"
 	if shared {
 		lock += "_shared"
 	}
-	_, err := tx.ExecContext(ctx, "SELECT "+lock+"(hashtextextended('kit/pgvector/' || to_regclass($1)::oid::text, 0))", s.generations())
+	_, err := tx.ExecContext(ctx, "SELECT "+lock+"(hashtextextended('kit/pgvector/generation/' || to_regclass($1)::oid::text || '/' || $2::text, 0))", s.generations(), gen)
 	return err
 }
 
@@ -99,6 +105,9 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.lockLifecycle(ctx, tx); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if errors.Is(err, vector.ErrGenerationNotFound) {
 		row, err = s.insertGeneration(ctx, tx, gen, model.Fingerprint(), model.Dimensions, state)
@@ -135,7 +144,10 @@ func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vecto
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := s.lockLifecycle(ctx, tx, false); err != nil {
+	if err := s.lockLifecycle(ctx, tx); err != nil {
+		return err
+	}
+	if err := s.lockGeneration(ctx, tx, gen, false); err != nil {
 		return err
 	}
 	row, err := s.lookup(ctx, tx, gen, true)
@@ -159,8 +171,33 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := s.lockLifecycle(ctx, tx, false); err != nil {
+	if err := s.lockLifecycle(ctx, tx); err != nil {
 		return err
+	}
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT gen_key FROM %s WHERE gen_key=$1 OR state IN ($2,$3) ORDER BY gen_key`, s.generations()), gen, vector.StateActive, vector.StateBuilding)
+	if err != nil {
+		return err
+	}
+	var gens []G
+	for rows.Next() {
+		var key G
+		if err := rows.Scan(&key); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		gens = append(gens, key)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, key := range gens {
+		if err := s.lockGeneration(ctx, tx, key, false); err != nil {
+			return err
+		}
 	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
@@ -192,7 +229,10 @@ func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
 		return fmt.Errorf("begin generation reclamation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := s.lockLifecycle(ctx, tx, false); err != nil {
+	if err := s.lockLifecycle(ctx, tx); err != nil {
+		return err
+	}
+	if err := s.lockGeneration(ctx, tx, gen, false); err != nil {
 		return err
 	}
 	row, err := s.lookup(ctx, tx, gen, true)

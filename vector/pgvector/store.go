@@ -77,7 +77,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err = s.lockLifecycle(ctx, tx, true); err != nil {
+	if err = s.lockGeneration(ctx, tx, gen, true); err != nil {
 		return err
 	}
 	row, err := s.lookup(ctx, tx, gen, false)

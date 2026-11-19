@@ -22,7 +22,7 @@ type Document[K comparable] struct {
 // must use READ COMMITTED. Document and lifecycle locks last until it ends;
 // the caller must roll back on errors other than ErrRetired.
 func (s *Store[K, G]) SaveDocuments(ctx context.Context, tx *sql.Tx, gen G, docs []Document[K]) ([]K, error) {
-	if err := s.lockLifecycle(ctx, tx, true); err != nil {
+	if err := s.lockGeneration(ctx, tx, gen, true); err != nil {
 		return nil, err
 	}
 	var isolation string
@@ -47,11 +47,32 @@ func (s *Store[K, G]) SaveDocuments(ctx context.Context, tx *sql.Tx, gen G, docs
 		keys[i] = doc.Doc
 	}
 	key := postgres.QuoteIdentifier(s.schema.IDColumn)
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT ordinal FROM (SELECT DISTINCT ON (doc_key) ordinal FROM unnest(ARRAY(SELECT %s FROM %s WHERE false) || $1) WITH ORDINALITY AS input(doc_key,ordinal) ORDER BY doc_key,ordinal DESC) last ORDER BY ordinal`, key, postgres.QuoteIdentifier(s.schema.DocsTable)), keys)
+	if err != nil {
+		return nil, err
+	}
+	var last []int
+	for rows.Next() {
+		var ordinal int
+		if err := rows.Scan(&ordinal); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		last = append(last, ordinal-1)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SELECT 1 FROM %s WHERE %s=ANY($1) ORDER BY %s FOR NO KEY UPDATE`, postgres.QuoteIdentifier(s.schema.DocsTable), key, key), keys); err != nil {
 		return nil, err
 	}
 	var stale []K
-	for _, doc := range docs {
+	for _, i := range last {
+		doc := docs[i]
 		err = s.saveDocument(ctx, tx, row, doc.Doc, doc.Revision, doc.Vectors)
 		if errors.Is(err, vector.ErrStale) {
 			stale = append(stale, doc.Doc)
