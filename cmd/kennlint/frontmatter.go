@@ -316,14 +316,12 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if !frontmatterSelected(file, selected, nil) {
 			continue
 		}
-		if !skill {
-			beyond, resolveErr := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes)
-			if resolveErr != nil {
-				return 0, resolveErr
-			}
-			if beyond {
-				continue
-			}
+		beyond, resolveErr := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes)
+		if resolveErr != nil {
+			return 0, resolveErr
+		}
+		if beyond {
+			continue
 		}
 		if skill {
 			if !slices.ContainsFunc(managedSkills, func(pattern string) bool { return frontmatterGlob(pattern, file) }) {
@@ -392,8 +390,9 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 // frontmatterResolvesBeyondBoundary reports whether file, once every symlink in
 // its path (a linked ancestor directory as much as a linked final element) is
 // followed, lands outside the repository, in an imported skill or skill
-// bundle, or on an excluded path. Such a document is never read or rewritten
-// through its alias; an eligible in-repository alias stays supported.
+// bundle, or on an excluded path. Such a document, and any SKILL.md reached
+// through an alias, is never read or rewritten through its alias; an eligible
+// in-repository document alias stays supported.
 func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]struct{}, excludes []string) (bool, error) {
 	resolved, err := pathresolve.EvalSymlinks(filepath.Join(root, filepath.FromSlash(file)))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -409,7 +408,11 @@ func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]s
 	rel, relErr := filepath.Rel(resolvedRoot, resolved)
 	inside := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	target := filepath.ToSlash(rel)
-	return !inside || isSkillFile(target) || frontmatterInSkillDirectory(target, skillDirs) || !frontmatterSelected(target, nil, excludes), nil
+	container := target
+	if isSkillFile(target) {
+		container = path.Dir(target) // A directly owned SKILL.md sits in its own bundle.
+	}
+	return !inside || (isSkillFile(target) && target != file) || frontmatterInSkillDirectory(container, skillDirs) || !frontmatterSelected(target, nil, excludes), nil
 }
 
 func frontmatterPaths(root string, args []string) ([]string, error) {
