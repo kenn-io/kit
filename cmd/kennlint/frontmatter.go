@@ -131,7 +131,7 @@ func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
 	b.fields = make(map[string]*yaml.Node)
 	content := b.doc.Content[0].Content
 	for i := 0; i < len(content); i += 2 {
-		b.fields[content[i].Value] = content[i+1]
+		b.fields[content[i].Value] = resolveYAML(content[i+1])
 	}
 	return b, nil
 }
@@ -214,7 +214,12 @@ func frontmatterTracked(ctx context.Context, root string) ([]string, map[string]
 	}
 	skillDirs := make(map[string]struct{})
 	for _, name := range files {
-		if isSkillFile(name) && path.Dir(name) != "." {
+		if isSkillFile(name) {
+			if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(name))); errors.Is(err, fs.ErrNotExist) {
+				continue
+			} else if err != nil {
+				return nil, nil, fmt.Errorf("%s: inspect skill boundary: %w", name, err)
+			}
 			skillDirs[path.Dir(name)] = struct{}{}
 		}
 	}
@@ -276,13 +281,14 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	var targets []string
 	var eligibleSkills []string
 	docCount := 0
-	rootSkill := slices.Contains(files, "SKILL.md")
+	_, rootSkill := skillDirs["."]
+	rootSkill = rootSkill && !*legacy
 	for _, file := range files {
 		if !frontmatterSelected(file, nil, excludes) {
 			continue
 		}
 		skill := isSkillFile(file)
-		if rootSkill && !skill {
+		if rootSkill && file != "SKILL.md" {
 			continue
 		}
 		container := file
@@ -559,6 +565,9 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 	}
 	var stale []string
 	for _, file := range files {
+		if !legacy && (path.Base(file) == "index.md" || path.Base(file) == "log.md") {
+			continue // Reserved files are never concepts, even with extension metadata.
+		}
 		if !modified[file] {
 			continue
 		}

@@ -20,7 +20,7 @@ func frontmatterMeaningful(a, b *frontmatterBlock, skill bool) bool {
 		if skill {
 			header, _ = header["metadata"].(map[string]any)
 		}
-		stripProvenance(header)
+		canonicalMetadata(header)
 	}
 	return !reflect.DeepEqual(x, y) || canonicalHTML(a.body) != canonicalHTML(b.body)
 }
@@ -67,3 +67,39 @@ func canonicalHTML(src []byte) string {
 }
 
 var proseSpace = regexp.MustCompile(`[ \t\n\f]+`)
+
+func canonicalMetadata(header map[string]any) {
+	stripProvenance(header)
+	if emptyOptionalValue(header["status"]) {
+		delete(header, "status")
+	}
+	// Verification records a review, not a change to the generated content.
+	delete(header, "verified")
+	switch sources := header["sources"].(type) {
+	case nil:
+		delete(header, "sources")
+	case string:
+		if sources == "" {
+			delete(header, "sources")
+		}
+	case []any:
+		if len(sources) == 0 {
+			delete(header, "sources")
+		}
+	case map[string]any:
+		header["sources"] = []any{sources}
+	}
+}
+
+func emptyOptionalValue(value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return true
+	case string:
+		return v == ""
+	case []any:
+		return len(v) == 0
+	default:
+		return false
+	}
+}

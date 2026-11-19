@@ -159,6 +159,10 @@ func TestFrontmatterSkipsSkillBundles(t *testing.T) {
 	assert.Equal(t, "docs/skill.md: missing opening --- frontmatter delimiter\n"+
 		"page.md: missing opening --- frontmatter delimiter\n"+
 		"skills/unrelated/page.md: missing opening --- frontmatter delimiter\n", stderr.String())
+	stderr.Reset()
+	n, err = runLegacyFrontmatter(t.Context(), nil, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n, "legacy skips only the same nested bundle resources")
 }
 
 func TestFrontmatterGlob(t *testing.T) {

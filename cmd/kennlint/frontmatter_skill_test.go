@@ -33,7 +33,7 @@ func TestSkillProfileShapes(t *testing.T) {
 		{"wrong type", strings.Replace(skillHeader, "type: Skill", "type: skill", 1), "metadata.type must be the string Skill"},
 		{"flow generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1), ""},
 		{"scalar generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: x", 1), "metadata.generated must be a mapping"},
-		{"bare at", strings.ReplaceAll(skillHeader, "\"", ""), "metadata.generated.at must be a quoted string, for example \"2026-11-17T19:00:00Z\""},
+		{"bare at", strings.ReplaceAll(skillHeader, "\"", ""), ""},
 		{"status unknown", strings.Replace(skillHeader, "---\nBody", "  status: retired\n---\nBody", 1), ""},
 	}
 	for _, tc := range cases {
@@ -228,18 +228,18 @@ func TestRootSkillBundleAndManagedSkills(t *testing.T) {
 	repo.WriteFile("skills/managed/vendor/SKILL.md", missing)
 	repo.Run("add", ".")
 	var out, errs bytes.Buffer
-	// Both listed, independent skills are fixed; bundle resources remain untouched.
+	// A root skill owns every descendant, including nested skill templates.
 	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-type-rule", "**=Guide", "-managed-skill", "**/SKILL.md"}, &out, &errs)
 	require.NoError(t, err)
 	assert.Zero(t, n, errs.String())
-	for _, name := range []string{"SKILL.md", "skills/managed/SKILL.md"} {
+	for _, name := range []string{"SKILL.md"} {
 		data, err := os.ReadFile(name)
 		require.NoError(t, err)
 		b, err := parseFrontmatter(data)
 		require.NoError(t, err)
 		assert.Empty(t, b.skillProblems(), name)
 	}
-	for name, want := range map[string]string{"references/example.md": resource, "skills/managed/vendor/SKILL.md": missing} {
+	for name, want := range map[string]string{"references/example.md": resource, "skills/managed/vendor/SKILL.md": missing, "skills/managed/SKILL.md": missing} {
 		data, err := os.ReadFile(name)
 		require.NoError(t, err)
 		assert.Equal(t, want, string(data), name)
@@ -262,7 +262,7 @@ func TestSkillFixRefusesIncompleteProfile(t *testing.T) {
 		{"by only", "metadata:\n  type: Skill\n  generated:\n    by: human:old\n", "human:new", "supply both"},
 		{"at only", "metadata:\n  type: Skill\n  generated:\n    at: \"2020-01-01T00:00:00Z\"\n", "human:new", "supply both"},
 		{"wrong type", "metadata:\n  type: wrong\n", "human:test", ""},
-		{"invalid status", "metadata:\n  type: Skill\n  status: []\n", "human:test", ""},
+		{"invalid status", "metadata:\n  type: Skill\n  status: [retired]\n", "human:test", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, err := parseFrontmatter([]byte("---\n" + tc.header + "---\nBody\n"))
@@ -353,5 +353,48 @@ func TestSkillV03TimestampsAndExtensions(t *testing.T) {
 	v := values["metadata"].(map[string]any)
 	assert.Equal(t, m["x-sync"], v["x-sync"])
 	assert.Equal(t, m["generated"].(map[string]any)["x-audit"], v["generated"].(map[string]any)["x-audit"])
+	assert.Empty(t, after.skillProblems())
+}
+
+func TestSkillReviewLiveRootAndLegacy(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("SKILL.md", skillHeader)
+	repo.WriteFile("docs/page.md", "# No metadata\n")
+	repo.Run("add", ".")
+	var out, errs bytes.Buffer
+	n, err := runLegacyFrontmatter(t.Context(), nil, &out, &errs)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "legacy still validates documents beside a root skill")
+	assert.Contains(t, errs.String(), "docs/page.md")
+	require.NoError(t, os.Remove("SKILL.md"))
+	errs.Reset()
+	n, err = runFrontmatter(t.Context(), nil, &out, &errs)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "a deleted skill cannot suppress documentation checks")
+	assert.Contains(t, errs.String(), "docs/page.md")
+}
+
+func TestSkillReviewNativeTimestamps(t *testing.T) {
+	for _, timestamp := range []string{"2026-11-17", "2026-11-17T12:00:00Z", "2026-11-17T13:00:00+01:00"} {
+		b, err := parseFrontmatter([]byte(strings.ReplaceAll(strings.ReplaceAll(skillHeader, "2026-11-17T12:00:00Z", timestamp), "\"", "")))
+		require.NoError(t, err)
+		assert.Empty(t, b.skillProblems())
+	}
+}
+
+func TestSkillReviewAliasFixIsolation(t *testing.T) {
+	src := "---\nname: example\ndescription: Example\nx-defaults: &defaults\n  x-sync: [one, two]\nmetadata: *defaults\n---\n# Skill\n"
+	b, err := parseFrontmatter([]byte(src))
+	require.NoError(t, err)
+	changed, _ := b.fixSkill("human:test")
+	require.True(t, changed)
+	data, _, err := b.encode()
+	require.NoError(t, err)
+	after, err := parseFrontmatter(data)
+	require.NoError(t, err)
+	assert.Nil(t, mappingField(after.fields["x-defaults"], "type"))
+	assert.Nil(t, mappingField(after.fields["x-defaults"], "generated"))
 	assert.Empty(t, after.skillProblems())
 }

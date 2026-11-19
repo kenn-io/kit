@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:01:38Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:13:57Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -32,7 +32,8 @@ has been independently verified. Use draft for intentionally provisional
 content. If a retired page is retained, set `status: deprecated` and link to
 its replacement when one exists, optionally using `superseded_by`. Unknown
 status strings are preserved, never interpreted as stable; current-knowledge
-views exclude them. Kenn requires status to be a nonempty string when present. The check
+views exclude them. Null, empty string, and empty list status values mean
+omitted; other present values must be strings. The check
 cannot infer retirement from a filename or age. The fixer never sets or changes
 status.
 
@@ -64,8 +65,9 @@ Run the read-only check in CI with `-changed` set to the pull request base SHA
 and a full Git history. A meaningful content or metadata edit must change
 `generated.at` to a later edit time and set `generated.by` to the editor; the
 same actor may edit again. The actor is advisory: the check verifies the
-timestamp, not who made the edit. Formatting-only changes do not require a
-timestamp change. Fix a stale timestamp by hand; `-fix` never bumps an existing
+timestamp, not who made the edit. Formatting-only changes and verification-only updates do not require a
+timestamp change. Link destination changes remain meaningful because the
+validator cannot distinguish a repair from a change of meaning. Fix a stale timestamp by hand; `-fix` never bumps an existing
 timestamp. Kit runs the read-only `make lint-frontmatter` or
 `make lint-frontmatter-changed` check. On failure the Make target prints
 `fix locally: make fix-frontmatter`; that target runs the fixer with Kit’s
@@ -78,7 +80,8 @@ OKF profile; it is not an alternative standard.
 
 ## Sources and links
 
-`sources` is optional. When present, it is a sequence of mappings, each with a
+`sources` is optional. Null, an empty string, and an empty list mean absent;
+a single mapping is accepted as a one-item list. Present entries each need a
 nonempty string `resource`. A resource can be a URL, a path, or an opaque scope
 description such as `all queries in project X`. Optional string `id` values
 must be nonempty and unique within the list. Other source fields are allowed.
@@ -123,7 +126,11 @@ profile is a Kenn extension, not strict Agent Skills metadata, which allows
 only string values. Portable, third-party, and imported skills stay unlisted
 and untouched; symlinked skill files and all bundle resources, assets,
 templates, and fixtures are skipped. A tracked repository-root `SKILL.md` makes
-the repository root its bundle, whether or not the skill is listed.
+the repository root its bundle, whether or not the skill is listed. All
+descendants, including nested `SKILL.md` templates, are bundle resources and
+remain untouched. Only live tracked skill files define boundaries; deleting
+a root skill restores ordinary document checks. The legacy profile keeps its
+existing document checks alongside a root skill.
 
 Keep native `name` and `description` fields; do not require a separate
 `title` on a skill. Apply the same actor and UTC-time rules to the Kenn
@@ -136,9 +143,10 @@ metadata:
   status: deprecated # only when the skill has been retired
 ```
 
-Keep the skill timestamp quoted so its YAML type is string; this Kenn
-loader constraint is stricter than ordinary OKF documents, which also accept
-native YAML timestamps. Quoted offsets and dates are accepted as above.
+Validation accepts quoted and native YAML timestamps, including offsets and
+date-only values, as for ordinary documents. Kenn producers emit quoted UTC
+date-times. Compatible loaders and sync paths must be confirmed by callers
+before opting in; these metadata checks do not establish loader compatibility.
 Omitted `metadata.status` means stable; use draft for provisional skills. If a
 retired skill is retained, set `metadata.status: deprecated` and link to its
 replacement when one exists. Unknown status strings remain unchanged and

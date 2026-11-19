@@ -36,10 +36,12 @@ func (r *frontmatterRules) Set(s string) error {
 var frontmatterNow = time.Now
 
 func validString(n *yaml.Node) bool {
+	n = resolveYAML(n)
 	return n != nil && n.Kind == yaml.ScalarNode && n.Tag == "!!str" && strings.TrimSpace(n.Value) != ""
 }
 
 func parseTimestamp(n *yaml.Node) (time.Time, bool) {
+	n = resolveYAML(n)
 	if n == nil || n.Kind != yaml.ScalarNode || (n.Tag != "!!str" && n.Tag != "!!timestamp") {
 		return time.Time{}, false
 	}
@@ -47,17 +49,18 @@ func parseTimestamp(n *yaml.Node) (time.Time, bool) {
 	if len(n.Value) == len(time.DateOnly) {
 		layout = time.DateOnly
 	}
-	parsed, err := time.Parse(layout, n.Value)
+	parsed, err := time.Parse(layout, strings.ToUpper(n.Value))
 	return parsed, err == nil
 }
 
 func mappingField(n *yaml.Node, key string) *yaml.Node {
+	n = resolveYAML(n)
 	if n == nil || n.Kind != yaml.MappingNode {
 		return nil
 	}
 	for i := 0; i < len(n.Content); i += 2 {
 		if n.Content[i].Value == key {
-			return n.Content[i+1]
+			return resolveYAML(n.Content[i+1])
 		}
 	}
 	return nil
@@ -81,22 +84,17 @@ func (b *frontmatterBlock) okfProblems() []string {
 			p = append(p, k+" must be a non-empty string")
 		}
 	}
-	if status := b.fields["status"]; status != nil &&
+	if status := b.fields["status"]; !emptyOptional(status) &&
 		!validString(status) {
 		p = append(p, "status must be a non-empty string")
 	}
-	p = append(p, generatedProblems(b.fields["generated"], "generated", false)...)
+	p = append(p, generatedProblems(b.fields["generated"], "generated")...)
 
 	return p
 }
 
-func validStatus(n *yaml.Node) bool {
-	return validString(n)
-}
-
-// generatedProblems checks a generated mapping; the skill profile also
-// requires a string timestamp for loader compatibility.
-func generatedProblems(g *yaml.Node, path string, skill bool) []string {
+// generatedProblems checks a generated mapping shared by docs and opted-in skills.
+func generatedProblems(g *yaml.Node, path string) []string {
 	if g != nil && g.Kind != yaml.MappingNode {
 		return []string{path + " must be a mapping"}
 	}
@@ -106,16 +104,14 @@ func generatedProblems(g *yaml.Node, path string, skill bool) []string {
 	}
 	at := mappingField(g, "at")
 	_, validAt := parseTimestamp(at)
-	if at == nil || !validAt {
+	if !validAt {
 		p = append(p, path+".at must be an RFC 3339 timestamp with an offset or a YYYY-MM-DD date")
-	} else if skill && at.Tag != "!!str" {
-		p = append(p, path+`.at must be a quoted string, for example "2026-11-17T19:00:00Z"`)
 	}
 	return p
 }
 
 func fillGenerated(parent *yaml.Node, by, path string, complete bool) (bool, map[string]string) {
-	g := mappingField(parent, "generated")
+	g := writableMappingField(parent, "generated")
 	oldBy, oldAt := mappingField(g, "by"), mappingField(g, "at")
 	if (oldBy == nil) != (oldAt == nil) {
 		missing := "at"
@@ -179,7 +175,8 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 			return false, nil
 		}
 	}
-	g := b.fields["generated"]
+	g := writableMappingField(b.doc.Content[0], "generated")
+	b.fields["generated"] = g
 	oldBy, oldAt := mappingField(g, "by"), mappingField(g, "at")
 	_, validAt := parseTimestamp(oldAt)
 	if (g != nil && g.Kind != yaml.MappingNode) || (oldBy != nil && !validString(oldBy)) || (oldAt != nil && !validAt) {
@@ -238,4 +235,48 @@ func (b *frontmatterBlock) fixOKF(file string, rules frontmatterRules, by, descr
 		}
 	}
 	return changed, notes
+}
+
+// resolveYAML reads aliases as their values. parseFrontmatter has already decoded
+// the document, so recursive or dangling aliases have been rejected by yaml.v3.
+func resolveYAML(n *yaml.Node) *yaml.Node {
+	for n != nil && n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+	return n
+}
+
+// writableMappingField detaches an aliased field before filling it, preserving
+// the extension or other field that owns its anchor.
+func writableMappingField(parent *yaml.Node, key string) *yaml.Node {
+	parent = resolveYAML(parent)
+	if parent == nil || parent.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(parent.Content); i += 2 {
+		if parent.Content[i].Value != key {
+			continue
+		}
+		n := parent.Content[i+1]
+		if n.Kind == yaml.AliasNode {
+			n = cloneYAMLValue(n)
+			parent.Content[i+1] = n
+		}
+		return n
+	}
+	return nil
+}
+
+func cloneYAMLValue(n *yaml.Node) *yaml.Node {
+	n = resolveYAML(n)
+	if n == nil {
+		return nil
+	}
+	copyNode := *n
+	copyNode.Anchor = ""
+	copyNode.Content = make([]*yaml.Node, len(n.Content))
+	for i, child := range n.Content {
+		copyNode.Content[i] = cloneYAMLValue(child)
+	}
+	return &copyNode
 }

@@ -60,7 +60,9 @@ func TestOKFValidationMatrix(t *testing.T) {
 		{"draft", "status: draft\n", true},
 		{"deprecated", "status: deprecated\n", true},
 		{"unknown", "status: retired\n", true},
-		{"empty", "status: ''\n", false},
+		{"empty", "status: ''\n", true},
+		{"null", "status: null\n", true},
+		{"empty list", "status: []\n", true},
 		{"number", "status: 123\n", false},
 		{"mapping", "status: {value: draft}\n", false},
 	}
