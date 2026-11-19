@@ -9,6 +9,9 @@
 // Stale keys correspond to input entries in order, including repeated keys.
 // An open SaveDocuments transaction holds its generation lock until it ends;
 // lifecycle operations wait. Keep transactions short and use lifecycle deadlines.
+// QueryGenerationWithPredicateTx uses the caller's transaction. Its chunk lock
+// and SET LOCAL settings last until that transaction ends; lock errors leave the
+// transaction usable, while candidate-query SQL errors require rollback.
 package pgvector
 
 import (

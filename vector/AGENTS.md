@@ -230,7 +230,9 @@ pipeline. Preserve these invariants when changing it.
   source row cascades to its stamps and vectors; `TRUNCATE` requires `CASCADE`.
 - Default storage uses a chunk table and HNSW index per generation.
   `EnsureGeneration` refuses retired generations, `Reclaim` drops their table,
-  and queries hold an access-share lock until they finish.
+  `QueryGenerationWithPredicate` releases its access-share lock when it
+  finishes; `QueryGenerationWithPredicateTx` holds it until the caller's
+  transaction ends.
 - Shared storage uses a caller-installed chunk table with `generation_id bigint`,
   `doc_key` matching the document key and cascading on delete, `chunk_index`
   integer or bigint, unbounded halfvec `embedding`, and primary key
