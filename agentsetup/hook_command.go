@@ -19,7 +19,7 @@ const (
 )
 
 // NewHookCommand returns an agent-hook command with install, status (also
-// called check), and uninstall subcommands. Each requires one explicit agent.
+// called check), and uninstall subcommands. Each requires one explicit --harness.
 // Applications may rename the command or attach their own persistent scope flags.
 //
 // options supplies the application's registration for the selected agent and
@@ -29,7 +29,7 @@ const (
 func NewHookCommand(options func(agenthook.Agent, HookOperation) (agenthook.InstallOptions, error)) *cobra.Command {
 	h := &hookCommand{options: options}
 	group := &cobra.Command{Use: "agent-hook", Short: "Manage agent hook registrations"}
-	group.PersistentFlags().StringArrayVar(&h.agents, "agent", nil, "agent to configure (required)")
+	group.PersistentFlags().StringArrayVar(&h.harnesses, "harness", nil, "coding-agent harness to configure (required)")
 	group.AddCommand(
 		h.mutation(HookInstall, "Register this application's hooks"),
 		&cobra.Command{Use: string(HookStatus), Aliases: []string{"check"}, Short: "Check hook readiness without installing", Args: cobra.NoArgs, RunE: h.status},
@@ -39,18 +39,18 @@ func NewHookCommand(options func(agenthook.Agent, HookOperation) (agenthook.Inst
 }
 
 type hookCommand struct {
-	agents  []string
-	options func(agenthook.Agent, HookOperation) (agenthook.InstallOptions, error)
+	harnesses []string
+	options   func(agenthook.Agent, HookOperation) (agenthook.InstallOptions, error)
 }
 
 func (h *hookCommand) resolve(cmd *cobra.Command, op HookOperation) (agenthook.Agent, agenthook.InstallOptions, error) {
 	if err := cmd.Context().Err(); err != nil {
 		return "", agenthook.InstallOptions{}, err
 	}
-	if len(h.agents) != 1 {
-		return "", agenthook.InstallOptions{}, errors.New("specify exactly one --agent")
+	if len(h.harnesses) != 1 {
+		return "", agenthook.InstallOptions{}, errors.New("specify exactly one --harness")
 	}
-	agent, err := agenthook.ParseAgent(h.agents[0])
+	agent, err := agenthook.ParseAgent(h.harnesses[0])
 	if err != nil {
 		return "", agenthook.InstallOptions{}, err
 	}

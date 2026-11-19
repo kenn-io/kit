@@ -10,14 +10,15 @@ marker and config path so removal works after the executable is gone. Use the sa
 See the [compiling example](hook_command_test.go).
 
 ```console
-example agent-hook install --agent claude --dry-run
-example agent-hook install --agent claude
-example agent-hook status --agent claude
-example agent-hook uninstall --agent claude --dry-run
-example agent-hook uninstall --agent claude
+example agent-hook install --harness claude --dry-run
+example agent-hook install --harness claude
+example agent-hook status --harness claude
+example agent-hook uninstall --harness claude --dry-run
+example agent-hook uninstall --harness claude
 ```
 
-No command runs at application startup. A bare `agent-hook` shows help.
+The hook command selects a runtime with `--harness`, leaving any inherited
+`--agent` output flag untouched. No command runs at application startup. A bare `agent-hook` shows help.
 Installation and removal affect only registrations identified by your marker;
 other hooks and harness trust decisions remain the user's. Dry runs report the
 target and whether it would change, without writing files, running the harness,

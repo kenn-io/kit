@@ -50,7 +50,7 @@ func TestHookCommandLifecycle(t *testing.T) {
 			}
 			_, err := os.Stat(exe)
 			return opts, err
-		}, append([]string{"--agent", "Claude"}, args...)...)
+		}, append([]string{"--harness", "Claude"}, args...)...)
 	}
 
 	out, err := run("status")
@@ -103,15 +103,15 @@ func TestHookCommandRequiresExplicitTarget(t *testing.T) {
 	require.Contains(t, out, "install")
 	for _, args := range [][]string{
 		{"install"},
-		{"install", "--agent", "unknown"},
-		{"install", "--agent", "claude", "--agent", "codex"},
+		{"install", "--harness", "unknown"},
+		{"install", "--harness", "claude", "--harness", "codex"},
 		{"uninstall", "all"},
 	} {
 		_, err := executeHook(t, options, args...)
 		require.Error(t, err)
 	}
 	require.Zero(t, calls)
-	_, err = executeHook(t, options, "install", "--agent", "claude")
+	_, err = executeHook(t, options, "install", "--harness", "claude")
 	require.ErrorIs(t, err, rejected)
 }
 
@@ -120,8 +120,10 @@ func TestHookCommandNestedMountAndScope(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", active)
 	projectPath := filepath.Join(t.TempDir(), "settings.json")
 	run := func(args ...string) (string, error) {
-		var project bool
-		hook := agentsetup.NewHookCommand(func(_ agenthook.Agent, _ agentsetup.HookOperation) (agenthook.InstallOptions, error) {
+		var project, agentOutput bool
+		hook := agentsetup.NewHookCommand(func(target agenthook.Agent, _ agentsetup.HookOperation) (agenthook.InstallOptions, error) {
+			require.Equal(t, agenthook.AgentClaude, target)
+			require.True(t, agentOutput)
 			opts := agenthook.InstallOptions{
 				Executable: "example", Arguments: []string{"--example-hook"}, Marker: "--example-hook",
 				Hooks: []agenthook.Hook{{Event: agenthook.EventStop}},
@@ -136,10 +138,11 @@ func TestHookCommandNestedMountAndScope(t *testing.T) {
 		agent := &cobra.Command{Use: "agent"}
 		agent.AddCommand(hook)
 		root := &cobra.Command{Use: "example", SilenceErrors: true, SilenceUsage: true}
+		root.PersistentFlags().BoolVar(&agentOutput, "agent", false, "use agent output")
 		root.AddCommand(agent)
 		var out bytes.Buffer
 		root.SetOut(&out)
-		root.SetArgs(append([]string{"agent", "hook", "--project", "--agent", "claude"}, args...))
+		root.SetArgs(append([]string{"agent", "hook", "--project", "--agent", "--harness", "claude"}, args...))
 		err := root.ExecuteContext(t.Context())
 		return out.String(), err
 	}
