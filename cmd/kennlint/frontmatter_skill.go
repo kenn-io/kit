@@ -11,8 +11,8 @@ func (b *frontmatterBlock) skillProblems() []string {
 	if n := mappingField(m, "type"); n == nil || !validString(n) || n.Value != "Skill" {
 		p = append(p, "metadata.type must be the string Skill")
 	}
-	p = append(p, generatedProblems(mappingField(m, "generated"), "metadata.generated", true)...)
-	if n := mappingField(m, "status"); n != nil && !validStatus(n) {
+	p = append(p, generatedProblems(mappingField(m, "generated"), "metadata.generated")...)
+	if n := mappingField(m, "status"); !emptyOptional(n) && !validString(n) {
 		p = append(p, "metadata.status must be a non-empty string")
 	}
 	return p
@@ -30,7 +30,8 @@ func (b *frontmatterBlock) fixSkill(by string) (bool, map[string]string) {
 		// Block nodes appended to a flow root would encode as flow.
 		return false, map[string]string{"metadata": "frontmatter must be a block mapping to fix a skill"}
 	}
-	m := b.fields["metadata"]
+	m := writableMappingField(root, "metadata")
+	b.fields["metadata"] = m
 	if m == nil {
 		m = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		appendField(root, "metadata", m)

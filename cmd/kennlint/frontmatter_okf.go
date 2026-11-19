@@ -88,18 +88,13 @@ func (b *frontmatterBlock) okfProblems() []string {
 		!validString(status) {
 		p = append(p, "status must be a non-empty string")
 	}
-	p = append(p, generatedProblems(b.fields["generated"], "generated", false)...)
+	p = append(p, generatedProblems(b.fields["generated"], "generated")...)
 
 	return p
 }
 
-func validStatus(n *yaml.Node) bool {
-	return validString(n)
-}
-
-// generatedProblems checks a generated mapping; the skill profile also
-// requires a string timestamp for loader compatibility.
-func generatedProblems(g *yaml.Node, path string, skill bool) []string {
+// generatedProblems checks a generated mapping shared by docs and opted-in skills.
+func generatedProblems(g *yaml.Node, path string) []string {
 	if g != nil && g.Kind != yaml.MappingNode {
 		return []string{path + " must be a mapping"}
 	}
@@ -109,16 +104,14 @@ func generatedProblems(g *yaml.Node, path string, skill bool) []string {
 	}
 	at := mappingField(g, "at")
 	_, validAt := parseTimestamp(at)
-	if at == nil || !validAt {
+	if !validAt {
 		p = append(p, path+".at must be an RFC 3339 timestamp with an offset or a YYYY-MM-DD date")
-	} else if skill && at.Tag != "!!str" {
-		p = append(p, path+`.at must be a quoted string, for example "2026-11-17T19:00:00Z"`)
 	}
 	return p
 }
 
 func fillGenerated(parent *yaml.Node, by, path string, complete bool) (bool, map[string]string) {
-	g := mappingField(parent, "generated")
+	g := writableMappingField(parent, "generated")
 	oldBy, oldAt := mappingField(g, "by"), mappingField(g, "at")
 	if (oldBy == nil) != (oldAt == nil) {
 		missing := "at"

@@ -214,7 +214,12 @@ func frontmatterTracked(ctx context.Context, root string) ([]string, map[string]
 	}
 	skillDirs := make(map[string]struct{})
 	for _, name := range files {
-		if isSkillFile(name) && path.Dir(name) != "." {
+		if isSkillFile(name) {
+			if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(name))); errors.Is(err, fs.ErrNotExist) {
+				continue
+			} else if err != nil {
+				return nil, nil, fmt.Errorf("%s: inspect skill boundary: %w", name, err)
+			}
 			skillDirs[path.Dir(name)] = struct{}{}
 		}
 	}
@@ -275,13 +280,14 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	var targets []string
 	var eligibleSkills []string
 	docCount := 0
-	rootSkill := slices.Contains(files, "SKILL.md")
+	_, rootSkill := skillDirs["."]
+	rootSkill = rootSkill && !*legacy
 	for _, file := range files {
 		if !frontmatterSelected(file, nil, excludes) {
 			continue
 		}
 		skill := isSkillFile(file)
-		if rootSkill && !skill {
+		if rootSkill && file != "SKILL.md" {
 			continue
 		}
 		container := file

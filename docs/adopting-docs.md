@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:12:00Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:13:57Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -126,7 +126,11 @@ profile is a Kenn extension, not strict Agent Skills metadata, which allows
 only string values. Portable, third-party, and imported skills stay unlisted
 and untouched; symlinked skill files and all bundle resources, assets,
 templates, and fixtures are skipped. A tracked repository-root `SKILL.md` makes
-the repository root its bundle, whether or not the skill is listed.
+the repository root its bundle, whether or not the skill is listed. All
+descendants, including nested `SKILL.md` templates, are bundle resources and
+remain untouched. Only live tracked skill files define boundaries; deleting
+a root skill restores ordinary document checks. The legacy profile keeps its
+existing document checks alongside a root skill.
 
 Keep native `name` and `description` fields; do not require a separate
 `title` on a skill. Apply the same actor and UTC-time rules to the Kenn
@@ -139,9 +143,10 @@ metadata:
   status: deprecated # only when the skill has been retired
 ```
 
-Keep the skill timestamp quoted so its YAML type is string; this Kenn
-loader constraint is stricter than ordinary OKF documents, which also accept
-native YAML timestamps. Quoted offsets and dates are accepted as above.
+Validation accepts quoted and native YAML timestamps, including offsets and
+date-only values, as for ordinary documents. Kenn producers emit quoted UTC
+date-times. Compatible loaders and sync paths must be confirmed by callers
+before opting in; these metadata checks do not establish loader compatibility.
 Omitted `metadata.status` means stable; use draft for provisional skills. If a
 retired skill is retained, set `metadata.status: deprecated` and link to its
 replacement when one exists. Unknown status strings remain unchanged and
