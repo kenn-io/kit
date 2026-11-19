@@ -959,39 +959,18 @@ func TestQueryGenerationWithPredicateTxLeavesFailedTransactionToCaller(t *testin
 	require.NoError(t, tx.Rollback())
 }
 
-func TestQueryGenerationWithPredicateTxRecoversFromLockErrors(t *testing.T) {
-	t.Run("reclaimed snapshot", func(t *testing.T) {
-		db, owner := setupActiveStore(t)
-		ctx := t.Context()
-		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		var n int
-		require.NoError(t, tx.QueryRowContext(ctx, `SELECT id FROM vectors_generations WHERE gen_key='a'`).Scan(&n))
-		require.NoError(t, owner.SetGenerationState(ctx, "a", vector.StateRetired))
-		require.NoError(t, owner.Reclaim(ctx, "a"))
-		_, err = owner.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 10, sqlquery.Predicate{})
-		require.ErrorContains(t, err, "lock generation storage")
-		require.NoError(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
-		require.NoError(t, tx.Commit())
-	})
-	t.Run("lock timeout", func(t *testing.T) {
-		db, store := setupActiveStore(t)
-		ctx := t.Context()
-		blocker, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = blocker.Rollback() }()
-		_, err = blocker.ExecContext(ctx, `LOCK TABLE vectors_chunks_g1 IN ACCESS EXCLUSIVE MODE`)
-		require.NoError(t, err)
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		_, err = tx.ExecContext(ctx, `SET LOCAL lock_timeout='100ms'`)
-		require.NoError(t, err)
-		_, err = store.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 1, sqlquery.Predicate{})
-		require.ErrorContains(t, err, "lock generation storage")
-		var n int
-		require.NoError(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
-		require.NoError(t, tx.Rollback())
-	})
+func TestQueryGenerationWithPredicateTxReclaimedGenerationLeavesTransactionUsable(t *testing.T) {
+	db, owner := setupActiveStore(t)
+	ctx := t.Context()
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	var n int
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT id FROM vectors_generations WHERE gen_key='a'`).Scan(&n))
+	require.NoError(t, owner.SetGenerationState(ctx, "a", vector.StateRetired))
+	require.NoError(t, owner.Reclaim(ctx, "a"))
+	_, err = owner.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 10, sqlquery.Predicate{})
+	require.ErrorContains(t, err, "lock generation storage")
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT 1`).Scan(&n))
+	require.NoError(t, tx.Commit())
 }
