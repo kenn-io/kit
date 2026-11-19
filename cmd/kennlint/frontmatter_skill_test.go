@@ -477,3 +477,50 @@ func TestSkillReviewAnchoredSnapshots(t *testing.T) {
 		assert.Empty(t, after.skillProblems())
 	}
 }
+
+func TestSkillReviewWholeRootSelections(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("SKILL.md", skillHeader)
+	const resource = "# Portable resource\n"
+	for _, file := range []string{"references/x.md", "assets/t.md", "docs/page.md"} {
+		repo.WriteFile(file, resource)
+	}
+	repo.Run("add", ".")
+	for _, selection := range []string{".", "./", repo.Root} {
+		t.Run(selection, func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				args []string
+			}{
+				{"unlisted", []string{selection}},
+				{"fix", []string{"-fix", "-by", "human:test", selection}},
+				{"listed", []string{"-managed-skill", "SKILL.md", selection}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var out, errs bytes.Buffer
+					n, err := runFrontmatter(t.Context(), tc.args, &out, &errs)
+					if tc.name == "listed" {
+						require.NoError(t, err)
+					} else {
+						require.ErrorContains(t, err, "root SKILL.md")
+					}
+					assert.Zero(t, n, errs.String())
+					assert.NotContains(t, errs.String(), "references/x.md")
+					assert.NotContains(t, errs.String(), "assets/t.md")
+				})
+			}
+		})
+	}
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"docs/page.md"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "explicit ordinary document paths remain readable")
+	assert.Contains(t, errs.String(), "docs/page.md")
+	for _, file := range []string{"references/x.md", "assets/t.md", "docs/page.md"} {
+		got, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, resource, string(got), file)
+	}
+}

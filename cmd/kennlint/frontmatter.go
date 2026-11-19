@@ -295,7 +295,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			continue
 		}
 		skill := isSkillFile(file)
-		if rootSkill && file != "SKILL.md" && (*fix || len(selected) == 0 || skill) {
+		if rootSkill && file != "SKILL.md" && (*fix || len(selected) == 0 || slices.Contains(selected, ".") || skill) {
 			continue // Root-bundle descendants are writable only as the listed root skill.
 		}
 		container := file
