@@ -46,6 +46,10 @@ func TestChunks(t *testing.T) {
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 	_, err = db.ExecContext(ctx, `CREATE TABLE "Mixed chunks" (doc_key text, chunk_index integer, embedding public.halfvec(2), PRIMARY KEY(doc_key,chunk_index))`)
 	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `CREATE TABLE incomplete (doc_key text, embedding public.halfvec(2))`)
+	require.NoError(t, err)
+	_, err = pgvector.AttachChunks[string](ctx, db, "incomplete", 2)
+	require.Error(t, err)
 
 	// Attachment and search must use the borrowed transaction's only connection.
 	db.SetMaxOpenConns(1)
@@ -54,6 +58,8 @@ func TestChunks(t *testing.T) {
 	chunks, err := pgvector.AttachChunks[string](ctx, tx, "Mixed chunks", 2)
 	require.NoError(t, err)
 	_, err = pgvector.AttachChunks[string](ctx, tx, "Mixed chunks", 3)
+	require.Error(t, err)
+	_, err = pgvector.AttachChunks[string](ctx, tx, "Mixed chunks", 0)
 	require.Error(t, err)
 	require.NoError(t, tx.Commit())
 
@@ -81,7 +87,18 @@ func TestChunks(t *testing.T) {
 
 	tx, err = db.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	n, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, sequence("replace", 201))
+	n, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
+		for chunk, err := range sequence("replace", 201) {
+			if chunk.ChunkIndex == 200 {
+				var flushed int
+				require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks" WHERE doc_key='replace'`).Scan(&flushed))
+				assert.Equal(t, 200, flushed)
+			}
+			if !yield(chunk, err) {
+				return
+			}
+		}
+	})
 	require.NoError(t, err)
 	assert.Equal(t, 201, n)
 	require.NoError(t, tx.Commit())
@@ -118,6 +135,13 @@ func TestChunks(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.NoError(t, tx.Rollback())
+	tx, err = db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
+		yield(pgvector.Chunk[string]{Doc: "replace", Vector: vector.Vector{1}}, nil)
+	})
+	require.Error(t, err)
+	require.NoError(t, tx.Rollback())
 
 	tx, err = db.BeginTx(ctx, nil)
 	require.NoError(t, err)
@@ -129,6 +153,10 @@ func TestChunks(t *testing.T) {
 	require.NoError(t, err)
 	tx, err = db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	require.NoError(t, err)
+	_, err = chunks.SearchTx(ctx, tx, vector.Vector{1}, 10)
+	require.Error(t, err)
+	_, err = chunks.SearchTx(ctx, tx, vector.Vector{1, float32(math.Inf(1))}, 10)
+	require.Error(t, err)
 	page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
 	require.NoError(t, err)
 	assert.Equal(t, 10, page.ScanCap)

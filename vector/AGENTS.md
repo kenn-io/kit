@@ -229,8 +229,9 @@ pipeline. Preserve these invariants when changing it.
   be unique, and revisions must change when content is replaced. Deleting a
   source row cascades to its stamps and vectors; `TRUNCATE` requires `CASCADE`.
 - Default storage uses a chunk table and HNSW index per generation.
-  `EnsureGeneration` refuses retired generations, `Reclaim` drops their table,
-  and queries hold an access-share lock until their transaction ends.
+  `EnsureGeneration` refuses retired generations and `Reclaim` drops their table.
+  `Store` holds an access-share lock while searching so `Reclaim` waits for
+  active queries.
 - `Chunks` attaches to an app-owned table without DDL. Its searches return
   raw chunks; callers own freshness, hydration, and transaction completion.
 - Shared storage uses a caller-installed chunk table with `generation_id bigint`,
