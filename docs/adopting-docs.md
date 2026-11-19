@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:21:15Z" }
+generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:24:14Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -130,7 +130,10 @@ and untouched; symlinked skill files and all bundle resources, assets,
 templates, and fixtures are skipped. A tracked repository-root `SKILL.md` makes
 the repository root its bundle, whether or not the skill is listed. All
 descendants, including nested `SKILL.md` templates, are bundle resources and
-remain untouched. Only live tracked skill files define boundaries; deleting
+remain protected from `-fix`. With an unlisted root skill, an unscoped
+scan reports ambiguous document scope instead of a clean zero-file result.
+Use explicit ordinary-document paths for read-only checks; fixes never rewrite
+root-bundle descendants. Only live tracked skill files define boundaries; deleting
 a root skill restores ordinary document checks. The legacy profile keeps its
 existing document checks alongside a root skill.
 
@@ -149,6 +152,9 @@ Validation accepts quoted and native YAML timestamps, including offsets and
 date-only values, as for ordinary documents. Kenn producers emit quoted UTC
 date-times. Compatible loaders and sync paths must be confirmed by callers
 before opting in; these metadata checks do not establish loader compatibility.
+Equivalent block and flow mappings are accepted, including a flow-style root.
+Document symlinks are followed only when their resolved targets stay inside
+the supplied repository boundary.
 Omitted `metadata.status` means stable; use draft for provisional skills. If a
 retired skill is retained, set `metadata.status: deprecated` and link to its
 replacement when one exists. Unknown status strings remain unchanged and

@@ -295,8 +295,8 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			continue
 		}
 		skill := isSkillFile(file)
-		if rootSkill && file != "SKILL.md" {
-			continue
+		if rootSkill && file != "SKILL.md" && (*fix || len(selected) == 0 || skill) {
+			continue // Root-bundle descendants are writable only as the listed root skill.
 		}
 		container := file
 		if skill {
@@ -331,11 +331,13 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 					return 0, fmt.Errorf("resolve repository root: %w", rootErr)
 				}
 				rel, relErr := filepath.Rel(resolvedRoot, resolved)
-				if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					target := filepath.ToSlash(rel)
-					if rootSkill || isSkillFile(target) || frontmatterInSkillDirectory(target, skillDirs) {
-						continue
-					}
+				// Never dereference resources outside the supplied repository boundary.
+				if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					continue
+				}
+				target := filepath.ToSlash(rel)
+				if isSkillFile(target) || frontmatterInSkillDirectory(target, skillDirs) {
+					continue
 				}
 			}
 		}
@@ -352,6 +354,9 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if !slices.ContainsFunc(eligibleSkills, func(file string) bool { return frontmatterGlob(pattern, file) }) {
 			return 0, fmt.Errorf("-managed-skill pattern %q matches no tracked SKILL.md", pattern)
 		}
+	}
+	if rootSkill && len(targets) == 0 {
+		return 0, errors.New("root SKILL.md makes document scope ambiguous: select ordinary document paths for read-only checks; -fix protects all root-bundle descendants")
 	}
 	if description.value != "" && docCount != 1 {
 		return 0, errors.New("-description requires exactly one selected file")
