@@ -108,6 +108,9 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if err := s.lockLifecycle(ctx, tx); err != nil {
 		return err
 	}
+	if err := s.lockGeneration(ctx, tx, gen, false); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if errors.Is(err, vector.ErrGenerationNotFound) {
 		row, err = s.insertGeneration(ctx, tx, gen, model.Fingerprint(), model.Dimensions, state)
