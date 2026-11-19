@@ -524,3 +524,49 @@ func TestSkillReviewWholeRootSelections(t *testing.T) {
 		assert.Equal(t, resource, string(got), file)
 	}
 }
+
+func TestFrontmatterReviewAncestorSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	for _, boundary := range []string{"external", "skill", "excluded", "ordinary"} {
+		t.Run(boundary, func(t *testing.T) {
+			isolateFrontmatterGit(t)
+			repo := gittest.NewRepoWithCommit(t)
+			t.Chdir(repo.Root)
+			repo.WriteFile("docs/import/page.md", "# Tracked page\n")
+			const resource = "# Protected page\nPortable body\n"
+			targetDir := filepath.Join(repo.Root, "other")
+			switch boundary {
+			case "external":
+				targetDir = t.TempDir()
+			case "skill":
+				repo.WriteFile("skills/a/SKILL.md", skillHeader)
+				targetDir = filepath.Join(repo.Root, "skills", "a", "references")
+			case "excluded":
+				targetDir = filepath.Join(repo.Root, "excluded")
+			}
+			require.NoError(t, os.MkdirAll(targetDir, 0o700))
+			target := filepath.Join(targetDir, "page.md")
+			require.NoError(t, os.WriteFile(target, []byte(resource), 0o600))
+			repo.Run("add", ".")
+			require.NoError(t, os.RemoveAll("docs/import"))
+			require.NoError(t, os.Symlink(targetDir, "docs/import"))
+			var out, errs bytes.Buffer
+			n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-description", "Description", "-type-rule", "**=Guide", "-exclude", "excluded/**", "docs/import/page.md"}, &out, &errs)
+			if boundary == "ordinary" {
+				require.NoError(t, err)
+				assert.Zero(t, n, errs.String())
+			} else {
+				assert.ErrorContains(t, err, "exactly one selected file")
+			}
+			got, readErr := os.ReadFile(target)
+			require.NoError(t, readErr)
+			if boundary == "ordinary" {
+				assert.Contains(t, string(got), "generated:")
+			} else {
+				assert.Equal(t, resource, string(got), boundary)
+			}
+		})
+	}
+}

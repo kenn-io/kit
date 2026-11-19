@@ -316,29 +316,13 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if !frontmatterSelected(file, selected, nil) {
 			continue
 		}
-		if !skill && err == nil && info.Mode()&os.ModeSymlink != 0 {
-			resolved, resolveErr := pathresolve.EvalSymlinks(filepath.Join(root, filepath.FromSlash(file)))
-			if resolveErr != nil && !errors.Is(resolveErr, fs.ErrNotExist) {
-				return 0, fmt.Errorf("%s: resolve symlink: %w", file, resolveErr)
+		if !skill {
+			beyond, resolveErr := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes)
+			if resolveErr != nil {
+				return 0, resolveErr
 			}
-			if resolveErr == nil {
-				// Imported skills stay outside document management even outside this repository.
-				if isSkillFile(filepath.ToSlash(resolved)) {
-					continue
-				}
-				resolvedRoot, rootErr := pathresolve.EvalSymlinks(root)
-				if rootErr != nil {
-					return 0, fmt.Errorf("resolve repository root: %w", rootErr)
-				}
-				rel, relErr := filepath.Rel(resolvedRoot, resolved)
-				// Never dereference resources outside the supplied repository boundary.
-				if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					continue
-				}
-				target := filepath.ToSlash(rel)
-				if isSkillFile(target) || frontmatterInSkillDirectory(target, skillDirs) {
-					continue
-				}
+			if beyond {
+				continue
 			}
 		}
 		if skill {
@@ -403,6 +387,31 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintf(stdout, "frontmatter: checked %d Markdown files (%d fixed)\n", len(checked), fixed)
 	}
 	return total, nil
+}
+
+// frontmatterResolvesBeyondBoundary reports whether file, once every symlink in
+// its path (a linked ancestor directory as much as a linked final element) is
+// followed, lands outside the repository, in an imported skill or skill
+// bundle, or on an excluded path. Such a document is never read or rewritten
+// through its alias; an eligible in-repository alias stays supported.
+func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]struct{}, excludes []string) (bool, error) {
+	resolved, err := pathresolve.EvalSymlinks(filepath.Join(root, filepath.FromSlash(file)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%s: resolve symlink: %w", file, err)
+	}
+	resolvedRoot, err := pathresolve.EvalSymlinks(root)
+	if err != nil {
+		return false, fmt.Errorf("resolve repository root: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true, nil
+	}
+	target := filepath.ToSlash(rel)
+	return isSkillFile(target) || frontmatterInSkillDirectory(target, skillDirs) || !frontmatterSelected(target, nil, excludes), nil
 }
 
 func frontmatterPaths(root string, args []string) ([]string, error) {
