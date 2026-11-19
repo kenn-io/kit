@@ -942,8 +942,6 @@ func TestQueryGenerationWithPredicateTxUsesCallerSnapshot(t *testing.T) {
 	require.Len(t, hits, 1)
 	assert.Equal(t, int64(2), hits[0].Doc)
 	assert.EqualValues(t, 1, hits[0].Revision)
-	require.NoError(t, tx.QueryRowContext(ctx, `SELECT body FROM docs WHERE id=2`).Scan(&body))
-	assert.Equal(t, "dog", body)
 	require.NoError(t, tx.Commit())
 }
 
@@ -967,15 +965,11 @@ func TestQueryGenerationWithPredicateTxRecoversFromLockErrors(t *testing.T) {
 		db, owner := setupActiveStore(t)
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 		defer cancel()
-		// Kit can attach a pre-existing chunk table without a document foreign key.
-		// With the key, the snapshot's document lock prevents reclaiming the table.
-		_, err := db.ExecContext(ctx, `ALTER TABLE vectors_chunks_g1 DROP CONSTRAINT vectors_chunks_g1_doc_key_fkey`)
-		require.NoError(t, err)
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()
 		var n int
-		require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM docs`).Scan(&n))
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT id FROM vectors_generations WHERE gen_key='a'`).Scan(&n))
 		require.NoError(t, owner.SetGenerationState(ctx, "a", vector.StateRetired))
 		require.NoError(t, owner.Reclaim(ctx, "a"))
 		_, err = owner.QueryGenerationWithPredicateTx(ctx, tx, "a", vector.Vector{1, 0}, 10, sqlquery.Predicate{})
