@@ -2,9 +2,7 @@
 type: Explanation
 title: "Streaming pack I/O"
 description: "Architecture and memory bounds for streaming pack reads and writes."
-generated:
-  by: human:salmonumbrella
-  at: "2026-11-17T21:02:43Z"
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
 ---
 
 # Streaming pack I/O

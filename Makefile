@@ -50,17 +50,27 @@ GOTESTSUM_SUITE ?= embedserver
 test-embedserver:
 	go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/$(GOTESTSUM_SUITE).json --rerun-fails=2 --rerun-fails-report gotestsum/$(GOTESTSUM_SUITE)-reruns.txt --packages "./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal ./embedclient" -- -race
 
+.PHONY: test-vector-postgres
+# KIT_POSTGRES_TEST_DSN must point to a disposable PostgreSQL cluster.
+test-vector-postgres:
+	@test -n "$$KIT_POSTGRES_TEST_DSN" || { echo "set KIT_POSTGRES_TEST_DSN" >&2; exit 1; }
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/pgvector ./search/postgres" -- -count=1 -p 1
+
+.PHONY: test-vector-sqlite
+test-vector-sqlite:
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/sqlitevec" -- -count=1
+
 lint-workflow-retries:
 	go run ./cmd/kennlint workflow-retries
 
 FRONTMATTER_FIX_FLAGS = -type-rule 'docs/guides/**=Guide' -type-rule 'docs/explanation/**=Explanation'
 
 lint-frontmatter:
-	@go run ./cmd/kennlint frontmatter || { echo "fix locally: make fix-frontmatter (regenerates stale managed indexes; set stale generated.at by hand; BY=human:<login> records generated.by)"; exit 1; }
+	@go run ./cmd/kennlint frontmatter || { echo "fix locally: make fix-frontmatter (regenerates stale managed indexes; set stale generated.at by hand; BY=<actor> records generated.by)"; exit 1; }
 
 FRONTMATTER_BASE ?= origin/main
 lint-frontmatter-changed:
-	@go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE) || { echo "fix locally: make fix-frontmatter (regenerates stale managed indexes; set stale generated.at by hand; BY=human:<login> records generated.by)"; exit 1; }
+	@go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE) || { echo "fix locally: make fix-frontmatter (regenerates stale managed indexes; set stale generated.at by hand; BY=<actor> records generated.by)"; exit 1; }
 
 fix-frontmatter:
 	go run ./cmd/kennlint frontmatter -fix $(FRONTMATTER_FIX_FLAGS) $(if $(BY),-by $(BY))

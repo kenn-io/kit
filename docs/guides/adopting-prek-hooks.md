@@ -2,9 +2,7 @@
 type: Guide
 title: "Adopting prek Git hooks"
 description: "Give a repository commit and push hooks that run the same checks as CI, and tell contributors how to use them."
-generated:
-  by: human:salmonumbrella
-  at: "2026-11-17T21:02:43Z"
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
 ---
 
 # Adopting prek Git hooks

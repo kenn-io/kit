@@ -2,9 +2,7 @@
 type: Explanation
 title: "Vite Task's sandbox-compatible IPC changes"
 description: "Research on sandbox-compatible IPC behavior in Vite Task."
-generated:
-  by: human:salmonumbrella
-  at: "2026-11-17T21:02:43Z"
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
 ---
 
 # Vite Task's sandbox-compatible IPC changes

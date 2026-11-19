@@ -2,9 +2,7 @@
 type: Guide
 title: "Developing kit"
 description: "Development tooling, build conventions, and debugging guidance for kit."
-generated:
-  by: human:salmonumbrella
-  at: "2026-11-17T21:02:43Z"
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
 ---
 
 # Developing kit

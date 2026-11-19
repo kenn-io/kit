@@ -3,9 +3,7 @@ type: Guide
 title: "Adopting prek Git hooks"
 description: Moved to guides/adopting-prek-hooks.md
 status: deprecated
-generated:
-  by: human:salmonumbrella
-  at: "2026-11-17T21:02:43Z"
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
 ---
 
 This page moved to [guides/adopting-prek-hooks.md](guides/adopting-prek-hooks.md).

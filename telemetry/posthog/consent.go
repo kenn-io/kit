@@ -1,0 +1,75 @@
+package posthog
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"go.kenn.io/kit/atomicfile"
+)
+
+// Consent is the user's recorded telemetry choice.
+type Consent uint8
+
+const (
+	// ConsentUnanswered means no valid choice was recorded.
+	ConsentUnanswered Consent = iota
+	// ConsentGranted means reporting was allowed.
+	ConsentGranted
+	// ConsentDenied means reporting was declined.
+	ConsentDenied
+)
+
+func consentPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".kenn", "telemetry-consent"), nil
+}
+
+// ReadConsent reads the current shared choice without creating files.
+// Missing and malformed choices are unanswered.
+func ReadConsent() (Consent, error) {
+	path, err := consentPath()
+	if err != nil {
+		return ConsentUnanswered, err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ConsentUnanswered, nil
+	}
+	if err != nil {
+		return ConsentUnanswered, fmt.Errorf("read telemetry consent: %w", err)
+	}
+	switch strings.TrimSpace(string(data)) {
+	case "yes":
+		return ConsentGranted, nil
+	case "no":
+		return ConsentDenied, nil
+	default:
+		return ConsentUnanswered, nil
+	}
+}
+
+// RecordConsent records the shared choice. Only the application that owns the
+// consent flow should write it; reporting apps read the choice and do not ask.
+func RecordConsent(granted bool) error {
+	path, err := consentPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("prepare telemetry consent directory: %w", err)
+	}
+	data := "no\n"
+	if granted {
+		data = "yes\n"
+	}
+	if err := atomicfile.WriteFile(path, []byte(data), atomicfile.WithPrivate()); err != nil {
+		return fmt.Errorf("record telemetry consent: %w", err)
+	}
+	return nil
+}

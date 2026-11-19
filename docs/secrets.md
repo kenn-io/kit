@@ -3,9 +3,7 @@ type: Guide
 title: Secret sources
 description: Moved to guides/secrets.md
 status: deprecated
-generated:
-  by: human:salmonumbrella
-  at: "2026-11-17T21:02:43Z"
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
 ---
 
 This page moved to [guides/secrets.md](guides/secrets.md).

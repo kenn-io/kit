@@ -77,7 +77,7 @@ func BuildVector(req VectorRequest) (sqlquery.Query, error) {
 	}
 	aliases := map[string]bool{"doc_key": true, "score": true, "revision": true, "distance": true}
 	for _, col := range req.ExtraSourceCols {
-		if err := checkIdentifier("extra source column", col.Name); err != nil || !validIdentifier(col.As) || aliases[strings.ToLower(col.As)] {
+		if err := checkIdentifier("extra source column", col.Name); err != nil || !ValidIdentifier(col.As) || aliases[strings.ToLower(col.As)] {
 			return sqlquery.Query{}, fmt.Errorf("postgres: invalid or conflicting extra source column %q AS %q", col.Name, col.As)
 		}
 		aliases[strings.ToLower(col.As)] = true
@@ -87,22 +87,22 @@ func BuildVector(req VectorRequest) (sqlquery.Query, error) {
 		return sqlquery.Query{}, errors.New("postgres: source predicate args require SQL")
 	}
 
-	col := "d." + quote(req.Mapping.VectorColumn)
+	col := "d." + QuoteIdentifier(req.Mapping.VectorColumn)
 	distance := col + " " + op + " $1::vector"
-	projection := []string{"d." + quote(req.Mapping.SourceKey) + " AS doc_key"}
+	projection := []string{"d." + QuoteIdentifier(req.Mapping.SourceKey) + " AS doc_key"}
 	if req.RevisionColumn != "" {
-		projection = append(projection, "d."+quote(req.RevisionColumn)+" AS revision")
+		projection = append(projection, "d."+QuoteIdentifier(req.RevisionColumn)+" AS revision")
 	}
 	projection = append(projection, score(distance)+" AS score")
 	for _, extra := range req.ExtraSourceCols {
-		projection = append(projection, "d."+quote(extra.Name)+" AS "+quote(extra.As))
+		projection = append(projection, "d."+QuoteIdentifier(extra.Name)+" AS "+QuoteIdentifier(extra.As))
 	}
 	args := []any{req.Query}
 	n := 1
 	var predSQL string
 	if predicate != "" {
 		var last int
-		predSQL, last = rebase(predicate, n)
+		predSQL, last = RebasePlaceholders(predicate, n)
 		if err := checkArgs("source predicate", last-n, len(req.SourcePredicate.Args)); err != nil {
 			return sqlquery.Query{}, err
 		}
@@ -113,7 +113,7 @@ func BuildVector(req VectorRequest) (sqlquery.Query, error) {
 	args = append(args, req.CandidateLimit)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "SELECT %s FROM %s AS d WHERE TRUE", strings.Join(projection, ", "), quote(req.Mapping.SourceTable))
+	fmt.Fprintf(&b, "SELECT %s FROM %s AS d WHERE TRUE", strings.Join(projection, ", "), QuoteIdentifier(req.Mapping.SourceTable))
 	if predSQL != "" {
 		b.WriteString(" AND (")
 		b.WriteString(predSQL)

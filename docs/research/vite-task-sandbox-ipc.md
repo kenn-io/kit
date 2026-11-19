@@ -3,9 +3,7 @@ type: Explanation
 title: "Vite Task's sandbox-compatible IPC changes"
 description: Moved to ../explanation/vite-task-sandbox-ipc.md
 status: deprecated
-generated:
-  by: human:salmonumbrella
-  at: "2026-11-17T21:02:43Z"
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
 ---
 
 This page moved to [../explanation/vite-task-sandbox-ipc.md](../explanation/vite-task-sandbox-ipc.md).
