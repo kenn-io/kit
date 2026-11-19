@@ -279,8 +279,6 @@ func (s *Store[K, G]) lockChunkTable(ctx context.Context, tx *sql.Tx, id int64) 
 	return err
 }
 
-// lockChunksTx recovers from lock errors when the context is live.
-// A cancelled context returns without rolling back to the savepoint.
 func (s *Store[K, G]) lockChunksTx(ctx context.Context, tx *sql.Tx, id int64) error {
 	if _, err := tx.ExecContext(ctx, `SAVEPOINT pgvector_chunk_lock`); err != nil {
 		return err
