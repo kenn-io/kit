@@ -111,6 +111,31 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	return tx.Commit()
 }
 
+// SetGenerationState records a lifecycle decision. A retired generation cannot
+// leave retired because Reclaim may have dropped its storage. Activate checks
+// coverage before publishing a generation.
+func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vector.State) error {
+	if !knownState(state) {
+		return fmt.Errorf("invalid generation state %q", state)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	row, err := s.lookup(ctx, tx, gen, true)
+	if err != nil {
+		return err
+	}
+	if row.state == vector.StateRetired && state != vector.StateRetired {
+		return fmt.Errorf("generation %v: %w", gen, vector.ErrRetired)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2`, s.generations()), state, row.id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // Activate publishes a fully covered generation and retires the others. Retired
 // generations keep their storage.
 func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {

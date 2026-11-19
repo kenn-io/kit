@@ -9,16 +9,27 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/search/sqlquery"
 	"go.kenn.io/kit/vector"
 	"go.kenn.io/kit/vector/pgvector"
 )
+
+type queryCounter struct{ count atomic.Int64 }
+
+func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.count.Add(1)
+	return ctx
+}
+
+func (*queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func setup(t *testing.T) (*sql.DB, *pgvector.Store[int64, string]) {
 	t.Helper()
@@ -253,6 +264,97 @@ func TestActivateRequiresFullGenerationCoverage(t *testing.T) {
 	gens, err = store.LiveGenerations(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"b"}, gens)
+}
+
+func TestAbandonedGenerationStopsParticipatingInSearch(t *testing.T) {
+	_, store := setupActiveStore(t)
+	ctx := t.Context()
+	encode := func(_ context.Context, texts []string) ([][]float32, error) {
+		vectors := make([][]float32, len(texts))
+		for i := range vectors {
+			vectors[i] = []float32{1, 0}
+		}
+		return vectors, nil
+	}
+	_, err := vector.Fill(ctx, store, "a", encode)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, "abandoned", vector.Generation{Dimensions: 2}, vector.StateBuilding))
+	require.NoError(t, store.SetGenerationState(ctx, "abandoned", vector.StateRetired))
+	hits, err := vector.Search(ctx, store, "cat", func(gen string) vector.EncodeFunc {
+		if gen == "a" {
+			return encode
+		}
+		return nil
+	}, vector.SearchOptions{PerGeneration: 10})
+	require.NoError(t, err)
+	assert.Len(t, hits, 2)
+	require.NoError(t, store.Reclaim(ctx, "abandoned"))
+	require.ErrorIs(t, store.SetGenerationState(ctx, "abandoned", vector.StateBuilding), vector.ErrRetired)
+	require.ErrorIs(t, store.SetGenerationState(ctx, "missing", vector.StateRetired), vector.ErrGenerationNotFound)
+}
+
+func TestSaveVectorsUsesConstantQueriesForChunks(t *testing.T) {
+	db, _ := setupActiveStore(t)
+	ctx := t.Context()
+	var schemaName string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&schemaName))
+	config, err := pgx.ParseConfig(os.Getenv("KIT_POSTGRES_TEST_DSN"))
+	require.NoError(t, err)
+	config.RuntimeParams["search_path"] = schemaName
+	counter := &queryCounter{}
+	config.Tracer = counter
+	traced := stdlib.OpenDB(*config)
+	t.Cleanup(func() { assert.NoError(t, traced.Close()) })
+	store, err := pgvector.New[int64, string](ctx, traced, pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"})
+	require.NoError(t, err)
+	one := []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0}}}
+	countBefore := counter.count.Load()
+	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, one))
+	oneCount := counter.count.Load() - countBefore
+	many := []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0}}, {ChunkIndex: 1, Vector: vector.Vector{0, 1}}, {ChunkIndex: 2, Vector: vector.Vector{1, 1}}}
+	countBefore = counter.count.Load()
+	require.NoError(t, store.SaveVectors(ctx, "a", 1, 1, many))
+	assert.Equal(t, oneCount, counter.count.Load()-countBefore)
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM vectors_chunks_g1 WHERE doc_key=1`).Scan(&count))
+	assert.Equal(t, 3, count)
+}
+
+func TestFillAndSearchDuringGenerationReplacement(t *testing.T) {
+	_, store := setupActiveStore(t)
+	ctx := t.Context()
+	encode := func(_ context.Context, texts []string) ([][]float32, error) {
+		vectors := make([][]float32, len(texts))
+		for i, text := range texts {
+			vectors[i] = []float32{1, 0}
+			if text == "dog" {
+				vectors[i] = []float32{0, 1}
+			}
+		}
+		return vectors, nil
+	}
+	_, err := vector.Fill(ctx, store, "a", encode)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, "b", vector.Generation{Dimensions: 2}, vector.StateBuilding))
+	_, err = vector.Fill(ctx, store, "b", encode, vector.WithFillDocumentLimit[int64](1))
+	require.NoError(t, err)
+	require.ErrorIs(t, store.Activate(ctx, "b"), vector.ErrUncovered)
+	search := func() []vector.Hit[int64] {
+		hits, err := vector.Search(ctx, store, "cat", func(string) vector.EncodeFunc { return encode }, vector.SearchOptions{PerGeneration: 10})
+		require.NoError(t, err)
+		return hits
+	}
+	hits := search()
+	require.Len(t, hits, 2)
+	assert.Equal(t, int64(1), hits[0].Doc)
+	assert.Equal(t, int64(2), hits[1].Doc)
+	_, err = vector.Fill(ctx, store, "b", encode)
+	require.NoError(t, err)
+	require.NoError(t, store.Activate(ctx, "b"))
+	hits = search()
+	require.Len(t, hits, 2)
+	assert.Equal(t, int64(1), hits[0].Doc)
+	assert.Equal(t, int64(2), hits[1].Doc)
 }
 
 func TestStaleEdited(t *testing.T) {

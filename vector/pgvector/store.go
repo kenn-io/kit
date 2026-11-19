@@ -86,6 +86,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	}
 	id := row.id
 	halfvecs := make([]string, len(vectors))
+	indexes := make([]int64, len(vectors))
 	for i, cv := range vectors {
 		if len(cv.Vector) != row.dim {
 			return fmt.Errorf("chunk %d has %d dimensions, expected %d", cv.ChunkIndex, len(cv.Vector), row.dim)
@@ -94,6 +95,7 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		if err != nil {
 			return fmt.Errorf("chunk %d: %w", cv.ChunkIndex, err)
 		}
+		indexes[i] = int64(cv.ChunkIndex)
 	}
 	var matches bool
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s IS NOT DISTINCT FROM $2 FROM %s WHERE %s=$1 FOR SHARE`, postgres.QuoteIdentifier(s.schema.RevisionColumn), postgres.QuoteIdentifier(s.schema.DocsTable), postgres.QuoteIdentifier(s.schema.IDColumn)), doc, revision).Scan(&matches)
@@ -109,8 +111,8 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE doc_key=$1`, s.chunks(id)), doc); err != nil {
 		return err
 	}
-	for i, cv := range vectors {
-		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) VALUES ($1,$2,$3::%s.halfvec)`, s.chunks(id), postgres.QuoteIdentifier(s.ext)), doc, cv.ChunkIndex, halfvecs[i]); err != nil {
+	if len(vectors) > 0 {
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (doc_key,chunk_index,embedding) SELECT $1,chunk_index,embedding::%s.halfvec FROM unnest($2::bigint[],$3::text[]) AS chunks(chunk_index,embedding)`, s.chunks(id), postgres.QuoteIdentifier(s.ext)), doc, indexes, halfvecs); err != nil {
 			return err
 		}
 	}

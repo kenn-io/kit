@@ -35,7 +35,9 @@ import (
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// State is a generation's role in the active/building lifecycle.
+// State is a generation's role in the active/building lifecycle. Only
+// building and active generations are searched; building sorts ahead of
+// active so Merge keeps the newer generation's hit on overlap.
 type State = vector.State
 
 const (

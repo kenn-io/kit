@@ -10,11 +10,20 @@ import (
 )
 
 var (
-	ErrUncovered          = vector.ErrUncovered
+	// ErrUncovered reports that Activate refused to publish a generation
+	// because at least one document is not covered at its current revision.
+	// The state change is not committed. Callers retry after a later fill.
+	ErrUncovered = vector.ErrUncovered
+	// ErrGenerationNotFound reports a generation key that EnsureGeneration never
+	// registered.
 	ErrGenerationNotFound = vector.ErrGenerationNotFound
-	ErrRetired            = vector.ErrRetired
+	// ErrRetired reports a retired generation used where only a building or
+	// active one is allowed. A retired generation never becomes live again.
+	ErrRetired = vector.ErrRetired
 )
 
+// UncoveredError is the Activate failure for an incomplete generation.
+// Backlog is the number of documents that still need a current stamp.
 type UncoveredError = vector.UncoveredError
 
 // Coverage counts documents in the caller's table for one generation.
