@@ -126,6 +126,7 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 	for _, key := range selected {
 		selectedSet[comparableChunkKey(key)] = struct{}{}
 	}
+	var selectedHashes map[int64][]any
 	var args []any
 	var batchKey any
 	var values []string
@@ -159,10 +160,15 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 			return 0, fmt.Errorf("document key: %w", err)
 		}
 		if _, ok := selectedSet[comparableChunkKey(key)]; !ok {
-			var found bool
-			query := "SELECT $1::" + c.keyBaseType + c.keyCollation + c.keyEqual + "ANY($2::" + c.keyBaseType + "[])"
-			if err := tx.QueryRowContext(ctx, query, key, selected).Scan(&found); err != nil {
-				return 0, fmt.Errorf("check chunk document: %w", err)
+			if selectedHashes == nil {
+				selectedHashes, err = c.hashSelectedKeys(ctx, tx, selected)
+				if err != nil {
+					return 0, err
+				}
+			}
+			found, err := c.hasSelectedKey(ctx, tx, key, selectedHashes)
+			if err != nil {
+				return 0, err
 			}
 			if !found {
 				return 0, errors.New("pgvector: chunk document is outside the selected keys")
@@ -196,6 +202,51 @@ func comparableChunkKey(key any) any {
 		return string(b)
 	}
 	return key
+}
+
+func (c *Chunks[K]) hashKey(expression string) string {
+	if c.keyBaseType == "pg_catalog.text" {
+		return "pg_catalog.hashtextextended(" + expression + c.keyCollation + ", 0)"
+	}
+	return "pg_catalog.hashint8extended(" + expression + ", 0)"
+}
+
+func (c *Chunks[K]) hashSelectedKeys(ctx context.Context, tx *sql.Tx, selected []any) (map[int64][]any, error) {
+	query := "SELECT key, " + c.hashKey("key") + " FROM (SELECT DISTINCT key" + c.keyCollation + " AS key FROM pg_catalog.unnest($1::" + c.keyBaseType + "[]) AS key) AS selected"
+	rows, err := tx.QueryContext(ctx, query, selected)
+	if err != nil {
+		return nil, fmt.Errorf("hash selected documents: %w", err)
+	}
+	defer rows.Close()
+	hashes := make(map[int64][]any, len(selected))
+	for rows.Next() {
+		var key any
+		var hash int64
+		if err := rows.Scan(&key, &hash); err != nil {
+			return nil, fmt.Errorf("hash selected documents: %w", err)
+		}
+		hashes[hash] = append(hashes[hash], key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("hash selected documents: %w", err)
+	}
+	return hashes, nil
+}
+
+func (c *Chunks[K]) hasSelectedKey(ctx context.Context, tx *sql.Tx, key any, hashes map[int64][]any) (bool, error) {
+	var hash int64
+	if err := tx.QueryRowContext(ctx, "SELECT "+c.hashKey("$1::"+c.keyBaseType), key).Scan(&hash); err != nil {
+		return false, fmt.Errorf("hash chunk document: %w", err)
+	}
+	if len(hashes[hash]) == 0 {
+		return false, nil
+	}
+	var found bool
+	query := "SELECT $1::" + c.keyBaseType + c.keyCollation + c.keyEqual + "ANY($2::" + c.keyBaseType + "[])"
+	if err := tx.QueryRowContext(ctx, query, key, hashes[hash]).Scan(&found); err != nil {
+		return false, fmt.Errorf("check chunk document: %w", err)
+	}
+	return found, nil
 }
 
 func selectedChunkKeys[K comparable](tx *sql.Tx, equality string, keys []K) ([]any, error) {

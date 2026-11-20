@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -168,6 +169,41 @@ func TestChunks(t *testing.T) {
 		var rows int
 		require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks"`).Scan(&rows))
 		assert.Equal(t, len(keys), rows)
+	})
+
+	t.Run("collated documents keep key traffic bounded", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE COLLATION case_insensitive (provider=icu, locale='und-u-ks-level2', deterministic=false); CREATE TABLE collated_chunks (doc_key text COLLATE case_insensitive NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec(2))`)
+		require.NoError(t, err)
+		var schema string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&schema))
+		config, err := pgx.ParseConfig(os.Getenv("KIT_POSTGRES_TEST_DSN"))
+		require.NoError(t, err)
+		config.RuntimeParams["search_path"] = schema
+		traffic := &chunkKeyTraffic{}
+		config.Tracer = traffic
+		tracedDB := stdlib.OpenDB(*config)
+		t.Cleanup(func() { assert.NoError(t, tracedDB.Close()) })
+		chunks, err := pgvector.AttachChunks[string](ctx, tracedDB, "collated_chunks")
+		require.NoError(t, err)
+		keys := make([]string, 1000)
+		for i := range keys {
+			keys[i] = fmt.Sprintf("KEY%d", i)
+		}
+		tx, err := tracedDB.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		n, err := chunks.ReplaceTx(ctx, tx, keys, func(yield func(pgvector.Chunk[string], error) bool) {
+			for _, key := range keys {
+				if !yield(pgvector.Chunk[string]{Doc: strings.ToLower(key), Vector: vector.Vector{1, 0}}, nil) {
+					return
+				}
+			}
+		})
+		require.NoError(t, err)
+		assert.Equal(t, len(keys), n)
+		assert.LessOrEqual(t, traffic.values, 8*len(keys))
 	})
 
 	t.Run("search excludes unusable rows", func(t *testing.T) {
