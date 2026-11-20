@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"iter"
-	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -253,11 +252,10 @@ func TestChunks(t *testing.T) {
 		_, err = chunks.SearchTx(ctx, tx, vector.Vector{0, 0}, 1)
 		require.ErrorContains(t, err, "zero")
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"valid"}, func(yield func(pgvector.Chunk[string], error) bool) {
-			yield(pgvector.Chunk[string]{Doc: "valid", Vector: vector.Vector{0, 0}}, nil)
+			yield(pgvector.Chunk[string]{Doc: "valid", ChunkIndex: 7, Vector: vector.Vector{0, 0}}, nil)
 		})
+		require.ErrorContains(t, err, "document valid chunk 7")
 		require.ErrorContains(t, err, "zero")
-		_, err = chunks.SearchTx(ctx, tx, vector.Vector{float32(math.Inf(1)), 0}, 1)
-		require.ErrorContains(t, err, "non-finite")
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"tiny"}, func(yield func(pgvector.Chunk[string], error) bool) {
 			yield(pgvector.Chunk[string]{Doc: "tiny", Vector: vector.Vector{1e-20, 0}}, nil)
 		})

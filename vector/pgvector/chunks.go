@@ -101,7 +101,7 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		}
 		literal, err := halfvec(chunk.Vector)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("document %v chunk %d: %w", chunk.Doc, chunk.ChunkIndex, err)
 		}
 		n := len(args) + 1
 		values = append(values, fmt.Sprintf("($%d::%s,$%d::bigint,$%d::%s.halfvec)", n+1, c.keyType, n+2, n+3, c.ext))
