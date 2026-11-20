@@ -1,8 +1,10 @@
 package pgvector
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"iter"
@@ -67,7 +69,18 @@ WHERE c.oid=to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.Quote
 // Roll back tx on error. A nil sequence clears the selected documents.
 // Callers must serialize replacements for each document through commit.
 func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks iter.Seq2[Chunk[K], error]) (int, error) {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key = ANY($1)", keys); err != nil {
+	selected := make([]any, len(keys))
+	for i, key := range keys {
+		value, err := driver.DefaultParameterConverter.ConvertValue(key)
+		if err != nil {
+			return 0, fmt.Errorf("document key: %w", err)
+		}
+		if b, ok := value.([]byte); ok {
+			value = bytes.Clone(b)
+		}
+		selected[i] = value
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key = ANY($1)", selected); err != nil {
 		return 0, fmt.Errorf("delete chunks: %w", err)
 	}
 	if chunks == nil {
@@ -80,16 +93,13 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		if len(values) == 0 {
 			return nil
 		}
-		query := "INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) WHERE v.doc_key" + c.keyCollation + " = ANY($1::" + c.keyType + "[])"
-		result, err := tx.ExecContext(ctx, query, append([]any{keys}, args...)...)
-		if err != nil {
+		// Check again after insertion because column precision can change a key.
+		query := "WITH inserted AS (INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) WHERE v.doc_key" + c.keyCollation + " = ANY($1::" + c.keyType + "[]) RETURNING doc_key) SELECT count(*), count(*) FILTER (WHERE doc_key" + c.keyCollation + " = ANY($1::" + c.keyType + "[])) FROM inserted"
+		var inserted, matched int
+		if err := tx.QueryRowContext(ctx, query, append([]any{selected}, args...)...).Scan(&inserted, &matched); err != nil {
 			return err
 		}
-		inserted, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if inserted != int64(len(values)) {
+		if matched != len(values) || inserted != len(values) {
 			return errors.New("pgvector: chunk document is outside the selected keys")
 		}
 		args, values = nil, nil
@@ -121,8 +131,7 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 
 // SearchTx returns raw nearest chunks. The caller owns freshness, hydration,
 // exhaustion decisions, and transaction completion.
-func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vector, limit int) (ChunkPage[K], error) {
-	var page ChunkPage[K]
+func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vector, limit int) (page ChunkPage[K], resultErr error) {
 	literal, err := halfvec(query)
 	if err != nil {
 		return page, err
@@ -142,6 +151,16 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
 		return page, fmt.Errorf("set hnsw.ef_search: %w", err)
 	}
+	defer func() {
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.ef_search', $1, true)`, previousEF); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.ef_search: %w", err))
+		}
+		if limit > efSearch && previousIterative.Valid {
+			if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative.String); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.iterative_scan: %w", err))
+			}
+		}
+	}()
 	page.ScanCap = limit
 	if limit > efSearch {
 		if !previousIterative.Valid {
@@ -163,14 +182,6 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	})
 	if err != nil {
 		return page, fmt.Errorf("search chunks: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.ef_search', $1, true)`, previousEF); err != nil {
-		return page, fmt.Errorf("restore hnsw.ef_search: %w", err)
-	}
-	if limit > efSearch && previousIterative.Valid {
-		if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative.String); err != nil {
-			return page, fmt.Errorf("restore hnsw.iterative_scan: %w", err)
-		}
 	}
 	page.Hits = hits
 	return page, nil

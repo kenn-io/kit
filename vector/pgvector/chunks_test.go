@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"errors"
 	"iter"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -119,7 +121,9 @@ func TestChunks(t *testing.T) {
 		defer func() { _ = tx.Rollback() }()
 		var available sql.NullString
 		require.NoError(t, tx.QueryRowContext(ctx, `SELECT '[1,0]'::public.halfvec IS NOT NULL, current_setting('hnsw.iterative_scan', true)`).Scan(new(bool), &available))
-		if available.Valid {
+		if os.Getenv("KIT_PGVECTOR_REQUIRE_NO_ITERATIVE_SCAN") != "" {
+			require.False(t, available.Valid, "iterative scan must be unavailable for this run")
+		} else if available.Valid {
 			t.Skip("iterative scan is available")
 		}
 		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
@@ -152,8 +156,6 @@ func TestChunks(t *testing.T) {
 		defer func() { _ = tx.Rollback() }()
 		_, err = tx.ExecContext(ctx, `SET LOCAL enable_seqscan=off`)
 		require.NoError(t, err)
-		_, err = tx.ExecContext(ctx, `SET LOCAL hnsw.ef_search=77; SET LOCAL hnsw.iterative_scan='strict_order'`)
-		require.NoError(t, err)
 		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0.3, 0.1}, 1200)
 		require.NoError(t, err)
 		require.Len(t, page.Hits, 1200)
@@ -161,6 +163,10 @@ func TestChunks(t *testing.T) {
 		for i := 1; i < len(page.Hits); i++ {
 			assert.GreaterOrEqual(t, page.Hits[i-1].Score, page.Hits[i].Score)
 		}
+		_, err = tx.ExecContext(ctx, `SET LOCAL hnsw.ef_search=77; SET LOCAL hnsw.iterative_scan='strict_order'`)
+		require.NoError(t, err)
+		_, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0.3, 0.1}, 1200)
+		require.NoError(t, err)
 		var ef, iterative string
 		require.NoError(t, tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan')`).Scan(&ef, &iterative))
 		assert.Equal(t, "77", ef)
@@ -305,5 +311,69 @@ func TestChunks(t *testing.T) {
 		n, err := chunks.ReplaceTx(ctx, tx, []string{"KEY"}, sequence("key", 1))
 		require.NoError(t, err)
 		assert.Equal(t, 1, n)
+	})
+	t.Run("stored key precision", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE timed_chunks (doc_key timestamptz(0), chunk_index int, embedding public.halfvec(2)); INSERT INTO timed_chunks VALUES ('2026-01-01 00:00:00+00',0,'[1,0]')`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[time.Time](ctx, db, "timed_chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		key := time.Date(2026, 1, 1, 0, 0, 0, 100000000, time.UTC)
+		_, err = chunks.ReplaceTx(ctx, tx, []time.Time{key}, func(yield func(pgvector.Chunk[time.Time], error) bool) {
+			yield(pgvector.Chunk[time.Time]{Doc: key, ChunkIndex: 1, Vector: vector.Vector{1, 0}}, nil)
+		})
+		require.ErrorContains(t, err, "outside the selected keys")
+		require.NoError(t, tx.Rollback())
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM timed_chunks`).Scan(&count))
+		assert.Equal(t, 1, count)
+	})
+
+	t.Run("selected keys are stable during streaming", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE binary_keys (doc_key bytea, chunk_index int, embedding public.halfvec(2))`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[any](ctx, db, "binary_keys")
+		require.NoError(t, err)
+		for _, overwrite := range []bool{false, true} {
+			tx, err := db.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			key := []byte("a")
+			keys := []any{key}
+			_, err = chunks.ReplaceTx(ctx, tx, keys, func(yield func(pgvector.Chunk[any], error) bool) {
+				if overwrite {
+					keys[0] = []byte("b")
+				} else {
+					key[0] = 'b'
+				}
+				yield(pgvector.Chunk[any]{Doc: []byte("b"), Vector: vector.Vector{1, 0}}, nil)
+			})
+			require.ErrorContains(t, err, "outside the selected keys")
+			require.NoError(t, tx.Rollback())
+		}
+	})
+
+	t.Run("search error restores settings", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE nullable_key (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO nullable_key VALUES (NULL,0,'[1,0]')`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "nullable_key")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = tx.ExecContext(ctx, `SET LOCAL hnsw.ef_search=77; SET LOCAL hnsw.iterative_scan='strict_order'`)
+		require.NoError(t, err)
+		_, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 1200)
+		require.ErrorContains(t, err, "converting NULL to string")
+		var ef, iterative string
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan')`).Scan(&ef, &iterative))
+		assert.Equal(t, "77", ef)
+		assert.Equal(t, "strict_order", iterative)
 	})
 }
