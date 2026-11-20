@@ -21,8 +21,10 @@ import (
 
 // Chunks accesses an application-owned table of halfvec chunks.
 type Chunks[K comparable] struct {
-	table, ext, keyBaseType, keyColumnType, keyCollation, keyEqual string
+	table, ext, keyBaseType, keyCollation string
 }
+
+const chunkKeyEqual = " OPERATOR(pg_catalog.=) "
 
 // Chunk is one document's vector at a chunk index.
 type Chunk[K comparable] struct {
@@ -43,19 +45,10 @@ type ChunkPage[K comparable] struct {
 // bigint chunk_index columns, and a fixed-dimension halfvec embedding column.
 // Keys must be supported by database/sql for both binding and scanning.
 func AttachChunks[K comparable](ctx context.Context, q sqlquery.Queryer, table string) (*Chunks[K], error) {
-	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname, bn.nspname, pg_catalog.format('%I.%I', bn.nspname, bt.typname),
-CASE WHEN k.atttypmod = -1 THEN pg_catalog.format('%I.%I', kn.nspname, kt.typname)
-     WHEN kn.nspname <> 'pg_catalog' THEN pg_catalog.format('%I.%I', kn.nspname, kt.typname) || pg_catalog.substr(pg_catalog.format_type(k.atttypid, k.atttypmod), pg_catalog.length(pg_catalog.format_type(k.atttypid, -1)) + 1)
-     ELSE pg_catalog.format_type(k.atttypid, k.atttypmod) END, COALESCE(cn.nspname, ''), COALESCE(co.collname, ''),
-EXISTS (SELECT 1 FROM pg_catalog.pg_operator op WHERE op.oprnamespace=bn.oid AND op.oprname='=' AND op.oprleft=bt.oid AND op.oprright=bt.oid)
+	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname, pg_catalog.format('%I.%I', kn.nspname, kt.typname), COALESCE(cn.nspname, ''), COALESCE(co.collname, '')
 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
 JOIN pg_catalog.pg_attribute k ON k.attrelid=c.oid AND k.attname='doc_key' AND NOT k.attisdropped
 JOIN pg_catalog.pg_type kt ON kt.oid=k.atttypid JOIN pg_catalog.pg_namespace kn ON kn.oid=kt.typnamespace
-JOIN LATERAL (WITH RECURSIVE base AS (
-  SELECT kt.oid, kt.typbasetype
-  UNION ALL SELECT t.oid, t.typbasetype FROM pg_catalog.pg_type t JOIN base b ON t.oid=b.typbasetype
-) SELECT oid FROM base WHERE typbasetype=0) b ON true
-JOIN pg_catalog.pg_type bt ON bt.oid=b.oid JOIN pg_catalog.pg_namespace bn ON bn.oid=bt.typnamespace
 LEFT JOIN pg_catalog.pg_collation co ON co.oid=k.attcollation LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid=co.collnamespace
 JOIN pg_catalog.pg_attribute p ON p.attrelid=c.oid AND p.attname='chunk_index' AND NOT p.attisdropped
 JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attname='embedding' AND NOT a.attisdropped
@@ -66,12 +59,11 @@ WHERE c.oid=pg_catalog.to_regclass($1) AND t.typname='halfvec' AND a.atttypmod >
 AND k.attnotnull AND k.atttypid IN ('pg_catalog.text'::pg_catalog.regtype, 'pg_catalog.int8'::pg_catalog.regtype)
 AND p.attnotnull AND p.atttypid IN ('pg_catalog.int4'::pg_catalog.regtype, 'pg_catalog.int8'::pg_catalog.regtype)`, Args: []any{postgres.QuoteIdentifier(table)}}
 	type tableNames struct {
-		schema, name, ext, keySchema, keyBaseType, keyColumnType, colSchema, collation string
-		hasEquality                                                                    bool
+		schema, name, ext, keyBaseType, colSchema, collation string
 	}
 	names, err := query.All(ctx, q, func(rows *sql.Rows) (tableNames, error) {
 		var name tableNames
-		err := rows.Scan(&name.schema, &name.name, &name.ext, &name.keySchema, &name.keyBaseType, &name.keyColumnType, &name.colSchema, &name.collation, &name.hasEquality)
+		err := rows.Scan(&name.schema, &name.name, &name.ext, &name.keyBaseType, &name.colSchema, &name.collation)
 		return name, err
 	})
 	if err != nil {
@@ -85,37 +77,26 @@ AND p.attnotnull AND p.atttypid IN ('pg_catalog.int4'::pg_catalog.regtype, 'pg_c
 	if name.collation != "" {
 		collation = " COLLATE " + postgres.QuoteIdentifier(name.colSchema) + "." + postgres.QuoteIdentifier(name.collation)
 	}
-	var equality string
-	if name.hasEquality {
-		equality = " OPERATOR(" + postgres.QuoteIdentifier(name.keySchema) + ".=) "
-	}
-	return &Chunks[K]{table: postgres.QuoteIdentifier(name.schema) + "." + postgres.QuoteIdentifier(name.name), ext: postgres.QuoteIdentifier(name.ext), keyBaseType: name.keyBaseType, keyColumnType: name.keyColumnType, keyCollation: collation, keyEqual: equality}, nil
+	return &Chunks[K]{table: postgres.QuoteIdentifier(name.schema) + "." + postgres.QuoteIdentifier(name.name), ext: postgres.QuoteIdentifier(name.ext), keyBaseType: name.keyBaseType, keyCollation: collation}, nil
 }
 
 // ReplaceTx deletes the selected documents' chunks and streams replacements.
-// Keys must bind to non-NULL values and have an equality operator in their base type schema.
+// Keys must bind to non-NULL values.
 // Each vector must have the table's fixed dimension.
 // Roll back tx on error. A nil sequence clears the selected documents.
 // Callers must serialize replacements for each document through commit.
 // tx must use READ COMMITTED isolation; ReplaceTx rejects other levels before
 // deleting rows or reading chunks.
 func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks iter.Seq2[Chunk[K], error]) (int, error) {
-	selected, err := selectedChunkKeys(ctx, tx, c.keyEqual, keys)
+	selected, err := selectedChunkKeys(ctx, tx, keys)
 	if err != nil {
 		return 0, err
 	}
 	var changed bool
-	query := "SELECT EXISTS (SELECT 1 FROM pg_catalog.unnest($1::" + c.keyBaseType + "[]) AS key WHERE key IS NULL OR NOT (key" + c.keyCollation + c.keyEqual + "key::" + c.keyColumnType + "))"
-	if err := tx.QueryRowContext(ctx, query, selected).Scan(&changed); err != nil {
-		return 0, fmt.Errorf("check document keys: %w", err)
-	}
-	if changed {
-		return 0, errors.New("pgvector: selected document key is null or changes with column precision")
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key"+c.keyCollation+c.keyEqual+"ANY($1::"+c.keyBaseType+"[])", selected); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key"+c.keyCollation+chunkKeyEqual+"ANY($1::"+c.keyBaseType+"[])", selected); err != nil {
 		return 0, fmt.Errorf("delete chunks: %w", err)
 	}
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM "+c.table+" WHERE doc_key"+c.keyCollation+c.keyEqual+"ANY($1::"+c.keyBaseType+"[]))", selected).Scan(&changed); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM "+c.table+" WHERE doc_key"+c.keyCollation+chunkKeyEqual+"ANY($1::"+c.keyBaseType+"[]))", selected).Scan(&changed); err != nil {
 		return 0, fmt.Errorf("check deleted chunks: %w", err)
 	}
 	if changed {
@@ -206,7 +187,7 @@ type insertedBatch struct {
 
 // insertBatch checks returned keys and records row locations.
 func (c *Chunks[K]) insertBatch(ctx context.Context, tx *sql.Tx, key any, values []string, args []any) (string, error) {
-	query := "WITH inserted AS (INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) RETURNING doc_key, tableoid, ctid) SELECT count(*), count(*) FILTER (WHERE doc_key" + c.keyCollation + c.keyEqual + "$1::" + c.keyBaseType + "), array_agg(tableoid::text || ':' || ctid::text)::text FROM inserted"
+	query := "WITH inserted AS (INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) RETURNING doc_key, tableoid, ctid) SELECT count(*), count(*) FILTER (WHERE doc_key" + c.keyCollation + chunkKeyEqual + "$1::" + c.keyBaseType + "), array_agg(tableoid::text || ':' || ctid::text)::text FROM inserted"
 	var inserted, matched int
 	var ids string
 	if err := tx.QueryRowContext(ctx, query, append([]any{key}, args...)...).Scan(&inserted, &matched, &ids); err != nil {
@@ -276,19 +257,16 @@ func (c *Chunks[K]) hasSelectedKey(ctx context.Context, tx *sql.Tx, key any, has
 		return false, nil
 	}
 	var found bool
-	query := "SELECT $1::" + c.keyBaseType + c.keyCollation + c.keyEqual + "ANY($2::" + c.keyBaseType + "[])"
+	query := "SELECT $1::" + c.keyBaseType + c.keyCollation + chunkKeyEqual + "ANY($2::" + c.keyBaseType + "[])"
 	if err := tx.QueryRowContext(ctx, query, key, hashes[hash]).Scan(&found); err != nil {
 		return false, fmt.Errorf("check chunk document: %w", err)
 	}
 	return found, nil
 }
 
-func selectedChunkKeys[K comparable](ctx context.Context, tx *sql.Tx, equality string, keys []K) ([]any, error) {
+func selectedChunkKeys[K comparable](ctx context.Context, tx *sql.Tx, keys []K) ([]any, error) {
 	if tx == nil {
 		return nil, errors.New("pgvector: nil transaction")
-	}
-	if equality == "" {
-		return nil, errors.New("pgvector: document key equality cannot be resolved")
 	}
 	if err := requireReadCommitted(ctx, tx, "ReplaceTx"); err != nil {
 		return nil, err
@@ -298,6 +276,9 @@ func selectedChunkKeys[K comparable](ctx context.Context, tx *sql.Tx, equality s
 		value, err := chunkKey(key)
 		if err != nil {
 			return nil, fmt.Errorf("document key: %w", err)
+		}
+		if b, ok := value.([]byte); value == nil || (ok && b == nil) {
+			return nil, errors.New("pgvector: selected document key is null")
 		}
 		selected[i] = value
 	}
@@ -345,7 +326,7 @@ func readHNSWSettings(ctx context.Context, tx *sql.Tx, ext, literal string) (str
 
 // restoreHNSW undoes SearchTx's settings. It skips PostgreSQL errors, which
 // abort tx, and still restores after Go-side errors such as a failed scan.
-func restoreHNSW(ctx context.Context, tx *sql.Tx, resultErr error, previousEF, previousIterative string, iterative bool) error {
+func restoreHNSW(ctx context.Context, tx *sql.Tx, resultErr error, previousEF, previousIterative string) error {
 	if _, ok := errors.AsType[interface {
 		error
 		SQLState() string
@@ -358,10 +339,8 @@ func restoreHNSW(ctx context.Context, tx *sql.Tx, resultErr error, previousEF, p
 	if _, err := tx.ExecContext(cleanupCtx, `SELECT set_config('hnsw.ef_search', $1, true)`, previousEF); err != nil {
 		resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.ef_search: %w", err))
 	}
-	if iterative {
-		if _, err := tx.ExecContext(cleanupCtx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.iterative_scan: %w", err))
-		}
+	if _, err := tx.ExecContext(cleanupCtx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative); err != nil {
+		resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.iterative_scan: %w", err))
 	}
 	return resultErr
 }
@@ -388,7 +367,7 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
 		return page, fmt.Errorf("set hnsw.ef_search: %w", err)
 	}
-	defer func() { resultErr = restoreHNSW(ctx, tx, resultErr, previousEF, previousIterative, true) }()
+	defer func() { resultErr = restoreHNSW(ctx, tx, resultErr, previousEF, previousIterative) }()
 	page.ScanCap = limit
 	if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
 		return page, fmt.Errorf("set hnsw.iterative_scan: %w", err)
