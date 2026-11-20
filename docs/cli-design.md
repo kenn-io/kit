@@ -1,7 +1,8 @@
 ---
+type: Guide
 title: "Shared CLI design guidance"
 description: "Help, output, result hints, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank."
-last_edited: 2026-11-09
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # Shared CLI design guidance

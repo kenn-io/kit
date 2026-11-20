@@ -1,7 +1,8 @@
 ---
+type: Guide
 title: "Installing the local embedding server"
 description: "Install and operate the local embedding server and its model assets."
-last_edited: 2026-11-16
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # Installing the local embedding server
