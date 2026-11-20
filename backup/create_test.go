@@ -62,32 +62,185 @@ func createOpts(dbPath, attachmentsDir, dataDir string, cacheDir string) CreateO
 
 func buildAttachmentHistory(tb testing.TB, base, count int) (*Repo, CreateOptions, func()) {
 	tb.Helper()
+	ctx := tb.Context()
 	r, err := Init(filepath.Join(tb.TempDir(), "repo"))
 	require.NoError(tb, err)
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(tb)
 	opts := createOpts(dbPath, attachmentsDir, dataDir, tb.TempDir())
+	app := newTestApp()
+	var added ContentRef
+	var content []byte
 	next := 0
 	add := func() {
-		ref := writeLooseAttachment(tb, attachmentsDir, []byte(fmt.Sprintf("attachment %d", next)))
+		content = []byte(fmt.Sprintf("attachment %d", next))
+		added = writeLooseAttachment(tb, attachmentsDir, content)
 		next++
-		_, err := db.ExecContext(tb.Context(),
+		_, err := db.ExecContext(ctx,
 			`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path) VALUES (?, ?, ?, '', '')`,
-			ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
+			added.Hash, added.Hash[:2]+"/"+added.Hash, added.Size)
 		require.NoError(tb, err)
 	}
-	if base > 0 {
-		for range base {
-			add()
-		}
-		_, err := Create(tb.Context(), r, newTestApp(), opts)
-		require.NoError(tb, err)
-	}
-	for range count {
+	for range base {
 		add()
-		_, err := Create(tb.Context(), r, newTestApp(), opts)
-		require.NoError(tb, err)
 	}
+	total := count
+	if base > 0 {
+		total++
+	}
+	if total == 0 {
+		return r, opts, add
+	}
+	if base == 0 {
+		add()
+	}
+	parent, err := Create(ctx, r, app, opts)
+	require.NoError(tb, err)
+	known, err := r.LoadBlobIndex()
+	require.NoError(tb, err)
+	fetch := func(id pack.BlobID) ([]byte, error) { return r.ReadBlob(known, id, nil, app.PackFileExtension()) }
+	parentHash, err := loadParentHashMap(r, parent, opts.CacheDir, fetch)
+	require.NoError(tb, err)
+	var segments [][]ContentRef
+	for _, id := range parent.Attachments.Lists {
+		refs, _, err := LoadListRefs(r, known, []string{id}, nil, app.PackFileExtension())
+		require.NoError(tb, err)
+		segments = append(segments, refs)
+	}
+	for range total - 1 {
+		add()
+		func() {
+			pair, err := acquireScanSession(ctx, dbPath, NoopFreezeCoordinator{}, opts.SQLiteOpener)
+			require.NoError(tb, err)
+			defer func() { _ = pair.file.Close() }()
+			defer func() { _ = pair.session.Close() }()
+			stats, err := app.FrozenView(pair.session).Stats(ctx)
+			require.NoError(tb, err)
+			scan, err := ScanPages(ctx, pair.file, pair.session.PageSize, pair.session.PageCount, parentHash, nil)
+			require.NoError(tb, err)
+			appender := NewPackAppender(r, known, pack.DefaultZstdLevel, nil, app.PackFileExtension())
+			defer appender.Abort()
+			delta, err := storePageBlobs(ctx, pair.file, scan, appender, opts.Jobs, newProgressEmitter(nil))
+			require.NoError(tb, err)
+			require.NoError(tb, pair.session.Close())
+			require.NoError(tb, pair.file.Close())
+			keyframe, depth, err := decideKeyframe(r, parent, parentHash, known)
+			require.NoError(tb, err)
+			mapObj, err := buildPageMapObject(r, parent, true, delta, keyframe, fetch)
+			require.NoError(tb, err)
+			mapBlob, _, err := appender.Add(mapObj)
+			require.NoError(tb, err)
+			parentHash = &PageHashMap{PageSize: scan.PageSize, PageCount: scan.PageCount, Hashes: scan.Hashes}
+			var hashObj []byte
+			if keyframe {
+				hashObj = EncodeHashKeyframe(parentHash)
+			} else {
+				hashObj = EncodeHashDelta(BuildHashDelta(scan))
+			}
+			hashBlob, _, err := appender.Add(hashObj)
+			require.NoError(tb, err)
+			_, _, err = appender.Add(content)
+			require.NoError(tb, err)
+			sizes := make([]int, len(segments))
+			for i, segment := range segments {
+				sizes[i] = len(segment)
+			}
+			keep := keptListSegments(sizes, 1)
+			var tail []ContentRef
+			for _, segment := range segments[keep:] {
+				tail = append(tail, segment...)
+			}
+			tail = append(tail, added)
+			listObj, err := EncodeAttachmentList(tail)
+			require.NoError(tb, err)
+			listBlob, _, err := appender.Add(listObj)
+			require.NoError(tb, err)
+			lists := append(slices.Clone(parent.Attachments.Lists[:keep]), listBlob.String())
+			segments = append(segments[:keep], tail)
+			sealed, err := sealSnapshotCapture(ctx, r, appender, newProgressEmitter(nil))
+			require.NoError(tb, err)
+			createdAt, err := nextCreatedAt(time.Now(), parent)
+			require.NoError(tb, err)
+			m := *parent
+			m.ParentID = parent.SnapshotID
+			m.SnapshotID = ""
+			m.CreatedAt = createdAt.Format(time.RFC3339)
+			m.Stats = stats
+			m.DB = ManifestDB{Engine: "sqlite", PageSize: scan.PageSize, PageCount: scan.PageCount, PageMap: mapBlob.String(), PageHashMap: hashBlob.String(), MapChainDepth: depth}
+			m.Attachments.Lists = lists
+			m.Attachments.Rows++
+			m.Attachments.Blobs++
+			m.Attachments.BlobBytes += added.Size
+			m.NewPacks, m.NewIndex, m.BytesAdded = sealed.newPacks, sealed.newIndex, sealed.bytesAdded
+			m.DurationSeconds = 0
+			m.SnapshotID, err = r.WriteManifest(&m)
+			require.NoError(tb, err)
+			parent = &m
+		}()
+	}
+	verified, err := Verify(ctx, r, app, VerifyOptions{All: true, Quick: true})
+	require.NoError(tb, err)
+	require.Empty(tb, verified.Problems)
+	require.Len(tb, verified.Snapshots, total)
 	return r, opts, add
+}
+
+func TestBuildAttachmentHistory(t *testing.T) {
+	for _, base := range []int{0, 4} {
+		t.Run(fmt.Sprintf("base-%d", base), func(t *testing.T) {
+			count := 35
+			if base == 0 {
+				count++
+			}
+			r, opts, add := buildAttachmentHistory(t, base, count)
+			result, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{All: true})
+			require.NoError(t, err)
+			require.Empty(t, result.Problems)
+			snapshots, err := r.ListSnapshots()
+			require.NoError(t, err)
+			anchorRows := 3
+			if base > 0 {
+				anchorRows = 6
+			}
+			keyframe := 0
+			for i := 1; i < len(snapshots); i++ {
+				if snapshots[i].DB.MapChainDepth == 0 {
+					keyframe = i
+					break
+				}
+			}
+			require.NotZero(t, keyframe)
+			require.Positive(t, snapshots[1].DB.MapChainDepth)
+			check := func(m *Manifest, rows int, attachment string) {
+				t.Helper()
+				target := filepath.Join(t.TempDir(), "restore")
+				_, err := Restore(t.Context(), r, newTestApp(), RestoreOptions{SnapshotID: m.SnapshotID, TargetDir: target})
+				require.NoError(t, err)
+				db, err := sql.Open("sqlite3", filepath.Join(target, "app.db"))
+				require.NoError(t, err)
+				defer func() { _ = db.Close() }()
+				var got int
+				require.NoError(t, db.QueryRowContext(t.Context(), "SELECT count(*) FROM blobs").Scan(&got))
+				require.Equal(t, rows, got)
+				for _, expected := range []string{"first attachment content", attachment} {
+					ref := writeLooseAttachment(t, t.TempDir(), []byte(expected))
+					data, err := os.ReadFile(filepath.Join(target, "content", ref.Hash[:2], ref.Hash))
+					require.NoError(t, err)
+					require.Equal(t, expected, string(data))
+				}
+			}
+			for _, i := range []int{0, 1, keyframe, len(snapshots) - 1} {
+				check(snapshots[i], anchorRows+i, "attachment 0")
+			}
+			add()
+			m, err := Create(t.Context(), r, newTestApp(), opts)
+			require.NoError(t, err)
+			latest := "attachment 36"
+			if base > 0 {
+				latest = "attachment 39"
+			}
+			check(m, anchorRows+len(snapshots), latest)
+		})
+	}
 }
 
 // TestCreateManifestReaderVersionTracksStoragePaths pins the compatibility
