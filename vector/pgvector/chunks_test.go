@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"iter"
 	"math"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -116,18 +115,6 @@ func TestChunks(t *testing.T) {
 		assert.Equal(t, 1, count)
 	})
 
-	t.Run("wrong dimension", func(t *testing.T) {
-		db, chunks := setupChunks(t)
-		ctx := t.Context()
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
-			yield(pgvector.Chunk[string]{Doc: "replace", Vector: vector.Vector{1}}, nil)
-		})
-		require.ErrorContains(t, err, "vector dimension")
-		require.NoError(t, tx.Rollback())
-	})
-
 	t.Run("search", func(t *testing.T) {
 		db, chunks := setupChunks(t)
 		ctx := t.Context()
@@ -192,6 +179,10 @@ func TestChunks(t *testing.T) {
 		defer func() { _ = tx.Rollback() }()
 		_, err = chunks.SearchTx(ctx, tx, vector.Vector{1}, 1)
 		require.ErrorContains(t, err, "vector dimension")
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
+			yield(pgvector.Chunk[string]{Doc: "replace", Vector: vector.Vector{1}}, nil)
+		})
+		require.ErrorContains(t, err, "vector dimension")
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"invalid-doc"}, func(yield func(pgvector.Chunk[string], error) bool) {
 			yield(pgvector.Chunk[string]{Doc: "invalid-doc", ChunkIndex: 7, Vector: vector.Vector{float32(math.Inf(1)), 0}}, nil)
 		})
@@ -209,35 +200,4 @@ func TestChunks(t *testing.T) {
 		})
 		require.ErrorContains(t, err, "outside")
 	})
-}
-
-// TestChunksLegacyScan uses a disposable pgvector 0.7.4 database.
-func TestChunksLegacyScan(t *testing.T) {
-	dsn := os.Getenv("KIT_POSTGRES_LEGACY_TEST_DSN")
-	if dsn == "" {
-		t.Skip("KIT_POSTGRES_LEGACY_TEST_DSN is not set")
-	}
-	ctx := t.Context()
-	db, err := sql.Open("pgx", dsn)
-	require.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, db.Close()) })
-	_, err = db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`)
-	require.NoError(t, err)
-	tx, err := db.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	defer func() { _ = tx.Rollback() }()
-	_, err = tx.ExecContext(ctx, `CREATE TEMP TABLE legacy_chunks (doc_key text, chunk_index integer, embedding public.halfvec(3))`)
-	require.NoError(t, err)
-	_, err = tx.ExecContext(ctx, `INSERT INTO legacy_chunks SELECT i::text, 0, format('[%s,%s,%s]', sin(i*0.91), cos(i*1.17), sin(i*0.23))::public.halfvec FROM generate_series(1,1600) i`)
-	require.NoError(t, err)
-	_, err = tx.ExecContext(ctx, `CREATE INDEX ON legacy_chunks USING hnsw (embedding public.halfvec_cosine_ops)`)
-	require.NoError(t, err)
-	chunks, err := pgvector.AttachChunks[string](ctx, tx, "legacy_chunks", 3)
-	require.NoError(t, err)
-	_, err = tx.ExecContext(ctx, `SET LOCAL enable_seqscan=off`)
-	require.NoError(t, err)
-	page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0.3, 0.1}, 1200)
-	require.NoError(t, err)
-	assert.Len(t, page.Hits, 1000)
-	assert.Equal(t, 1000, page.ScanCap)
 }

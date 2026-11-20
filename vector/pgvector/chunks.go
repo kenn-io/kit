@@ -60,12 +60,7 @@ WHERE c.oid=to_regclass($1) AND t.typname='halfvec' AND a.atttypmod=$2`, Args: [
 		return nil, fmt.Errorf("pgvector: table %q has no extension-owned halfvec embedding", table)
 	}
 	qualified := postgres.QuoteIdentifier(names[0].namespace) + "." + postgres.QuoteIdentifier(names[0].name)
-	rows, err := q.QueryContext(ctx, "SELECT doc_key,chunk_index,embedding FROM "+qualified+" WHERE false")
-	if err != nil {
-		return nil, fmt.Errorf("check chunk table: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	if err := rows.Err(); err != nil {
+	if err := checkTable(ctx, q, qualified, "doc_key,chunk_index,embedding"); err != nil {
 		return nil, fmt.Errorf("check chunk table: %w", err)
 	}
 	return &Chunks[K]{table: qualified, ext: postgres.QuoteIdentifier(names[0].ext), dimension: dimension}, nil
