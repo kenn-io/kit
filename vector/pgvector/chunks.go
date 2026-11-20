@@ -64,7 +64,8 @@ WHERE c.oid=to_regclass($1) AND t.typname='halfvec' AND a.atttypmod=$2`, Args: [
 	if err != nil {
 		return nil, fmt.Errorf("check chunk table: %w", err)
 	}
-	if err := rows.Close(); err != nil {
+	defer func() { _ = rows.Close() }()
+	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("check chunk table: %w", err)
 	}
 	return &Chunks[K]{table: qualified, ext: postgres.QuoteIdentifier(names[0].ext), dimension: dimension}, nil
