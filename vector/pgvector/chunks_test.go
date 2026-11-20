@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -108,7 +109,7 @@ func TestChunks(t *testing.T) {
 
 	t.Run("trigger skips delete", func(t *testing.T) {
 		for _, replace := range []bool{false, true} {
-			t.Run(fmt.Sprint(replace), func(t *testing.T) {
+			t.Run(strconv.FormatBool(replace), func(t *testing.T) {
 				db, chunks := setupChunks(t)
 				ctx := t.Context()
 				_, err := db.ExecContext(ctx, `INSERT INTO "Mixed chunks" VALUES ('key', 0, '[1,0]'); CREATE FUNCTION skip_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_delete BEFORE DELETE ON "Mixed chunks" FOR EACH ROW EXECUTE FUNCTION skip_delete()`)
@@ -151,7 +152,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		keys := make([]string, 10_000)
 		for i := range keys {
-			keys[i] = fmt.Sprint(i)
+			keys[i] = strconv.Itoa(i)
 		}
 		tx, err := tracedDB.BeginTx(ctx, nil)
 		require.NoError(t, err)
@@ -414,7 +415,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		keys := make([]string, 200)
 		for i := range keys {
-			keys[i] = fmt.Sprint(i + 1)
+			keys[i] = strconv.Itoa(i + 1)
 		}
 		_, err = chunks.ReplaceTx(ctx, tx, keys, func(yield func(pgvector.Chunk[string], error) bool) {
 			for _, key := range keys {
@@ -729,5 +730,4 @@ func TestChunks(t *testing.T) {
 			})
 		}
 	})
-
 }
