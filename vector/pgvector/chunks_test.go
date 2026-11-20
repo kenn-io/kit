@@ -1,8 +1,10 @@
 package pgvector_test
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"iter"
 	"testing"
 	"time"
@@ -12,6 +14,24 @@ import (
 	"go.kenn.io/kit/vector"
 	"go.kenn.io/kit/vector/pgvector"
 )
+
+var cancelChunkScan context.CancelFunc
+var errCanceledChunkScan = errors.New("canceled during scan")
+
+type cancelingChunkKey string
+
+func (k *cancelingChunkKey) Scan(value any) error {
+	switch value := value.(type) {
+	case string:
+		*k = cancelingChunkKey(value)
+	case []byte:
+		*k = cancelingChunkKey(value)
+	default:
+		return fmt.Errorf("unexpected key type %T", value)
+	}
+	cancelChunkScan()
+	return errCanceledChunkScan
+}
 
 func TestChunks(t *testing.T) {
 	setupChunks := func(t *testing.T) (*sql.DB, *pgvector.Chunks[string]) {
@@ -205,6 +225,14 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		_, err = pgvector.AttachChunks[string](ctx, db, "missing_position")
 		require.ErrorContains(t, err, "no halfvec embedding")
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		schema := uniqueName(t, "fake_halfvec")
+		_, err = tx.ExecContext(ctx, `CREATE SCHEMA `+schema+`; CREATE DOMAIN `+schema+`.halfvec AS text; CREATE TABLE fake_chunks (doc_key text, chunk_index int, embedding `+schema+`.halfvec)`)
+		require.NoError(t, err)
+		_, err = pgvector.AttachChunks[string](ctx, tx, "fake_chunks")
+		require.ErrorContains(t, err, "no halfvec embedding")
 		_, err = pgvector.AttachChunks[string](ctx, db, "missing_key")
 		require.ErrorContains(t, err, "no halfvec embedding")
 	})
@@ -273,6 +301,54 @@ func TestChunks(t *testing.T) {
 			require.ErrorContains(t, err, "outside the selected keys")
 			require.NoError(t, tx.Rollback())
 		}
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		key := []byte("a")
+		_, err = chunks.ReplaceTx(ctx, tx, []any{[]byte("a"), []byte("b")}, func(yield func(pgvector.Chunk[any], error) bool) {
+			if !yield(pgvector.Chunk[any]{Doc: key, ChunkIndex: 0, Vector: vector.Vector{1, 0}}, nil) {
+				return
+			}
+			key[0] = 'b'
+			yield(pgvector.Chunk[any]{Doc: key, ChunkIndex: 1, Vector: vector.Vector{1, 0}}, nil)
+		})
+		require.NoError(t, err)
+		rows, err := tx.QueryContext(ctx, `SELECT doc_key FROM binary_keys ORDER BY chunk_index`)
+		require.NoError(t, err)
+		var keys []string
+		for rows.Next() {
+			var key []byte
+			require.NoError(t, rows.Scan(&key))
+			keys = append(keys, string(key))
+		}
+		require.NoError(t, rows.Err())
+		require.NoError(t, rows.Close())
+		assert.Equal(t, []string{"a", "b"}, keys)
+		require.NoError(t, tx.Rollback())
+	})
+
+	t.Run("canceled search restores settings", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]')`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[cancelingChunkKey](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = tx.ExecContext(ctx, `SET LOCAL hnsw.ef_search=77; SET LOCAL hnsw.iterative_scan='strict_order'`)
+		require.NoError(t, err)
+		searchCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		cancelChunkScan = cancel
+		defer func() { cancelChunkScan = nil }()
+		_, err = chunks.SearchTx(searchCtx, tx, vector.Vector{1, 0}, 1200)
+		require.ErrorIs(t, err, errCanceledChunkScan)
+		require.ErrorIs(t, searchCtx.Err(), context.Canceled)
+		var ef, iterative string
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan')`).Scan(&ef, &iterative))
+		assert.Equal(t, "77", ef)
+		assert.Equal(t, "strict_order", iterative)
 	})
 
 	t.Run("search restores settings", func(t *testing.T) {

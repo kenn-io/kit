@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"iter"
 	"strings"
+	"time"
 
 	"go.kenn.io/kit/search/postgres"
 	"go.kenn.io/kit/search/sqlquery"
@@ -44,6 +45,8 @@ LEFT JOIN pg_collation co ON co.oid=k.attcollation LEFT JOIN pg_namespace cn ON 
 JOIN pg_attribute p ON p.attrelid=c.oid AND p.attname='chunk_index' AND NOT p.attisdropped
 JOIN pg_attribute a ON a.attrelid=c.oid AND a.attname='embedding' AND NOT a.attisdropped
 JOIN pg_type t ON t.oid=a.atttypid JOIN pg_namespace en ON en.oid=t.typnamespace
+JOIN pg_depend d ON d.classid='pg_type'::regclass AND d.objid=t.oid AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
+JOIN pg_extension e ON e.oid=d.refobjid AND e.extname='vector'
 WHERE c.oid=to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.QuoteIdentifier(table)}}
 	type tableNames struct{ schema, name, ext, keySchema, keyType, colSchema, collation string }
 	names, err := query.All(ctx, q, func(rows *sql.Rows) (tableNames, error) {
@@ -71,12 +74,9 @@ WHERE c.oid=to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.Quote
 func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks iter.Seq2[Chunk[K], error]) (int, error) {
 	selected := make([]any, len(keys))
 	for i, key := range keys {
-		value, err := driver.DefaultParameterConverter.ConvertValue(key)
+		value, err := chunkKey(key)
 		if err != nil {
 			return 0, fmt.Errorf("document key: %w", err)
-		}
-		if b, ok := value.([]byte); ok {
-			value = bytes.Clone(b)
 		}
 		selected[i] = value
 	}
@@ -113,9 +113,13 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		if err != nil {
 			return 0, fmt.Errorf("document %v chunk %d: %w", chunk.Doc, chunk.ChunkIndex, err)
 		}
+		key, err := chunkKey(chunk.Doc)
+		if err != nil {
+			return 0, fmt.Errorf("document key: %w", err)
+		}
 		n := len(args) + 1
 		values = append(values, fmt.Sprintf("($%d::%s,$%d::bigint,$%d::%s.halfvec)", n+1, c.keyType, n+2, n+3, c.ext))
-		args = append(args, chunk.Doc, chunk.ChunkIndex, literal)
+		args = append(args, key, chunk.ChunkIndex, literal)
 		count++
 		if len(values) == 200 {
 			if err := flush(); err != nil {
@@ -129,8 +133,16 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 	return count, nil
 }
 
+func chunkKey(key any) (driver.Value, error) {
+	value, err := driver.DefaultParameterConverter.ConvertValue(key)
+	if b, ok := value.([]byte); ok {
+		value = bytes.Clone(b)
+	}
+	return value, err
+}
+
 // SearchTx returns raw nearest chunks. The caller owns freshness, hydration,
-// exhaustion decisions, and transaction completion.
+// exhaustion decisions, and transaction completion. Roll back tx on error.
 func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vector, limit int) (page ChunkPage[K], resultErr error) {
 	literal, err := halfvec(query)
 	if err != nil {
@@ -151,11 +163,14 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 		return page, fmt.Errorf("set hnsw.ef_search: %w", err)
 	}
 	defer func() {
-		if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.ef_search', $1, true)`, previousEF); err != nil {
+		// Restore settings even if the search context expired while tx remains live.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if _, err := tx.ExecContext(cleanupCtx, `SELECT set_config('hnsw.ef_search', $1, true)`, previousEF); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.ef_search: %w", err))
 		}
 		if limit > efSearch {
-			if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative); err != nil {
+			if _, err := tx.ExecContext(cleanupCtx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative); err != nil {
 				resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.iterative_scan: %w", err))
 			}
 		}
