@@ -188,7 +188,7 @@ func TestBuildAttachmentHistoryMatchesCreate(t *testing.T) {
 	for _, base := range []int{0, 4} {
 		t.Run(fmt.Sprintf("base-%d", base), func(t *testing.T) {
 			fast, _, _ := buildAttachmentHistory(t, base, 8)
-			real := initTestRepo(t)
+			realRepo := initTestRepo(t)
 			dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
 			opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
 			next := 0
@@ -204,17 +204,17 @@ func TestBuildAttachmentHistoryMatchesCreate(t *testing.T) {
 				add()
 			}
 			if base > 0 {
-				_, err := Create(t.Context(), real, newTestApp(), opts)
+				_, err := Create(t.Context(), realRepo, newTestApp(), opts)
 				require.NoError(t, err)
 			}
 			for range 8 {
 				add()
-				_, err := Create(t.Context(), real, newTestApp(), opts)
+				_, err := Create(t.Context(), realRepo, newTestApp(), opts)
 				require.NoError(t, err)
 			}
 			fastSnapshots, err := fast.ListSnapshots()
 			require.NoError(t, err)
-			realSnapshots, err := real.ListSnapshots()
+			realSnapshots, err := realRepo.ListSnapshots()
 			require.NoError(t, err)
 			require.Len(t, fastSnapshots, 8+min(base, 1))
 			require.Len(t, realSnapshots, len(fastSnapshots))
