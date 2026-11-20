@@ -1,7 +1,8 @@
 ---
+type: Guide
 title: Secret sources
 description: Configure literal, environment, and private-file secrets with secretref.
-last_edited: 2026-11-11
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # Secret sources
