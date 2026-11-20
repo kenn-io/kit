@@ -88,6 +88,8 @@ func TestChunks(t *testing.T) {
 		tx, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()
+		_, err = tx.ExecContext(ctx, `SELECT set_config('search_path', current_schema() || ', pg_catalog', true)`)
+		require.NoError(t, err)
 		_, err = chunks.ReplaceTx(ctx, tx, []sql.NullString{{}}, nil)
 		require.Error(t, err)
 		_, err = chunks.ReplaceTx(ctx, tx, []sql.NullString{{String: "key", Valid: true}}, nil)
