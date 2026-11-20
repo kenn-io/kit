@@ -416,6 +416,46 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  pgvector-no-iterative:
+    name: PostgreSQL chunks without iterative scans
+    runs-on: namespace-profile-linux-4cpu
+    timeout-minutes: 12
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start PostgreSQL
+        run: |
+          docker run --detach --rm \
+            --name kit-postgres-no-iterative \
+            --publish 127.0.0.1:5432:5432 \
+            --env POSTGRES_PASSWORD=postgres \
+            --env POSTGRES_USER=postgres \
+            --env POSTGRES_DB=kit \
+            pgvector/pgvector:0.7.4-pg16
+          for attempt in $(seq 1 60); do
+            if docker exec kit-postgres-no-iterative pg_isready -U postgres | grep -q "accepting"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs kit-postgres-no-iterative
+          exit 1
+
+      - name: Run chunk search without iterative scans
+        env:
+          KIT_POSTGRES_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/kit?sslmode=disable
+        run: make test-vector-postgres-no-iterative
+
   embedserver:
     name: Local embedding parity (${{ matrix.os }})
     runs-on: ${{ matrix.runner }}
