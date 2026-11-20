@@ -120,6 +120,8 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
 		require.NoError(t, err)
+		// Search on a fresh connection where pgvector has not yet been loaded.
+		db.SetMaxIdleConns(0)
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()
@@ -127,7 +129,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0.3, 0.1}, 1200)
 		require.NoError(t, err)
-		require.Len(t, page.Hits, 1200)
+		require.Equal(t, 1200, len(page.Hits))
 		assert.Equal(t, 1200, page.ScanCap)
 		require.NoError(t, tx.Commit())
 		_, err = db.ExecContext(ctx, `SELECT pg_stat_force_next_flush(); SELECT pg_stat_clear_snapshot()`)

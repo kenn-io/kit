@@ -101,13 +101,7 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	}
 	page.ScanCap = limit
 	if limit > efSearch {
-		var setting sql.NullString
-		if err := tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.iterative_scan', true)`).Scan(&setting); err != nil {
-			return page, fmt.Errorf("probe hnsw.iterative_scan: %w", err)
-		}
-		if !setting.Valid {
-			page.ScanCap = efSearch
-		} else if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
+		if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
 			return page, fmt.Errorf("set hnsw.iterative_scan: %w", err)
 		}
 	}
