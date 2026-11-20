@@ -24,6 +24,7 @@ verification records belong in kata and pull request discussion.
 ## Guidance
 
 - [Shared CLI design guidance](cli-design.md)
+- [Post-release documentation checklist](post-release-checklist.md)
 
 ## Architecture
 
