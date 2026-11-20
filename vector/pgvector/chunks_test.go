@@ -1,14 +1,11 @@
 package pgvector_test
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"iter"
 	"math"
-	"net/url"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,37 +15,9 @@ import (
 )
 
 func TestChunks(t *testing.T) {
-	setupChunkDB := func(t *testing.T) *sql.DB {
-		t.Helper()
-		dsn := os.Getenv("KIT_POSTGRES_TEST_DSN")
-		if dsn == "" {
-			t.Skip("KIT_POSTGRES_TEST_DSN is not set")
-		}
-		admin, err := sql.Open("pgx", dsn)
-		require.NoError(t, err)
-		_, err = admin.ExecContext(t.Context(), `CREATE EXTENSION IF NOT EXISTS vector`)
-		require.NoError(t, err)
-		name := uniqueName(t, "chunks_test")
-		_, err = admin.ExecContext(t.Context(), `CREATE SCHEMA `+name)
-		require.NoError(t, err)
-		t.Cleanup(func() {
-			_, err := admin.ExecContext(context.WithoutCancel(t.Context()), `DROP SCHEMA `+name+` CASCADE`)
-			assert.NoError(t, err)
-			assert.NoError(t, admin.Close())
-		})
-		u, err := url.Parse(dsn)
-		require.NoError(t, err)
-		q := u.Query()
-		q.Set("search_path", name)
-		u.RawQuery = q.Encode()
-		db, err := sql.Open("pgx", u.String())
-		require.NoError(t, err)
-		t.Cleanup(func() { assert.NoError(t, db.Close()) })
-		return db
-	}
 	setupChunks := func(t *testing.T) (*sql.DB, *pgvector.Chunks[string]) {
 		t.Helper()
-		db := setupChunkDB(t)
+		db := setupDB(t)
 		ctx := t.Context()
 		_, err := db.ExecContext(ctx, `CREATE TABLE "Mixed chunks" (doc_key text, chunk_index integer, embedding public.halfvec(2), PRIMARY KEY(doc_key,chunk_index))`)
 		require.NoError(t, err)
@@ -155,7 +124,7 @@ func TestChunks(t *testing.T) {
 	})
 
 	t.Run("large limit search", func(t *testing.T) {
-		db := setupChunkDB(t)
+		db := setupDB(t)
 		ctx := t.Context()
 		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index integer, embedding public.halfvec(3))`)
 		require.NoError(t, err)
@@ -254,7 +223,7 @@ func TestChunks(t *testing.T) {
 		require.ErrorContains(t, err, "zero")
 	})
 	t.Run("binary and UUID keys", func(t *testing.T) {
-		db := setupChunkDB(t)
+		db := setupDB(t)
 		ctx := t.Context()
 		_, err := db.ExecContext(ctx, `CREATE TABLE binary_chunks (doc_key bytea, chunk_index int, embedding public.halfvec(2)); CREATE TABLE uuid_chunks (doc_key uuid, chunk_index int, embedding public.halfvec(2))`)
 		require.NoError(t, err)

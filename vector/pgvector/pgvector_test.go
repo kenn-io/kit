@@ -31,7 +31,7 @@ func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.T
 
 func (*queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-func setup(t *testing.T) (*sql.DB, *pgvector.Store[int64, string]) {
+func setupDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("KIT_POSTGRES_TEST_DSN")
 	if dsn == "" {
@@ -57,7 +57,13 @@ func setup(t *testing.T) (*sql.DB, *pgvector.Store[int64, string]) {
 	db, err := sql.Open("pgx", u.String())
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
-	_, err = db.ExecContext(t.Context(), `CREATE TABLE docs (id BIGINT PRIMARY KEY, body TEXT, revision INTEGER)`)
+	return db
+}
+
+func setup(t *testing.T) (*sql.DB, *pgvector.Store[int64, string]) {
+	t.Helper()
+	db := setupDB(t)
+	_, err := db.ExecContext(t.Context(), `CREATE TABLE docs (id BIGINT PRIMARY KEY, body TEXT, revision INTEGER)`)
 	require.NoError(t, err)
 	schema := pgvector.Schema{DocsTable: "docs", IDColumn: "id", ContentColumn: "body", RevisionColumn: "revision", Prefix: "vectors"}
 	require.NoError(t, pgvector.Install(t.Context(), db, schema))

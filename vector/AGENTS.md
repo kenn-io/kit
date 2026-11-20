@@ -234,9 +234,9 @@ pipeline. Preserve these invariants when changing it.
 - `Chunks` attaches to an app-owned table without DDL, checking the declared
   halfvec dimension. It preserves vector values and orders raw chunk searches
   by distance. Hits have nil revisions. Callers own freshness, hydration, and
-  transaction completion. A short search page is exhausted when its raw row
-  count is below the limit and either the scan cap reaches the limit or the
-  row count differs from the scan cap.
+  transaction completion. Callers serialize replacements for the same document.
+  Compare ScanCap with the raw hit count before rollup. A short approximate
+  page alone does not prove that the scan found all matches.
 - Shared storage uses a caller-installed chunk table with `generation_id bigint`,
   `doc_key` matching the document key and cascading on delete, `chunk_index`
   integer or bigint, unbounded halfvec `embedding`, and primary key
