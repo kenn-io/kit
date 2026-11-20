@@ -20,7 +20,7 @@ import (
 
 // Chunks accesses an application-owned table of halfvec chunks.
 type Chunks[K comparable] struct {
-	table, ext, keyType, keyBaseType, keyColumnType, keyCollation string
+	table, ext, keyBaseType, keyColumnType, keyCollation string
 }
 
 // Chunk is one document's vector at a chunk index.
@@ -39,29 +39,29 @@ type ChunkPage[K comparable] struct {
 // AttachChunks resolves a table on the queryer's search path without changing it.
 // Keys must be supported by database/sql for both binding and scanning.
 func AttachChunks[K comparable](ctx context.Context, q sqlquery.Queryer, table string) (*Chunks[K], error) {
-	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname, kn.nspname, kt.typname, format('%I.%I', bn.nspname, bt.typname),
-CASE WHEN k.atttypmod = -1 THEN format('%I.%I', kn.nspname, kt.typname)
-     WHEN kn.nspname <> 'pg_catalog' THEN format('%I.%I', kn.nspname, kt.typname) || substr(format_type(k.atttypid, k.atttypmod), length(format_type(k.atttypid, -1)) + 1)
-     ELSE format_type(k.atttypid, k.atttypmod) END, COALESCE(cn.nspname, ''), COALESCE(co.collname, '')
-FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-JOIN pg_attribute k ON k.attrelid=c.oid AND k.attname='doc_key' AND NOT k.attisdropped
-JOIN pg_type kt ON kt.oid=k.atttypid JOIN pg_namespace kn ON kn.oid=kt.typnamespace
+	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname, pg_catalog.format('%I.%I', bn.nspname, bt.typname),
+CASE WHEN k.atttypmod = -1 THEN pg_catalog.format('%I.%I', kn.nspname, kt.typname)
+     WHEN kn.nspname <> 'pg_catalog' THEN pg_catalog.format('%I.%I', kn.nspname, kt.typname) || pg_catalog.substr(pg_catalog.format_type(k.atttypid, k.atttypmod), pg_catalog.length(pg_catalog.format_type(k.atttypid, -1)) + 1)
+     ELSE pg_catalog.format_type(k.atttypid, k.atttypmod) END, COALESCE(cn.nspname, ''), COALESCE(co.collname, '')
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+JOIN pg_catalog.pg_attribute k ON k.attrelid=c.oid AND k.attname='doc_key' AND NOT k.attisdropped
+JOIN pg_catalog.pg_type kt ON kt.oid=k.atttypid JOIN pg_catalog.pg_namespace kn ON kn.oid=kt.typnamespace
 JOIN LATERAL (WITH RECURSIVE base AS (
   SELECT kt.oid, kt.typbasetype
-  UNION ALL SELECT t.oid, t.typbasetype FROM pg_type t JOIN base b ON t.oid=b.typbasetype
+  UNION ALL SELECT t.oid, t.typbasetype FROM pg_catalog.pg_type t JOIN base b ON t.oid=b.typbasetype
 ) SELECT oid FROM base WHERE typbasetype=0) b ON true
-JOIN pg_type bt ON bt.oid=b.oid JOIN pg_namespace bn ON bn.oid=bt.typnamespace
-LEFT JOIN pg_collation co ON co.oid=k.attcollation LEFT JOIN pg_namespace cn ON cn.oid=co.collnamespace
-JOIN pg_attribute p ON p.attrelid=c.oid AND p.attname='chunk_index' AND NOT p.attisdropped
-JOIN pg_attribute a ON a.attrelid=c.oid AND a.attname='embedding' AND NOT a.attisdropped
-JOIN pg_type t ON t.oid=a.atttypid JOIN pg_namespace en ON en.oid=t.typnamespace
-JOIN pg_depend d ON d.classid='pg_type'::regclass AND d.objid=t.oid AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
-JOIN pg_extension e ON e.oid=d.refobjid AND e.extname='vector'
-WHERE c.oid=to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.QuoteIdentifier(table)}}
-	type tableNames struct{ schema, name, ext, keySchema, keyType, keyBaseType, keyColumnType, colSchema, collation string }
+JOIN pg_catalog.pg_type bt ON bt.oid=b.oid JOIN pg_catalog.pg_namespace bn ON bn.oid=bt.typnamespace
+LEFT JOIN pg_catalog.pg_collation co ON co.oid=k.attcollation LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid=co.collnamespace
+JOIN pg_catalog.pg_attribute p ON p.attrelid=c.oid AND p.attname='chunk_index' AND NOT p.attisdropped
+JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attname='embedding' AND NOT a.attisdropped
+JOIN pg_catalog.pg_type t ON t.oid=a.atttypid JOIN pg_catalog.pg_namespace en ON en.oid=t.typnamespace
+JOIN pg_catalog.pg_depend d ON d.classid='pg_catalog.pg_type'::pg_catalog.regclass AND d.objid=t.oid AND d.refclassid='pg_catalog.pg_extension'::pg_catalog.regclass AND d.deptype='e'
+JOIN pg_catalog.pg_extension e ON e.oid=d.refobjid AND e.extname='vector'
+WHERE c.oid=pg_catalog.to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.QuoteIdentifier(table)}}
+	type tableNames struct{ schema, name, ext, keyBaseType, keyColumnType, colSchema, collation string }
 	names, err := query.All(ctx, q, func(rows *sql.Rows) (tableNames, error) {
 		var name tableNames
-		err := rows.Scan(&name.schema, &name.name, &name.ext, &name.keySchema, &name.keyType, &name.keyBaseType, &name.keyColumnType, &name.colSchema, &name.collation)
+		err := rows.Scan(&name.schema, &name.name, &name.ext, &name.keyBaseType, &name.keyColumnType, &name.colSchema, &name.collation)
 		return name, err
 	})
 	if err != nil {
@@ -75,11 +75,11 @@ WHERE c.oid=to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.Quote
 	if name.collation != "" {
 		collation = " COLLATE " + postgres.QuoteIdentifier(name.colSchema) + "." + postgres.QuoteIdentifier(name.collation)
 	}
-	return &Chunks[K]{table: postgres.QuoteIdentifier(name.schema) + "." + postgres.QuoteIdentifier(name.name), ext: postgres.QuoteIdentifier(name.ext), keyType: postgres.QuoteIdentifier(name.keySchema) + "." + postgres.QuoteIdentifier(name.keyType), keyBaseType: name.keyBaseType, keyColumnType: name.keyColumnType, keyCollation: collation}, nil
+	return &Chunks[K]{table: postgres.QuoteIdentifier(name.schema) + "." + postgres.QuoteIdentifier(name.name), ext: postgres.QuoteIdentifier(name.ext), keyBaseType: name.keyBaseType, keyColumnType: name.keyColumnType, keyCollation: collation}, nil
 }
 
 // ReplaceTx deletes the selected documents' chunks and streams replacements.
-// Roll back tx on error. A nil sequence clears the selected documents.
+// Keys must bind to non-NULL values. Roll back tx on error. A nil sequence clears the selected documents.
 // Callers must serialize replacements for each document through commit.
 func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks iter.Seq2[Chunk[K], error]) (int, error) {
 	selected := make([]any, len(keys))
@@ -91,12 +91,12 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		selected[i] = value
 	}
 	var changed bool
-	query := "SELECT EXISTS (SELECT 1 FROM unnest($1::" + c.keyBaseType + "[]) AS key WHERE key IS DISTINCT FROM key::" + c.keyColumnType + c.keyCollation + ")"
+	query := "SELECT EXISTS (SELECT 1 FROM unnest($1::" + c.keyBaseType + "[]) AS key WHERE key IS NULL OR key IS DISTINCT FROM key::" + c.keyColumnType + c.keyCollation + ")"
 	if err := tx.QueryRowContext(ctx, query, selected).Scan(&changed); err != nil {
 		return 0, fmt.Errorf("check document keys: %w", err)
 	}
 	if changed {
-		return 0, errors.New("pgvector: selected document key changes with column precision")
+		return 0, errors.New("pgvector: selected document key is null or changes with column precision")
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key = ANY($1::"+c.keyBaseType+"[])", selected); err != nil {
 		return 0, fmt.Errorf("delete chunks: %w", err)
@@ -136,7 +136,7 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 			return 0, fmt.Errorf("document key: %w", err)
 		}
 		n := len(args) + 1
-		values = append(values, fmt.Sprintf("($%d::%s,$%d::bigint,$%d::%s.halfvec)", n+1, c.keyType, n+2, n+3, c.ext))
+		values = append(values, fmt.Sprintf("($%d::%s,$%d::bigint,$%d::%s.halfvec)", n+1, c.keyBaseType, n+2, n+3, c.ext))
 		args = append(args, key, chunk.ChunkIndex, literal)
 		count++
 		if len(values) == 200 {
@@ -202,6 +202,7 @@ func restoreHNSW(ctx context.Context, tx *sql.Tx, resultErr error, previousEF, p
 
 // SearchTx returns raw nearest chunks. The caller owns freshness, hydration,
 // exhaustion decisions, and transaction completion. Roll back tx on error.
+// Keep all other queries out of tx from the start of SearchTx until it returns.
 func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vector, limit int) (page ChunkPage[K], resultErr error) {
 	literal, err := chunkVector(query)
 	if err != nil {

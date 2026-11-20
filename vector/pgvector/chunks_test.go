@@ -302,6 +302,51 @@ func TestChunks(t *testing.T) {
 		require.ErrorContains(t, err, "no halfvec embedding")
 	})
 
+	t.Run("attachment uses catalog formatter", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); CREATE FUNCTION format(text, name, name) RETURNS text LANGUAGE sql AS 'SELECT ''wrong''::text'`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"key"}, sequence("key", 1))
+		require.NoError(t, err)
+	})
+
+	t.Run("null selected key", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES (NULL, 0, '[1,0]')`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[sql.NullString](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = chunks.ReplaceTx(ctx, tx, []sql.NullString{{Valid: false}}, nil)
+		require.Error(t, err)
+	})
+
+	t.Run("chunk key rounded by domain", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE DOMAIN seconds AS timestamptz(0); CREATE TABLE chunks (doc_key seconds, chunk_index int, embedding public.halfvec(2))`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[time.Time](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		key := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		_, err = chunks.ReplaceTx(ctx, tx, []time.Time{key}, func(yield func(pgvector.Chunk[time.Time], error) bool) {
+			yield(pgvector.Chunk[time.Time]{Doc: key.Add(100 * time.Millisecond), Vector: vector.Vector{1, 0}}, nil)
+		})
+		require.Error(t, err)
+	})
+
 	t.Run("key equality follows the column", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
