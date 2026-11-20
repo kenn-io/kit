@@ -76,7 +76,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, tx.Commit())
 		var stored string
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT embedding::text FROM "Mixed chunks" WHERE doc_key='replace' AND chunk_index=200`).Scan(&stored))
-		assert.Equal(t, "[2,1]", stored)
+		assert.Equal(t, "[1,0.5]", stored)
 		var count int
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks" WHERE doc_key != 'replace'`).Scan(&count))
 		assert.Equal(t, 1, count)
@@ -108,6 +108,31 @@ func TestChunks(t *testing.T) {
 		assert.Empty(t, page.Hits)
 		assert.Zero(t, page.ScanCap)
 		require.NoError(t, tx.Rollback())
+	})
+
+	t.Run("search without iterative scan", func(t *testing.T) {
+		db, chunks := setupChunks(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `INSERT INTO "Mixed chunks" VALUES ('valid', 0, '[2,1]')`)
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		var available sql.NullString
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT '[1,0]'::public.halfvec IS NOT NULL, current_setting('hnsw.iterative_scan', true)`).Scan(new(bool), &available))
+		if available.Valid {
+			t.Skip("iterative scan is available")
+		}
+		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
+		require.NoError(t, err)
+		require.Len(t, page.Hits, 1)
+		assert.Equal(t, "valid", page.Hits[0].Doc)
+		assert.Equal(t, 10, page.ScanCap)
+		page, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 1200)
+		require.NoError(t, err)
+		require.Len(t, page.Hits, 1)
+		assert.Equal(t, "valid", page.Hits[0].Doc)
+		assert.Equal(t, 1000, page.ScanCap)
 	})
 
 	t.Run("large limit search", func(t *testing.T) {
@@ -220,7 +245,12 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, page.Hits, 1)
 		assert.Equal(t, "valid", page.Hits[0].Doc)
-		_, err = chunks.SearchTx(ctx, tx, vector.Vector{1e-20, 0}, 1)
+		page, err = chunks.SearchTx(ctx, tx, vector.Vector{1e-20, 0}, 1)
+		require.NoError(t, err)
+		require.Len(t, page.Hits, 1)
+		assert.Equal(t, "valid", page.Hits[0].Doc)
+		assert.InDelta(t, 0.8944272, page.Hits[0].Score, 1e-6)
+		_, err = chunks.SearchTx(ctx, tx, vector.Vector{0, 0}, 1)
 		require.ErrorContains(t, err, "zero")
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"valid"}, func(yield func(pgvector.Chunk[string], error) bool) {
 			yield(pgvector.Chunk[string]{Doc: "valid", Vector: vector.Vector{0, 0}}, nil)
@@ -228,6 +258,13 @@ func TestChunks(t *testing.T) {
 		require.ErrorContains(t, err, "zero")
 		_, err = chunks.SearchTx(ctx, tx, vector.Vector{float32(math.Inf(1)), 0}, 1)
 		require.ErrorContains(t, err, "non-finite")
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"tiny"}, func(yield func(pgvector.Chunk[string], error) bool) {
+			yield(pgvector.Chunk[string]{Doc: "tiny", Vector: vector.Vector{1e-20, 0}}, nil)
+		})
+		require.NoError(t, err)
+		var stored string
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT embedding::text FROM "Mixed chunks" WHERE doc_key='tiny'`).Scan(&stored))
+		assert.Equal(t, "[1,0]", stored)
 	})
 
 	t.Run("database key equality and attachment columns", func(t *testing.T) {

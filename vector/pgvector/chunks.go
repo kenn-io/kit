@@ -6,13 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"math"
 	"strings"
 
 	"go.kenn.io/kit/search/postgres"
 	"go.kenn.io/kit/search/sqlquery"
 	"go.kenn.io/kit/vector"
-	"go.kenn.io/kit/vector/internal/vectorliteral"
 )
 
 // Chunks accesses an application-owned table of halfvec chunks.
@@ -101,7 +99,7 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		if err != nil {
 			return 0, fmt.Errorf("read chunks: %w", err)
 		}
-		literal, err := chunkLiteral(chunk.Vector)
+		literal, err := halfvec(chunk.Vector)
 		if err != nil {
 			return 0, err
 		}
@@ -121,25 +119,11 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 	return count, nil
 }
 
-func chunkLiteral(v vector.Vector) (string, error) {
-	var nonzero bool
-	for i, component := range v {
-		if math.IsNaN(float64(component)) || math.IsInf(float64(component), 0) {
-			return "", fmt.Errorf("pgvector: vector component %d is non-finite", i)
-		}
-		nonzero = nonzero || math.Abs(float64(component)) > 1.0/(1<<25)
-	}
-	if !nonzero {
-		return "", errors.New("pgvector: vector is zero at halfvec precision")
-	}
-	return vectorliteral.Format(v), nil
-}
-
 // SearchTx returns raw nearest chunks. The caller owns freshness, hydration,
 // exhaustion decisions, and transaction completion.
 func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vector, limit int) (ChunkPage[K], error) {
 	var page ChunkPage[K]
-	literal, err := chunkLiteral(query)
+	literal, err := halfvec(query)
 	if err != nil {
 		return page, err
 	}
@@ -148,8 +132,9 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	if err := tx.QueryRowContext(ctx, "SELECT $1::"+c.ext+".halfvec IS NOT NULL", literal).Scan(&loaded); err != nil {
 		return page, fmt.Errorf("load pgvector: %w", err)
 	}
-	var previousEF, previousIterative string
-	if err := tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan')`).Scan(&previousEF, &previousIterative); err != nil {
+	var previousEF string
+	var previousIterative sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan', true)`).Scan(&previousEF, &previousIterative); err != nil {
 		return page, fmt.Errorf("read hnsw settings: %w", err)
 	}
 	limit = max(limit, 0)
@@ -159,12 +144,14 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	}
 	page.ScanCap = limit
 	if limit > efSearch {
-		if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
+		if !previousIterative.Valid {
+			page.ScanCap = efSearch
+		} else if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
 			return page, fmt.Errorf("set hnsw.iterative_scan: %w", err)
 		}
 	}
 	distance := fmt.Sprintf("embedding OPERATOR(%s.<=>) $1::%s.halfvec", c.ext, c.ext)
-	q := sqlquery.Query{SQL: fmt.Sprintf("WITH candidates AS MATERIALIZED (SELECT doc_key,chunk_index,%s AS distance FROM %s WHERE embedding IS NOT NULL AND %s.l2_norm(embedding) > 0 ORDER BY %s LIMIT $2) SELECT doc_key,chunk_index,1-distance FROM candidates ORDER BY distance + 0", distance, c.table, c.ext, distance), Args: []any{literal, limit}}
+	q := sqlquery.Query{SQL: fmt.Sprintf("WITH candidates AS MATERIALIZED (SELECT doc_key,chunk_index,%s AS distance FROM %s WHERE embedding IS NOT NULL AND %s.l2_norm(embedding) > 0 ORDER BY %s LIMIT $2) SELECT doc_key,chunk_index,1-distance FROM candidates ORDER BY distance + 0", distance, c.table, c.ext, distance), Args: []any{literal, page.ScanCap}}
 	hits, err := q.All(ctx, tx, func(rows *sql.Rows) (vector.Hit[K], error) {
 		var hit vector.Hit[K]
 		var score float64
@@ -177,8 +164,13 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	if err != nil {
 		return page, fmt.Errorf("search chunks: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.ef_search', $1, true), set_config('hnsw.iterative_scan', $2, true)`, previousEF, previousIterative); err != nil {
-		return page, fmt.Errorf("restore hnsw settings: %w", err)
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.ef_search', $1, true)`, previousEF); err != nil {
+		return page, fmt.Errorf("restore hnsw.ef_search: %w", err)
+	}
+	if limit > efSearch && previousIterative.Valid {
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative.String); err != nil {
+			return page, fmt.Errorf("restore hnsw.iterative_scan: %w", err)
+		}
 	}
 	page.Hits = hits
 	return page, nil
