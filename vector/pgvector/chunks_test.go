@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,6 +63,125 @@ func TestChunks(t *testing.T) {
 			}
 		}
 	}
+
+	t.Run("nil transaction", func(t *testing.T) {
+		_, chunks := setupChunks(t)
+		consumed := false
+		assert.NotPanics(t, func() {
+			_, err := chunks.ReplaceTx(t.Context(), nil, []string{"key"}, func(func(pgvector.Chunk[string], error) bool) { consumed = true })
+			assert.ErrorContains(t, err, "transaction")
+		})
+		assert.False(t, consumed)
+		assert.NotPanics(t, func() {
+			_, err := chunks.SearchTx(t.Context(), nil, vector.Vector{1, 0}, 1)
+			assert.ErrorContains(t, err, "transaction")
+		})
+	})
+
+	t.Run("validation uses catalog unnest", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]'); CREATE TABLE calls (n int); CREATE FUNCTION unnest(text[]) RETURNS SETOF text LANGUAGE plpgsql AS $$ BEGIN INSERT INTO calls VALUES (1); RETURN; END $$`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[sql.NullString](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = chunks.ReplaceTx(ctx, tx, []sql.NullString{{}}, nil)
+		require.Error(t, err)
+		_, err = chunks.ReplaceTx(ctx, tx, []sql.NullString{{String: "key", Valid: true}}, nil)
+		require.NoError(t, err)
+		var calls, rows int
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM calls), (SELECT count(*) FROM chunks)`).Scan(&calls, &rows))
+		assert.Zero(t, calls)
+		assert.Zero(t, rows)
+	})
+
+	t.Run("trigger changes selected document", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); CREATE FUNCTION change_key() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.doc_key := lower(NEW.doc_key); RETURN NEW; END $$; CREATE TRIGGER change_key BEFORE INSERT ON chunks FOR EACH ROW EXECUTE FUNCTION change_key()`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"A", "a"}, sequence("A", 1))
+		require.Error(t, err)
+	})
+
+	t.Run("search excludes missing hit fields", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES (NULL, 0, '[1,0]'), ('missing', NULL, '[1,0]'), ('valid', 2, '[1,1]')`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 1)
+		require.NoError(t, err)
+		require.Len(t, page.Hits, 1)
+		assert.Equal(t, "valid", page.Hits[0].Doc)
+		assert.Equal(t, 2, page.Hits[0].ChunkIndex)
+	})
+
+	t.Run("citext equality after search path change", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public; CREATE TABLE chunks (doc_key public.citext, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('Alpha', 0, '[1,0]')`)
+		require.NoError(t, err)
+		db.SetMaxOpenConns(1)
+		conn, err := db.Conn(ctx)
+		require.NoError(t, err)
+		err = conn.Raw(func(driverConn any) error {
+			pgConn := driverConn.(*stdlib.Conn).Conn()
+			var oid, arrayOID uint32
+			if err := pgConn.QueryRow(ctx, `SELECT oid, typarray FROM pg_type WHERE oid = 'public.citext'::regtype`).Scan(&oid, &arrayOID); err != nil {
+				return err
+			}
+			typ := &pgtype.Type{Name: "citext", OID: oid, Codec: pgtype.TextCodec{}}
+			pgConn.TypeMap().RegisterType(typ)
+			pgConn.TypeMap().RegisterType(&pgtype.Type{Name: "_citext", OID: arrayOID, Codec: &pgtype.ArrayCodec{ElementType: typ}})
+			return nil
+		})
+		require.NoError(t, err)
+		require.NoError(t, conn.Close())
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = tx.ExecContext(ctx, `SET LOCAL search_path = pg_catalog`)
+		require.NoError(t, err)
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"alpha"}, sequence("ALPHA", 1))
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit())
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM chunks`).Scan(&count))
+		assert.Equal(t, 1, count)
+	})
+
+	t.Run("unresolved equality leaves rows intact", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TYPE document_id AS ENUM ('key'); CREATE TABLE chunks (doc_key document_id, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]')`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"key"}, nil)
+		require.ErrorContains(t, err, "equality cannot be resolved")
+		require.NoError(t, tx.Commit())
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM chunks`).Scan(&count))
+		assert.Equal(t, 1, count)
+	})
 	seed := func(t *testing.T, db *sql.DB, chunks *pgvector.Chunks[string], keys ...string) {
 		t.Helper()
 		ctx := t.Context()
@@ -224,7 +344,12 @@ func TestChunks(t *testing.T) {
 		for i := 1; i < len(page.Hits); i++ {
 			assert.GreaterOrEqual(t, page.Hits[i-1].Score, page.Hits[i].Score)
 		}
+		_, err = tx.ExecContext(ctx, `SELECT pg_stat_force_next_flush()`)
+		require.NoError(t, err)
 		require.NoError(t, tx.Commit())
+		var scans int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT pg_stat_get_numscans('chunks_hnsw_idx'::regclass)`).Scan(&scans))
+		assert.Positive(t, scans)
 	})
 
 	t.Run("replace reports stream and vector errors", func(t *testing.T) {
