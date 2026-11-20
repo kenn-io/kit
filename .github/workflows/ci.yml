@@ -205,7 +205,7 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Save Go cache
-        if: matrix.own-go-cache && (github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/pr/windows-cache-restore-runner-temp')) && steps.go-cache.outputs.cache-hit != 'true'
+        if: matrix.own-go-cache && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:
           path: ${{ steps.go-cache-key.outputs.paths }}
