@@ -80,9 +80,10 @@ func TestChunks(t *testing.T) {
 		assert.Equal(t, "[2,1]", stored)
 		keys := make([]string, 201)
 		keys[0] = "replace"
-		for i := 1; i < len(keys); i++ {
+		for i := 1; i < len(keys)-1; i++ {
 			keys[i] = fmt.Sprintf("batch-%d", i)
 		}
+		keys[200] = "covered"
 		tx, err = db.BeginTx(ctx, nil)
 		require.NoError(t, err)
 		_, err = chunks.ReplaceTx(ctx, tx, keys, nil)
@@ -90,51 +91,31 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, tx.Commit())
 		var count int
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks"`).Scan(&count))
-		assert.Equal(t, 2, count)
-	})
-
-	t.Run("stream error", func(t *testing.T) {
-		db, chunks := setupChunks(t)
-		ctx := t.Context()
-		seed(t, db, chunks, "replace")
-		wantErr := errors.New("stream failed")
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
-			for chunk, err := range sequence("replace", 201) {
-				if !yield(chunk, err) {
-					return
-				}
-			}
-			yield(pgvector.Chunk[string]{}, wantErr)
-		})
-		require.ErrorIs(t, err, wantErr)
-		require.NoError(t, tx.Rollback())
-		var count int
-		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks" WHERE doc_key='replace'`).Scan(&count))
 		assert.Equal(t, 1, count)
+		var remaining string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT doc_key FROM "Mixed chunks"`).Scan(&remaining))
+		assert.Equal(t, "other", remaining)
 	})
 
 	t.Run("search", func(t *testing.T) {
 		db, chunks := setupChunks(t)
 		ctx := t.Context()
-		seed(t, db, chunks, "covered", "other")
-		_, err := db.ExecContext(ctx, `UPDATE "Mixed chunks" SET embedding='[2,1.001]' WHERE doc_key='other'`)
+		_, err := db.ExecContext(ctx, `INSERT INTO "Mixed chunks" VALUES ('covered', 0, '[2,1.001]'), ('other', 0, '[2,1]')`)
 		require.NoError(t, err)
 		db.SetMaxIdleConns(0)
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		require.NoError(t, err)
-		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
+		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 60)
 		require.NoError(t, err)
 		require.Len(t, page.Hits, 2)
-		assert.Equal(t, []string{"covered", "other"}, []string{page.Hits[0].Doc, page.Hits[1].Doc})
+		assert.Equal(t, []string{"other", "covered"}, []string{page.Hits[0].Doc, page.Hits[1].Doc})
 		assert.InDelta(t, 0.8944272, page.Hits[0].Score, 1e-6)
 		assert.InDelta(t, 0.8942525, page.Hits[1].Score, 1e-6)
 		assert.Nil(t, page.Hits[0].Revision)
-		assert.Equal(t, 10, page.ScanCap)
+		assert.Equal(t, 60, page.ScanCap)
 		var efSearch string
 		require.NoError(t, tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search')`).Scan(&efSearch))
-		assert.Equal(t, "40", efSearch)
+		assert.Equal(t, "60", efSearch)
 		page, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, -1)
 		require.NoError(t, err)
 		assert.Empty(t, page.Hits)
@@ -173,10 +154,10 @@ func TestChunks(t *testing.T) {
 		db, chunks := setupChunks(t)
 		ctx := t.Context()
 		_, err := pgvector.AttachChunks[string](ctx, db, "Mixed chunks", 3)
-		require.Error(t, err)
+		require.ErrorContains(t, err, "no extension-owned halfvec embedding")
+		seed(t, db, chunks, "replace")
 		tx, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
 		_, err = chunks.SearchTx(ctx, tx, vector.Vector{1}, 1)
 		require.ErrorContains(t, err, "vector dimension")
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
@@ -187,17 +168,24 @@ func TestChunks(t *testing.T) {
 			yield(pgvector.Chunk[string]{Doc: "invalid-doc", ChunkIndex: 7, Vector: vector.Vector{float32(math.Inf(1)), 0}}, nil)
 		})
 		require.ErrorContains(t, err, "non-finite")
-	})
-
-	t.Run("streamed document outside keys", func(t *testing.T) {
-		db, chunks := setupChunks(t)
-		ctx := t.Context()
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"selected"}, func(yield func(pgvector.Chunk[string], error) bool) {
 			yield(pgvector.Chunk[string]{Doc: "outside", Vector: vector.Vector{1, 0}}, nil)
 		})
 		require.ErrorContains(t, err, "outside")
+		wantErr := errors.New("stream failed")
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
+			for chunk, err := range sequence("replace", 201) {
+				if !yield(chunk, err) {
+					return
+				}
+			}
+			yield(pgvector.Chunk[string]{}, wantErr)
+		})
+		require.ErrorIs(t, err, wantErr)
+		require.NoError(t, tx.Rollback())
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks" WHERE doc_key='replace'`).Scan(&count))
+		assert.Equal(t, 1, count)
 	})
+
 }
