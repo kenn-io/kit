@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"strings"
 	"time"
 
 	"go.kenn.io/kit/search/postgres"
 	"go.kenn.io/kit/search/sqlquery"
 	"go.kenn.io/kit/vector"
+	"go.kenn.io/kit/vector/internal/vectorliteral"
 )
 
 // Chunks accesses an application-owned table of halfvec chunks.
@@ -120,7 +122,7 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		if err != nil {
 			return 0, fmt.Errorf("read chunks: %w", err)
 		}
-		literal, err := halfvec(chunk.Vector)
+		literal, err := chunkVector(chunk.Vector)
 		if err != nil {
 			return 0, fmt.Errorf("document %v chunk %d: %w", chunk.Doc, chunk.ChunkIndex, err)
 		}
@@ -152,10 +154,49 @@ func chunkKey(key any) (driver.Value, error) {
 	return value, err
 }
 
+// chunkVector formats the original components so halfvec rounds them exactly
+// as an existing index does. It rejects vectors that round to zero.
+func chunkVector(v vector.Vector) (string, error) {
+	var nonzero bool
+	for i, component := range v {
+		value := float64(component)
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return "", fmt.Errorf("pgvector: vector component %d is non-finite", i)
+		}
+		// The smallest halfvec magnitude is 2^-24; half of it rounds to zero.
+		nonzero = nonzero || math.Abs(value) > 0x1p-25
+	}
+	if !nonzero {
+		return "", errors.New("pgvector: vector has zero norm")
+	}
+	return vectorliteral.Format(v), nil
+}
+
+// restoreHNSW undoes SearchTx's settings. It skips PostgreSQL errors, which
+// abort tx, and still restores after Go-side errors such as a failed scan.
+func restoreHNSW(ctx context.Context, tx *sql.Tx, resultErr error, previousEF, previousIterative string, iterative bool) error {
+	var server interface{ SQLState() string }
+	if errors.As(resultErr, &server) {
+		return resultErr
+	}
+	// Restore settings even if the search context expired while tx remains live.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := tx.ExecContext(cleanupCtx, `SELECT set_config('hnsw.ef_search', $1, true)`, previousEF); err != nil {
+		resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.ef_search: %w", err))
+	}
+	if iterative {
+		if _, err := tx.ExecContext(cleanupCtx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.iterative_scan: %w", err))
+		}
+	}
+	return resultErr
+}
+
 // SearchTx returns raw nearest chunks. The caller owns freshness, hydration,
 // exhaustion decisions, and transaction completion. Roll back tx on error.
 func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vector, limit int) (page ChunkPage[K], resultErr error) {
-	literal, err := halfvec(query)
+	literal, err := chunkVector(query)
 	if err != nil {
 		return page, err
 	}
@@ -173,19 +214,7 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
 		return page, fmt.Errorf("set hnsw.ef_search: %w", err)
 	}
-	defer func() {
-		// Restore settings even if the search context expired while tx remains live.
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if _, err := tx.ExecContext(cleanupCtx, `SELECT set_config('hnsw.ef_search', $1, true)`, previousEF); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.ef_search: %w", err))
-		}
-		if limit > efSearch {
-			if _, err := tx.ExecContext(cleanupCtx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative); err != nil {
-				resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.iterative_scan: %w", err))
-			}
-		}
-	}()
+	defer func() { resultErr = restoreHNSW(ctx, tx, resultErr, previousEF, previousIterative, limit > efSearch) }()
 	page.ScanCap = limit
 	if limit > efSearch {
 		if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
@@ -193,7 +222,7 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 		}
 	}
 	distance := fmt.Sprintf("embedding OPERATOR(%s.<=>) $1::%s.halfvec", c.ext, c.ext)
-	q := sqlquery.Query{SQL: fmt.Sprintf("WITH candidates AS MATERIALIZED (SELECT doc_key,chunk_index,%s AS distance FROM %s WHERE embedding IS NOT NULL AND %s.l2_norm(embedding) > 0 ORDER BY %s LIMIT $2) SELECT doc_key,chunk_index,1-distance FROM candidates ORDER BY distance + 0", distance, c.table, c.ext, distance), Args: []any{literal, page.ScanCap}}
+	q := sqlquery.Query{SQL: fmt.Sprintf("WITH candidates AS MATERIALIZED (SELECT doc_key,chunk_index,%s AS distance FROM %s WHERE embedding IS NOT NULL AND %s.l2_norm(embedding) > 0 ORDER BY %s LIMIT $2) SELECT doc_key,chunk_index,1-distance FROM candidates ORDER BY distance + 0, doc_key, chunk_index", distance, c.table, c.ext, distance), Args: []any{literal, page.ScanCap}}
 	hits, err := q.All(ctx, tx, func(rows *sql.Rows) (vector.Hit[K], error) {
 		var hit vector.Hit[K]
 		var score float64
