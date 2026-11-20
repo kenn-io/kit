@@ -7,10 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/vector"
@@ -81,7 +78,7 @@ func TestChunks(t *testing.T) {
 	t.Run("trigger changes selected document", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); CREATE FUNCTION change_key() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.doc_key := lower(NEW.doc_key); RETURN NEW; END $$; CREATE TRIGGER change_key BEFORE INSERT ON chunks FOR EACH ROW EXECUTE FUNCTION change_key()`)
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2)); CREATE FUNCTION change_key() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.doc_key := lower(NEW.doc_key); RETURN NEW; END $$; CREATE TRIGGER change_key BEFORE INSERT ON chunks FOR EACH ROW EXECUTE FUNCTION change_key()`)
 		require.NoError(t, err)
 		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
 		require.NoError(t, err)
@@ -95,7 +92,7 @@ func TestChunks(t *testing.T) {
 	t.Run("search excludes unusable rows", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES (NULL, 0, '[1,0]'), ('missing', NULL, '[1,0]'), ('null', 0, NULL), ('zero', 0, '[0,0]'), ('valid', 2, '[1,1]'), ('valid2', 3, '[0,1]')`)
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('null', 0, NULL), ('zero', 0, '[0,0]'), ('valid', 2, '[1,1]'), ('valid2', 3, '[0,1]')`)
 		require.NoError(t, err)
 		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
 		require.NoError(t, err)
@@ -113,23 +110,18 @@ func TestChunks(t *testing.T) {
 		assert.Equal(t, []string{"valid", "valid2"}, []string{page.Hits[0].Doc, page.Hits[1].Doc})
 	})
 
-	t.Run("unresolved equality leaves rows intact", func(t *testing.T) {
+	t.Run("unsupported key leaves rows intact", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TYPE document_id AS ENUM ('key'); CREATE TABLE chunks (doc_key document_id, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]')`)
+		_, err := db.ExecContext(ctx, `CREATE TYPE document_id AS ENUM ('key'); CREATE TABLE chunks (doc_key document_id NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]')`)
 		require.NoError(t, err)
-		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
-		require.NoError(t, err)
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		_, err = chunks.ReplaceTx(ctx, tx, []string{"key"}, nil)
-		require.ErrorContains(t, err, "equality cannot be resolved")
-		require.NoError(t, tx.Commit())
+		_, err = pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.ErrorContains(t, err, "doc_key")
 		var count int
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM chunks`).Scan(&count))
 		assert.Equal(t, 1, count)
 	})
+
 	seed := func(t *testing.T, db *sql.DB, chunks *pgvector.Chunks[string], keys ...string) {
 		t.Helper()
 		ctx := t.Context()
@@ -261,7 +253,7 @@ func TestChunks(t *testing.T) {
 	t.Run("large limit search", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index integer, embedding public.halfvec(3))`)
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec(3))`)
 		require.NoError(t, err)
 		_, err = db.ExecContext(ctx, `INSERT INTO chunks SELECT i::text, 0, format('[%s,%s,%s]', sin(i*0.91), cos(i*1.17), sin(i*0.23))::public.halfvec FROM generate_series(1,1600) i`)
 		require.NoError(t, err)
@@ -330,26 +322,60 @@ func TestChunks(t *testing.T) {
 	t.Run("attachment columns", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE missing_position (doc_key text, embedding public.halfvec(2)); CREATE TABLE missing_key (chunk_index int, embedding public.halfvec(2))`)
+		_, err := db.ExecContext(ctx, `CREATE TABLE missing_position (doc_key text NOT NULL, embedding public.halfvec(2)); CREATE TABLE missing_key (chunk_index int NOT NULL, embedding public.halfvec(2))`)
 		require.NoError(t, err)
 		_, err = pgvector.AttachChunks[string](ctx, db, "missing_position")
-		require.ErrorContains(t, err, "no halfvec embedding")
+		require.ErrorContains(t, err, "fixed-dimension halfvec")
 		tx, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()
 		schema := uniqueName(t, "fake_halfvec")
-		_, err = tx.ExecContext(ctx, `CREATE SCHEMA `+schema+`; CREATE DOMAIN `+schema+`.halfvec AS text; CREATE TABLE fake_chunks (doc_key text, chunk_index int, embedding `+schema+`.halfvec)`)
+		_, err = tx.ExecContext(ctx, `CREATE SCHEMA `+schema+`; CREATE DOMAIN `+schema+`.halfvec AS text; CREATE TABLE fake_chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding `+schema+`.halfvec)`)
 		require.NoError(t, err)
 		_, err = pgvector.AttachChunks[string](ctx, tx, "fake_chunks")
-		require.ErrorContains(t, err, "no halfvec embedding")
+		require.ErrorContains(t, err, "fixed-dimension halfvec")
 		_, err = pgvector.AttachChunks[string](ctx, db, "missing_key")
-		require.ErrorContains(t, err, "no halfvec embedding")
+		require.ErrorContains(t, err, "fixed-dimension halfvec")
+	})
+
+	t.Run("attachment requires supported columns", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, columns string
+			valid         bool
+		}{
+			{name: "text integer", columns: `doc_key text NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec(2)`, valid: true},
+			{name: "text bigint", columns: `doc_key text NOT NULL, chunk_index bigint NOT NULL, embedding public.halfvec(2)`, valid: true},
+			{name: "bigint integer", columns: `doc_key bigint NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec(2)`, valid: true},
+			{name: "bigint bigint", columns: `doc_key bigint NOT NULL, chunk_index bigint NOT NULL, embedding public.halfvec(2)`, valid: true},
+			{name: "uuid key", columns: `doc_key uuid NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec(2)`},
+			{name: "varchar key", columns: `doc_key varchar(8) NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec(2)`},
+			{name: "domain key", columns: `doc_key docid NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec(2)`},
+			{name: "nullable key", columns: `doc_key text, chunk_index integer NOT NULL, embedding public.halfvec(2)`},
+			{name: "nullable position", columns: `doc_key text NOT NULL, chunk_index integer, embedding public.halfvec(2)`},
+			{name: "text position", columns: `doc_key text NOT NULL, chunk_index text NOT NULL, embedding public.halfvec(2)`},
+			{name: "smallint position", columns: `doc_key text NOT NULL, chunk_index smallint NOT NULL, embedding public.halfvec(2)`},
+			{name: "domain position", columns: `doc_key text NOT NULL, chunk_index position_type NOT NULL, embedding public.halfvec(2)`},
+			{name: "variable dimensions", columns: `doc_key text NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				db := setupDB(t)
+				ctx := t.Context()
+				_, err := db.ExecContext(ctx, `CREATE DOMAIN docid AS text; CREATE DOMAIN position_type AS integer; CREATE TABLE chunks (`+tc.columns+`)`)
+				require.NoError(t, err)
+				_, err = pgvector.AttachChunks[any](ctx, db, "chunks")
+				if tc.valid {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+			})
+		}
 	})
 
 	t.Run("null selected key", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES (NULL, 0, '[1,0]')`)
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2))`)
 		require.NoError(t, err)
 		chunks, err := pgvector.AttachChunks[sql.NullString](ctx, db, "chunks")
 		require.NoError(t, err)
@@ -364,7 +390,7 @@ func TestChunks(t *testing.T) {
 		t.Run("catalog functions", func(t *testing.T) {
 			db := setupDB(t)
 			ctx := t.Context()
-			_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]'); CREATE TABLE calls (n int); CREATE FUNCTION unnest(text[]) RETURNS SETOF text LANGUAGE plpgsql AS $$ BEGIN INSERT INTO calls VALUES (1); RETURN; END $$; CREATE FUNCTION format(text, name, name) RETURNS text LANGUAGE sql AS 'SELECT ''wrong''::text'`)
+			_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]'); CREATE TABLE calls (n int); CREATE FUNCTION unnest(text[]) RETURNS SETOF text LANGUAGE plpgsql AS $$ BEGIN INSERT INTO calls VALUES (1); RETURN; END $$; CREATE FUNCTION format(text, name, name) RETURNS text LANGUAGE sql AS 'SELECT ''wrong''::text'`)
 			require.NoError(t, err)
 			tx, err := db.BeginTx(ctx, nil)
 			require.NoError(t, err)
@@ -387,7 +413,7 @@ func TestChunks(t *testing.T) {
 			tx, err := db.BeginTx(ctx, nil)
 			require.NoError(t, err)
 			defer func() { _ = tx.Rollback() }()
-			_, err = tx.ExecContext(ctx, `CREATE TEMP TABLE "Mixed chunks" (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO "Mixed chunks" VALUES ('shadow',0,'[1,0]'); SET LOCAL search_path=pg_temp`)
+			_, err = tx.ExecContext(ctx, `CREATE TEMP TABLE "Mixed chunks" (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2)); INSERT INTO "Mixed chunks" VALUES ('shadow',0,'[1,0]'); SET LOCAL search_path=pg_temp`)
 			require.NoError(t, err)
 			page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
 			require.NoError(t, err)
@@ -399,59 +425,30 @@ func TestChunks(t *testing.T) {
 			require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks"`).Scan(&shadowCount))
 			assert.Equal(t, 1, shadowCount)
 		})
-		t.Run("clear with changed search path", func(t *testing.T) {
-			db := setupDB(t)
-			ctx := t.Context()
-			otherSchema := uniqueName(t, "other")
-			_, err := db.ExecContext(ctx, `CREATE SCHEMA `+otherSchema)
-			require.NoError(t, err)
-			t.Cleanup(func() {
-				// Cleanup runs after the test context is canceled.
-				_, err := db.ExecContext(context.WithoutCancel(ctx), `DROP SCHEMA `+otherSchema+` CASCADE`)
-				assert.NoError(t, err)
-			})
-			_, err = db.ExecContext(ctx, `CREATE DOMAIN doc_key_type AS text`)
-			require.NoError(t, err)
-			_, err = db.ExecContext(ctx, `CREATE DOMAIN `+otherSchema+`.doc_key_type AS integer`)
-			require.NoError(t, err)
-			_, err = db.ExecContext(ctx, `CREATE TABLE domain_chunks (doc_key doc_key_type, chunk_index int, embedding public.halfvec(2))`)
-			require.NoError(t, err)
-			_, err = db.ExecContext(ctx, `INSERT INTO domain_chunks VALUES ('alpha', 0, '[1,0]')`)
-			require.NoError(t, err)
-			chunks, err := pgvector.AttachChunks[string](ctx, db, "domain_chunks")
-			require.NoError(t, err)
-			tx, err := db.BeginTx(ctx, nil)
-			require.NoError(t, err)
-			defer func() { _ = tx.Rollback() }()
-			_, err = tx.ExecContext(ctx, `SET LOCAL search_path = `+otherSchema+`, public`)
-			require.NoError(t, err)
-			_, err = chunks.ReplaceTx(ctx, tx, []string{"alpha"}, nil)
-			require.NoError(t, err)
-			require.NoError(t, tx.Commit())
-			var count int
-			require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM domain_chunks`).Scan(&count))
-			assert.Zero(t, count)
-		})
 		t.Run("key equality follows the column", func(t *testing.T) {
 			db := setupDB(t)
 			ctx := t.Context()
-			t.Run("uuid", func(t *testing.T) {
-				_, err := db.ExecContext(ctx, `CREATE TABLE uuid_chunks (doc_key uuid, chunk_index int, embedding public.halfvec(2))`)
+			t.Run("bigint", func(t *testing.T) {
+				_, err := db.ExecContext(ctx, `CREATE TABLE bigint_chunks (doc_key bigint NOT NULL, chunk_index bigint NOT NULL, embedding public.halfvec(2))`)
 				require.NoError(t, err)
-				chunks, err := pgvector.AttachChunks[string](ctx, db, "uuid_chunks")
+				chunks, err := pgvector.AttachChunks[int64](ctx, db, "bigint_chunks")
 				require.NoError(t, err)
 				tx, err := db.BeginTx(ctx, nil)
 				require.NoError(t, err)
 				defer func() { _ = tx.Rollback() }()
-				n, err := chunks.ReplaceTx(ctx, tx, []string{"ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB"}, func(yield func(pgvector.Chunk[string], error) bool) {
-					yield(pgvector.Chunk[string]{Doc: "abcdefab-cdef-abcd-efab-cdefabcdefab", Vector: vector.Vector{1, 0}}, nil)
+				n, err := chunks.ReplaceTx(ctx, tx, []int64{12}, func(yield func(pgvector.Chunk[int64], error) bool) {
+					yield(pgvector.Chunk[int64]{Doc: 12, ChunkIndex: 7, Vector: vector.Vector{1, 0}}, nil)
 				})
 				require.NoError(t, err)
 				assert.Equal(t, 1, n)
-				require.NoError(t, tx.Rollback())
+				page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 1)
+				require.NoError(t, err)
+				require.Len(t, page.Hits, 1)
+				assert.Equal(t, int64(12), page.Hits[0].Doc)
+				assert.Equal(t, 7, page.Hits[0].ChunkIndex)
 			})
 			t.Run("collation", func(t *testing.T) {
-				_, err := db.ExecContext(ctx, `CREATE COLLATION case_insensitive (provider = icu, locale = 'und-u-ks-level2', deterministic = false); CREATE TABLE collated_chunks (doc_key text COLLATE case_insensitive, chunk_index int, embedding public.halfvec(2))`)
+				_, err := db.ExecContext(ctx, `CREATE COLLATION case_insensitive (provider = icu, locale = 'und-u-ks-level2', deterministic = false); CREATE TABLE collated_chunks (doc_key text COLLATE case_insensitive NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2))`)
 				require.NoError(t, err)
 				chunks, err := pgvector.AttachChunks[string](ctx, db, "collated_chunks")
 				require.NoError(t, err)
@@ -465,79 +462,25 @@ func TestChunks(t *testing.T) {
 			})
 
 			t.Run("citext", func(t *testing.T) {
-				db := setupDB(t)
-				ctx := t.Context()
-				_, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public; CREATE TABLE chunks (doc_key public.citext, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('Alpha', 0, '[1,0]')`)
+				_, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public; CREATE TABLE chunks (doc_key public.citext NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2))`)
 				require.NoError(t, err)
-				db.SetMaxOpenConns(1)
-				conn, err := db.Conn(ctx)
-				require.NoError(t, err)
-				err = conn.Raw(func(driverConn any) error {
-					pgConn := driverConn.(*stdlib.Conn).Conn()
-					var oid, arrayOID uint32
-					if err := pgConn.QueryRow(ctx, `SELECT oid, typarray FROM pg_type WHERE oid = 'public.citext'::regtype`).Scan(&oid, &arrayOID); err != nil {
-						return err
-					}
-					typ := &pgtype.Type{Name: "citext", OID: oid, Codec: pgtype.TextCodec{}}
-					pgConn.TypeMap().RegisterType(typ)
-					pgConn.TypeMap().RegisterType(&pgtype.Type{Name: "_citext", OID: arrayOID, Codec: &pgtype.ArrayCodec{ElementType: typ}})
-					return nil
-				})
-				require.NoError(t, err)
-				require.NoError(t, conn.Close())
-				chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
-				require.NoError(t, err)
-				tx, err := db.BeginTx(ctx, nil)
-				require.NoError(t, err)
-				defer func() { _ = tx.Rollback() }()
-				_, err = tx.ExecContext(ctx, `SET LOCAL search_path = pg_catalog`)
-				require.NoError(t, err)
-				_, err = chunks.ReplaceTx(ctx, tx, []string{"alpha"}, sequence("ALPHA", 1))
-				require.NoError(t, err)
-				require.NoError(t, tx.Commit())
-				var count int
-				require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM chunks`).Scan(&count))
-				assert.Equal(t, 1, count)
+				_, err = pgvector.AttachChunks[string](ctx, db, "chunks")
+				require.ErrorContains(t, err, "doc_key")
 			})
 		})
 	})
 
-	t.Run("rounded timestamp keys", func(t *testing.T) {
-		for _, tc := range []struct {
-			name, ddl string
-		}{
-			{name: "column", ddl: `CREATE TABLE timed_chunks (doc_key timestamptz(0), chunk_index int, embedding public.halfvec(2))`},
-			{name: "domain", ddl: `CREATE DOMAIN seconds AS timestamptz(0); CREATE TABLE timed_chunks (doc_key seconds, chunk_index int, embedding public.halfvec(2))`},
+	t.Run("timestamp keys are unsupported", func(t *testing.T) {
+		for _, tc := range []struct{ name, ddl string }{
+			{name: "column", ddl: `CREATE TABLE timed_chunks (doc_key timestamptz(0) NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2))`},
+			{name: "domain", ddl: `CREATE DOMAIN seconds AS timestamptz(0); CREATE TABLE timed_chunks (doc_key seconds NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2))`},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				db := setupDB(t)
-				ctx := t.Context()
-				_, err := db.ExecContext(ctx, tc.ddl)
+				_, err := db.ExecContext(t.Context(), tc.ddl)
 				require.NoError(t, err)
-				key := time.Date(2026, 1, 1, 0, 0, 0, 100000000, time.UTC)
-				_, err = db.ExecContext(ctx, `INSERT INTO timed_chunks VALUES ($1, 0, '[1,0]')`, key)
-				require.NoError(t, err)
-				chunks, err := pgvector.AttachChunks[time.Time](ctx, db, "timed_chunks")
-				require.NoError(t, err)
-				tx, err := db.BeginTx(ctx, nil)
-				require.NoError(t, err)
-				defer func() { _ = tx.Rollback() }()
-				_, err = chunks.ReplaceTx(ctx, tx, []time.Time{key}, nil)
-				require.ErrorContains(t, err, "column precision")
-				require.NoError(t, tx.Commit())
-				var count int
-				require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM timed_chunks`).Scan(&count))
-				assert.Equal(t, 1, count)
-				if tc.name == "domain" {
-					tx, err = db.BeginTx(ctx, nil)
-					require.NoError(t, err)
-					defer func() { _ = tx.Rollback() }()
-					_, err = chunks.ReplaceTx(ctx, tx, []time.Time{key.Truncate(time.Second)}, nil)
-					require.NoError(t, err)
-					require.NoError(t, tx.Commit())
-					require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM timed_chunks`).Scan(&count))
-					assert.Zero(t, count)
-				}
+				_, err = pgvector.AttachChunks[any](t.Context(), db, "timed_chunks")
+				require.ErrorContains(t, err, "doc_key")
 			})
 		}
 	})
@@ -545,7 +488,7 @@ func TestChunks(t *testing.T) {
 	t.Run("selected keys are stable during streaming", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE binary_keys (doc_key bytea, chunk_index bigint, embedding public.halfvec(2))`)
+		_, err := db.ExecContext(ctx, `CREATE TABLE binary_keys (doc_key text NOT NULL, chunk_index bigint NOT NULL, embedding public.halfvec(2))`)
 		require.NoError(t, err)
 		chunks, err := pgvector.AttachChunks[any](ctx, db, "binary_keys")
 		require.NoError(t, err)
@@ -602,7 +545,7 @@ func TestChunks(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				db := setupDB(t)
 				ctx := t.Context()
-				_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]')`)
+				_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]')`)
 				require.NoError(t, err)
 				chunks, err := pgvector.AttachChunks[cancelingChunkKey](ctx, db, "chunks")
 				require.NoError(t, err)

@@ -37,7 +37,10 @@ type ChunkPage[K comparable] struct {
 	ScanCap int
 }
 
-// AttachChunks resolves a table on the queryer's search path without changing it.
+// AttachChunks resolves a table on the queryer's search path. Callers must use
+// a trusted search path when attaching and using Chunks.
+// The table must have non-null text or bigint doc_key and non-null integer or
+// bigint chunk_index columns, and a fixed-dimension halfvec embedding column.
 // Keys must be supported by database/sql for both binding and scanning.
 func AttachChunks[K comparable](ctx context.Context, q sqlquery.Queryer, table string) (*Chunks[K], error) {
 	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname, bn.nspname, pg_catalog.format('%I.%I', bn.nspname, bt.typname),
@@ -59,7 +62,9 @@ JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attname='embedding' AND
 JOIN pg_catalog.pg_type t ON t.oid=a.atttypid JOIN pg_catalog.pg_namespace en ON en.oid=t.typnamespace
 JOIN pg_catalog.pg_depend d ON d.classid='pg_catalog.pg_type'::pg_catalog.regclass AND d.objid=t.oid AND d.refclassid='pg_catalog.pg_extension'::pg_catalog.regclass AND d.deptype='e'
 JOIN pg_catalog.pg_extension e ON e.oid=d.refobjid AND e.extname='vector'
-WHERE c.oid=pg_catalog.to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.QuoteIdentifier(table)}}
+WHERE c.oid=pg_catalog.to_regclass($1) AND t.typname='halfvec' AND a.atttypmod > 0
+AND k.attnotnull AND k.atttypid IN ('pg_catalog.text'::pg_catalog.regtype, 'pg_catalog.int8'::pg_catalog.regtype)
+AND p.attnotnull AND p.atttypid IN ('pg_catalog.int4'::pg_catalog.regtype, 'pg_catalog.int8'::pg_catalog.regtype)`, Args: []any{postgres.QuoteIdentifier(table)}}
 	type tableNames struct {
 		schema, name, ext, keySchema, keyBaseType, keyColumnType, colSchema, collation string
 		hasEquality                                                                    bool
@@ -73,7 +78,7 @@ WHERE c.oid=pg_catalog.to_regclass($1) AND t.typname='halfvec'`, Args: []any{pos
 		return nil, fmt.Errorf("resolve chunk table: %w", err)
 	}
 	if len(names) == 0 {
-		return nil, fmt.Errorf("pgvector: table %q has no halfvec embedding", table)
+		return nil, fmt.Errorf("pgvector: table %q requires non-null text or bigint doc_key, non-null integer or bigint chunk_index, and fixed-dimension halfvec embedding", table)
 	}
 	name := names[0]
 	var collation string
@@ -89,6 +94,7 @@ WHERE c.oid=pg_catalog.to_regclass($1) AND t.typname='halfvec'`, Args: []any{pos
 
 // ReplaceTx deletes the selected documents' chunks and streams replacements.
 // Keys must bind to non-NULL values and have an equality operator in their base type schema.
+// Each vector must have the table's fixed dimension.
 // Roll back tx on error. A nil sequence clears the selected documents.
 // Callers must serialize replacements for each document through commit.
 func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks iter.Seq2[Chunk[K], error]) (int, error) {
@@ -246,6 +252,8 @@ func restoreHNSW(ctx context.Context, tx *sql.Tx, resultErr error, previousEF, p
 
 // SearchTx returns raw nearest chunks. The caller owns freshness, hydration,
 // exhaustion decisions, and transaction completion. Roll back tx on error.
+// The query vector must have the table's fixed dimension. The caller owns tx's
+// settings; SearchTx temporarily changes and restores its HNSW settings.
 // Keep all other queries out of tx from the start of SearchTx until it returns.
 func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vector, limit int) (page ChunkPage[K], resultErr error) {
 	if tx == nil {
