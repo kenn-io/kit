@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/vector"
@@ -20,6 +23,19 @@ var (
 )
 
 type cancelingChunkKey string
+
+type chunkKeyTraffic struct{ values int }
+
+func (c *chunkKeyTraffic) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	for _, arg := range data.Args {
+		if keys, ok := arg.([]any); ok {
+			c.values += len(keys)
+		}
+	}
+	return ctx
+}
+
+func (*chunkKeyTraffic) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func (k *cancelingChunkKey) Scan(value any) error {
 	switch value := value.(type) {
@@ -87,6 +103,71 @@ func TestChunks(t *testing.T) {
 		defer func() { _ = tx.Rollback() }()
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"A", "a"}, sequence("A", 1))
 		require.ErrorContains(t, err, "outside the selected keys")
+	})
+
+	t.Run("trigger skips delete", func(t *testing.T) {
+		for _, replace := range []bool{false, true} {
+			t.Run(fmt.Sprint(replace), func(t *testing.T) {
+				db, chunks := setupChunks(t)
+				ctx := t.Context()
+				_, err := db.ExecContext(ctx, `INSERT INTO "Mixed chunks" VALUES ('key', 0, '[1,0]'); CREATE FUNCTION skip_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_delete BEFORE DELETE ON "Mixed chunks" FOR EACH ROW EXECUTE FUNCTION skip_delete()`)
+				require.NoError(t, err)
+				tx, err := db.BeginTx(ctx, nil)
+				require.NoError(t, err)
+				defer func() { _ = tx.Rollback() }()
+				var replacements iter.Seq2[pgvector.Chunk[string], error]
+				consumed := false
+				if replace {
+					replacements = func(yield func(pgvector.Chunk[string], error) bool) {
+						consumed = true
+						yield(pgvector.Chunk[string]{Doc: "key", ChunkIndex: 1, Vector: vector.Vector{0, 1}}, nil)
+					}
+				}
+				_, err = chunks.ReplaceTx(ctx, tx, []string{"key"}, replacements)
+				require.ErrorContains(t, err, "remain after deletion")
+				assert.False(t, consumed)
+				page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
+				require.NoError(t, err)
+				require.Len(t, page.Hits, 1)
+				assert.Equal(t, 0, page.Hits[0].ChunkIndex)
+			})
+		}
+	})
+
+	t.Run("many documents keep key traffic bounded", func(t *testing.T) {
+		db, _ := setupChunks(t)
+		ctx := t.Context()
+		var schema string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&schema))
+		config, err := pgx.ParseConfig(os.Getenv("KIT_POSTGRES_TEST_DSN"))
+		require.NoError(t, err)
+		config.RuntimeParams["search_path"] = schema
+		traffic := &chunkKeyTraffic{}
+		config.Tracer = traffic
+		tracedDB := stdlib.OpenDB(*config)
+		t.Cleanup(func() { assert.NoError(t, tracedDB.Close()) })
+		chunks, err := pgvector.AttachChunks[string](ctx, tracedDB, "Mixed chunks")
+		require.NoError(t, err)
+		keys := make([]string, 10_000)
+		for i := range keys {
+			keys[i] = fmt.Sprint(i)
+		}
+		tx, err := tracedDB.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		n, err := chunks.ReplaceTx(ctx, tx, keys, func(yield func(pgvector.Chunk[string], error) bool) {
+			for _, key := range keys {
+				if !yield(pgvector.Chunk[string]{Doc: key, Vector: vector.Vector{1, 0}}, nil) {
+					return
+				}
+			}
+		})
+		require.NoError(t, err)
+		assert.Equal(t, len(keys), n)
+		assert.LessOrEqual(t, traffic.values, 8*len(keys), "selected-key array traffic must stay proportional to the document count")
+		var rows int
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks"`).Scan(&rows))
+		assert.Equal(t, len(keys), rows)
 	})
 
 	t.Run("search excludes unusable rows", func(t *testing.T) {
@@ -283,6 +364,44 @@ func TestChunks(t *testing.T) {
 		assert.Positive(t, scans)
 	})
 
+	t.Run("small limit after indexed replacements", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index integer NOT NULL, embedding public.halfvec(2)) WITH (autovacuum_enabled=false); INSERT INTO chunks SELECT i::text, 0, format('[1,%s]', i / 1000.0)::public.halfvec FROM generate_series(1,400) i; CREATE INDEX chunks_hnsw_idx ON chunks USING hnsw (embedding public.halfvec_cosine_ops)`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = tx.ExecContext(ctx, `SET LOCAL enable_seqscan=off`)
+		require.NoError(t, err)
+		keys := make([]string, 200)
+		for i := range keys {
+			keys[i] = fmt.Sprint(i + 1)
+		}
+		_, err = chunks.ReplaceTx(ctx, tx, keys, func(yield func(pgvector.Chunk[string], error) bool) {
+			for _, key := range keys {
+				if !yield(pgvector.Chunk[string]{Doc: key, Vector: vector.Vector{0, 1}}, nil) {
+					return
+				}
+			}
+		})
+		require.NoError(t, err)
+		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
+		require.NoError(t, err)
+		require.Len(t, page.Hits, 10)
+		for i := 1; i < len(page.Hits); i++ {
+			assert.GreaterOrEqual(t, page.Hits[i-1].Score, page.Hits[i].Score)
+		}
+		_, err = tx.ExecContext(ctx, `SELECT pg_stat_force_next_flush()`)
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit())
+		var scans int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT pg_stat_get_numscans('chunks_hnsw_idx'::regclass)`).Scan(&scans))
+		assert.Positive(t, scans)
+	})
+
 	t.Run("replace reports stream and vector errors", func(t *testing.T) {
 		db, chunks := setupChunks(t)
 		ctx := t.Context()
@@ -329,8 +448,8 @@ func TestChunks(t *testing.T) {
 		tx, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()
-		schema := uniqueName(t, "fake_halfvec")
-		_, err = tx.ExecContext(ctx, `CREATE SCHEMA `+schema+`; CREATE DOMAIN `+schema+`.halfvec AS text; CREATE TABLE fake_chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding `+schema+`.halfvec)`)
+		// Retain the real type's name and typmod, changing only its membership.
+		_, err = tx.ExecContext(ctx, `ALTER EXTENSION vector DROP TYPE public.halfvec; CREATE TABLE fake_chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2))`)
 		require.NoError(t, err)
 		_, err = pgvector.AttachChunks[string](ctx, tx, "fake_chunks")
 		require.ErrorContains(t, err, "fixed-dimension halfvec")
@@ -574,4 +693,5 @@ func TestChunks(t *testing.T) {
 			})
 		}
 	})
+
 }

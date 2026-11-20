@@ -113,8 +113,18 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key"+c.keyCollation+c.keyEqual+"ANY($1::"+c.keyBaseType+"[])", selected); err != nil {
 		return 0, fmt.Errorf("delete chunks: %w", err)
 	}
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM "+c.table+" WHERE doc_key"+c.keyCollation+c.keyEqual+"ANY($1::"+c.keyBaseType+"[]))", selected).Scan(&changed); err != nil {
+		return 0, fmt.Errorf("check deleted chunks: %w", err)
+	}
+	if changed {
+		return 0, errors.New("pgvector: selected chunks remain after deletion")
+	}
 	if chunks == nil {
 		return 0, nil
+	}
+	selectedSet := make(map[any]struct{}, len(selected))
+	for _, key := range selected {
+		selectedSet[comparableChunkKey(key)] = struct{}{}
 	}
 	var args []any
 	var batchKey any
@@ -125,9 +135,9 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 			return nil
 		}
 		// Check again after insertion because column precision can change a key.
-		query := "WITH inserted AS (INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) WHERE v.doc_key" + c.keyCollation + c.keyEqual + "ANY($1::" + c.keyBaseType + "[]) RETURNING doc_key) SELECT count(*), count(*) FILTER (WHERE doc_key" + c.keyCollation + c.keyEqual + "$2::" + c.keyBaseType + ") FROM inserted"
+		query := "WITH inserted AS (INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) RETURNING doc_key) SELECT count(*), count(*) FILTER (WHERE doc_key" + c.keyCollation + c.keyEqual + "$1::" + c.keyBaseType + ") FROM inserted"
 		var inserted, matched int
-		if err := tx.QueryRowContext(ctx, query, append([]any{selected, batchKey}, args...)...).Scan(&inserted, &matched); err != nil {
+		if err := tx.QueryRowContext(ctx, query, append([]any{batchKey}, args...)...).Scan(&inserted, &matched); err != nil {
 			return err
 		}
 		if matched != len(values) || inserted != len(values) {
@@ -148,13 +158,24 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		if err != nil {
 			return 0, fmt.Errorf("document key: %w", err)
 		}
+		if _, ok := selectedSet[comparableChunkKey(key)]; !ok {
+			var found bool
+			query := "SELECT $1::" + c.keyBaseType + c.keyCollation + c.keyEqual + "ANY($2::" + c.keyBaseType + "[])"
+			if err := tx.QueryRowContext(ctx, query, key, selected).Scan(&found); err != nil {
+				return 0, fmt.Errorf("check chunk document: %w", err)
+			}
+			if !found {
+				return 0, errors.New("pgvector: chunk document is outside the selected keys")
+			}
+			selectedSet[comparableChunkKey(key)] = struct{}{}
+		}
 		if len(values) > 0 && !reflect.DeepEqual(batchKey, key) {
 			if err := flush(); err != nil {
 				return 0, fmt.Errorf("insert chunks: %w", err)
 			}
 		}
 		batchKey = key
-		n := len(args) + 2
+		n := len(args) + 1
 		values = append(values, fmt.Sprintf("($%d::%s,$%d::bigint,$%d::%s.halfvec)", n+1, c.keyBaseType, n+2, n+3, c.ext))
 		args = append(args, key, chunk.ChunkIndex, literal)
 		count++
@@ -168,6 +189,13 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		return 0, fmt.Errorf("insert chunks: %w", err)
 	}
 	return count, nil
+}
+
+func comparableChunkKey(key any) any {
+	if b, ok := key.([]byte); ok {
+		return string(b)
+	}
+	return key
 }
 
 func selectedChunkKeys[K comparable](tx *sql.Tx, equality string, keys []K) ([]any, error) {
@@ -272,12 +300,10 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
 		return page, fmt.Errorf("set hnsw.ef_search: %w", err)
 	}
-	defer func() { resultErr = restoreHNSW(ctx, tx, resultErr, previousEF, previousIterative, limit > efSearch) }()
+	defer func() { resultErr = restoreHNSW(ctx, tx, resultErr, previousEF, previousIterative, true) }()
 	page.ScanCap = limit
-	if limit > efSearch {
-		if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
-			return page, fmt.Errorf("set hnsw.iterative_scan: %w", err)
-		}
+	if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
+		return page, fmt.Errorf("set hnsw.iterative_scan: %w", err)
 	}
 	distance := fmt.Sprintf("embedding OPERATOR(%s.<=>) $1::%s.halfvec", c.ext, c.ext)
 	q := sqlquery.Query{SQL: fmt.Sprintf("WITH candidates AS MATERIALIZED (SELECT doc_key,chunk_index,%s AS distance FROM %s WHERE doc_key IS NOT NULL AND chunk_index IS NOT NULL AND embedding IS NOT NULL AND %s.l2_norm(embedding) > 0 ORDER BY %s LIMIT $2) SELECT doc_key,chunk_index,1-distance FROM candidates ORDER BY distance + 0, doc_key, chunk_index", distance, c.table, c.ext, distance), Args: []any{literal, page.ScanCap}}
