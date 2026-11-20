@@ -112,6 +112,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Put Go caches on the temp drive
+        if: matrix.own-go-cache
+        shell: pwsh
+        run: |
+          "GOCACHE=$env:RUNNER_TEMP\GOCACHE" >> $env:GITHUB_ENV
+          "GOMODCACHE=$env:RUNNER_TEMP\GOMODCACHE" >> $env:GITHUB_ENV
+
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
         with:
