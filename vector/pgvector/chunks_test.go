@@ -275,6 +275,29 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, tx.Rollback())
 	})
 
+	t.Run("clear rounded timestamp key", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE timed_chunks (doc_key timestamptz(0), chunk_index int, embedding public.halfvec(2))`)
+		require.NoError(t, err)
+		key := time.Date(2026, 1, 1, 0, 0, 0, 100000000, time.UTC)
+		other := key.Add(time.Minute)
+		_, err = db.ExecContext(ctx, `INSERT INTO timed_chunks VALUES ($1, 0, '[1,0]'), ($2, 0, '[1,0]')`, key, other)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[time.Time](ctx, db, "timed_chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = chunks.ReplaceTx(ctx, tx, []time.Time{key}, nil)
+		require.ErrorContains(t, err, "column precision")
+		require.NoError(t, tx.Rollback())
+		var selected, remaining int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE doc_key = $1::timestamptz(0)), count(*) FILTER (WHERE doc_key = $2::timestamptz(0)) FROM timed_chunks`, key, other).Scan(&selected, &remaining))
+		assert.Equal(t, 1, selected)
+		assert.Equal(t, 1, remaining)
+	})
+
 	t.Run("selected keys are stable during streaming", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()

@@ -18,7 +18,7 @@ import (
 
 // Chunks accesses an application-owned table of halfvec chunks.
 type Chunks[K comparable] struct {
-	table, ext, keyType, keyCollation string
+	table, ext, keyType, keyColumnType, keyCollation string
 }
 
 // Chunk is one document's vector at a chunk index.
@@ -37,7 +37,7 @@ type ChunkPage[K comparable] struct {
 // AttachChunks resolves a table on the queryer's search path without changing it.
 // Keys must be supported by database/sql for both binding and scanning.
 func AttachChunks[K comparable](ctx context.Context, q sqlquery.Queryer, table string) (*Chunks[K], error) {
-	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname, kn.nspname, kt.typname, COALESCE(cn.nspname, ''), COALESCE(co.collname, '')
+	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname, kn.nspname, kt.typname, pg_catalog.format_type(k.atttypid, k.atttypmod), COALESCE(cn.nspname, ''), COALESCE(co.collname, '')
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 JOIN pg_attribute k ON k.attrelid=c.oid AND k.attname='doc_key' AND NOT k.attisdropped
 JOIN pg_type kt ON kt.oid=k.atttypid JOIN pg_namespace kn ON kn.oid=kt.typnamespace
@@ -48,10 +48,10 @@ JOIN pg_type t ON t.oid=a.atttypid JOIN pg_namespace en ON en.oid=t.typnamespace
 JOIN pg_depend d ON d.classid='pg_type'::regclass AND d.objid=t.oid AND d.refclassid='pg_extension'::regclass AND d.deptype='e'
 JOIN pg_extension e ON e.oid=d.refobjid AND e.extname='vector'
 WHERE c.oid=to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.QuoteIdentifier(table)}}
-	type tableNames struct{ schema, name, ext, keySchema, keyType, colSchema, collation string }
+	type tableNames struct{ schema, name, ext, keySchema, keyType, keyColumnType, colSchema, collation string }
 	names, err := query.All(ctx, q, func(rows *sql.Rows) (tableNames, error) {
 		var name tableNames
-		err := rows.Scan(&name.schema, &name.name, &name.ext, &name.keySchema, &name.keyType, &name.colSchema, &name.collation)
+		err := rows.Scan(&name.schema, &name.name, &name.ext, &name.keySchema, &name.keyType, &name.keyColumnType, &name.colSchema, &name.collation)
 		return name, err
 	})
 	if err != nil {
@@ -65,7 +65,7 @@ WHERE c.oid=to_regclass($1) AND t.typname='halfvec'`, Args: []any{postgres.Quote
 	if name.collation != "" {
 		collation = " COLLATE " + postgres.QuoteIdentifier(name.colSchema) + "." + postgres.QuoteIdentifier(name.collation)
 	}
-	return &Chunks[K]{table: postgres.QuoteIdentifier(name.schema) + "." + postgres.QuoteIdentifier(name.name), ext: postgres.QuoteIdentifier(name.ext), keyType: postgres.QuoteIdentifier(name.keySchema) + "." + postgres.QuoteIdentifier(name.keyType), keyCollation: collation}, nil
+	return &Chunks[K]{table: postgres.QuoteIdentifier(name.schema) + "." + postgres.QuoteIdentifier(name.name), ext: postgres.QuoteIdentifier(name.ext), keyType: postgres.QuoteIdentifier(name.keySchema) + "." + postgres.QuoteIdentifier(name.keyType), keyColumnType: name.keyColumnType, keyCollation: collation}, nil
 }
 
 // ReplaceTx deletes the selected documents' chunks and streams replacements.
@@ -79,6 +79,16 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 			return 0, fmt.Errorf("document key: %w", err)
 		}
 		selected[i] = value
+	}
+	if chunks == nil {
+		var changed bool
+		query := "SELECT EXISTS (SELECT 1 FROM unnest($1::" + c.keyType + "[]) AS key WHERE key IS DISTINCT FROM key::" + c.keyColumnType + c.keyCollation + ")"
+		if err := tx.QueryRowContext(ctx, query, selected).Scan(&changed); err != nil {
+			return 0, fmt.Errorf("check document keys: %w", err)
+		}
+		if changed {
+			return 0, errors.New("pgvector: selected document key changes with column precision")
+		}
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key = ANY($1)", selected); err != nil {
 		return 0, fmt.Errorf("delete chunks: %w", err)
