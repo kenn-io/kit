@@ -56,12 +56,6 @@ test-vector-postgres:
 	@test -n "$$KIT_POSTGRES_TEST_DSN" || { echo "set KIT_POSTGRES_TEST_DSN" >&2; exit 1; }
 	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/pgvector ./search/postgres" -- -count=1 -p 1
 
-# Run against a disposable pgvector 0.7.4 server without iterative scans.
-.PHONY: test-vector-postgres-no-iterative
-test-vector-postgres-no-iterative:
-	@test -n "$$KIT_POSTGRES_TEST_DSN" || { echo "set KIT_POSTGRES_TEST_DSN" >&2; exit 1; }
-	KIT_PGVECTOR_REQUIRE_NO_ITERATIVE_SCAN=1 go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/pgvector" -- -count=1 -p 1 -run '^TestChunks/search_without_iterative_scan$$'
-
 .PHONY: test-vector-sqlite
 test-vector-sqlite:
 	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/sqlitevec" -- -count=1

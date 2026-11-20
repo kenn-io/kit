@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"iter"
-	"os"
 	"testing"
 	"time"
 
@@ -109,33 +108,6 @@ func TestChunks(t *testing.T) {
 		assert.Empty(t, page.Hits)
 		assert.Zero(t, page.ScanCap)
 		require.NoError(t, tx.Rollback())
-	})
-
-	t.Run("search without iterative scan", func(t *testing.T) {
-		db, chunks := setupChunks(t)
-		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `INSERT INTO "Mixed chunks" VALUES ('valid', 0, '[2,1]')`)
-		require.NoError(t, err)
-		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		var available sql.NullString
-		require.NoError(t, tx.QueryRowContext(ctx, `SELECT '[1,0]'::public.halfvec IS NOT NULL, current_setting('hnsw.iterative_scan', true)`).Scan(new(bool), &available))
-		if os.Getenv("KIT_PGVECTOR_REQUIRE_NO_ITERATIVE_SCAN") != "" {
-			require.False(t, available.Valid, "iterative scan must be unavailable for this run")
-		} else if available.Valid {
-			t.Skip("iterative scan is available")
-		}
-		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
-		require.NoError(t, err)
-		require.Len(t, page.Hits, 1)
-		assert.Equal(t, "valid", page.Hits[0].Doc)
-		assert.Equal(t, 10, page.ScanCap)
-		page, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 1200)
-		require.NoError(t, err)
-		require.Len(t, page.Hits, 1)
-		assert.Equal(t, "valid", page.Hits[0].Doc)
-		assert.Equal(t, 1000, page.ScanCap)
 	})
 
 	t.Run("large limit search", func(t *testing.T) {

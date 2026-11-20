@@ -141,9 +141,8 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 	if err := tx.QueryRowContext(ctx, "SELECT $1::"+c.ext+".halfvec IS NOT NULL", literal).Scan(&loaded); err != nil {
 		return page, fmt.Errorf("load pgvector: %w", err)
 	}
-	var previousEF string
-	var previousIterative sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan', true)`).Scan(&previousEF, &previousIterative); err != nil {
+	var previousEF, previousIterative string
+	if err := tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan')`).Scan(&previousEF, &previousIterative); err != nil {
 		return page, fmt.Errorf("read hnsw settings: %w", err)
 	}
 	limit = max(limit, 0)
@@ -155,17 +154,15 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 		if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.ef_search', $1, true)`, previousEF); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.ef_search: %w", err))
 		}
-		if limit > efSearch && previousIterative.Valid {
-			if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative.String); err != nil {
+		if limit > efSearch {
+			if _, err := tx.ExecContext(ctx, `SELECT set_config('hnsw.iterative_scan', $1, true)`, previousIterative); err != nil {
 				resultErr = errors.Join(resultErr, fmt.Errorf("restore hnsw.iterative_scan: %w", err))
 			}
 		}
 	}()
 	page.ScanCap = limit
 	if limit > efSearch {
-		if !previousIterative.Valid {
-			page.ScanCap = efSearch
-		} else if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
+		if _, err := tx.ExecContext(ctx, `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`); err != nil {
 			return page, fmt.Errorf("set hnsw.iterative_scan: %w", err)
 		}
 	}
