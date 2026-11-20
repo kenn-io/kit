@@ -24,17 +24,24 @@ func (e *GenerationBusyError) Error() string {
 	return fmt.Sprintf("generation %s is busy", e.Generation)
 }
 
+func requireReadCommitted(ctx context.Context, tx *sql.Tx, operation string) error {
+	var isolation string
+	if err := tx.QueryRowContext(ctx, `SHOW transaction_isolation`).Scan(&isolation); err != nil {
+		return err
+	}
+	if isolation != "read committed" {
+		return fmt.Errorf("%s requires READ COMMITTED isolation, got %s", operation, isolation)
+	}
+	return nil
+}
+
 // SaveDocuments saves documents in a READ COMMITTED transaction. It returns a
 // key for each stale or missing input entry, in input order, including duplicates.
 // Save documents in a consistent order, and roll back on any error. Retry a
 // GenerationBusyError in a new transaction.
 func (s *Store[K, G]) SaveDocuments(ctx context.Context, tx *sql.Tx, gen G, docs []Document[K]) ([]K, error) {
-	var isolation string
-	if err := tx.QueryRowContext(ctx, `SHOW transaction_isolation`).Scan(&isolation); err != nil {
+	if err := requireReadCommitted(ctx, tx, "SaveDocuments"); err != nil {
 		return nil, err
-	}
-	if isolation != "read committed" {
-		return nil, fmt.Errorf("SaveDocuments requires READ COMMITTED isolation, got %s", isolation)
 	}
 	row, err := s.lookup(ctx, tx, gen, false)
 	if err != nil {
