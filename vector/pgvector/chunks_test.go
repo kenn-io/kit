@@ -134,6 +134,7 @@ func TestChunks(t *testing.T) {
 		seed(t, db, chunks, "covered", "other")
 		_, err := db.ExecContext(ctx, `UPDATE "Mixed chunks" SET embedding='[2,1.001]' WHERE doc_key='other'`)
 		require.NoError(t, err)
+		db.SetMaxIdleConns(0)
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		require.NoError(t, err)
 		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
@@ -144,6 +145,9 @@ func TestChunks(t *testing.T) {
 		assert.InDelta(t, 0.8942525, page.Hits[1].Score, 1e-6)
 		assert.Nil(t, page.Hits[0].Revision)
 		assert.Equal(t, 10, page.ScanCap)
+		var efSearch string
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search')`).Scan(&efSearch))
+		assert.Equal(t, "40", efSearch)
 		page, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, -1)
 		require.NoError(t, err)
 		assert.Empty(t, page.Hits)
@@ -171,6 +175,9 @@ func TestChunks(t *testing.T) {
 		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0.3, 0.1}, 1200)
 		require.NoError(t, err)
 		require.Len(t, page.Hits, 1200)
+		for i := 1; i < len(page.Hits); i++ {
+			assert.GreaterOrEqual(t, page.Hits[i-1].Score, page.Hits[i].Score)
+		}
 		assert.Equal(t, 1200, page.ScanCap)
 		require.NoError(t, tx.Commit())
 	})

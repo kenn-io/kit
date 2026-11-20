@@ -158,12 +158,10 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 		return page, fmt.Errorf("query vector: %w", err)
 	}
 	limit = max(limit, 0)
-	if limit > 1000 {
-		// Loading the type registers pgvector's session settings on this connection.
-		var loaded bool
-		if err := tx.QueryRowContext(ctx, "SELECT $1::"+c.ext+".halfvec IS NOT NULL", literal).Scan(&loaded); err != nil {
-			return page, fmt.Errorf("load pgvector: %w", err)
-		}
+	// Loading the type registers pgvector's session settings on this connection.
+	var loaded bool
+	if err := tx.QueryRowContext(ctx, "SELECT $1::"+c.ext+".halfvec IS NOT NULL", literal).Scan(&loaded); err != nil {
+		return page, fmt.Errorf("load pgvector: %w", err)
 	}
 	efSearch := min(max(limit, 40), 1000)
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
@@ -181,8 +179,9 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 			return page, fmt.Errorf("set hnsw.iterative_scan: %w", err)
 		}
 	}
+	// PostgreSQL 17 needs + 0 to sort relaxed HNSW results after the candidate limit.
 	distance := fmt.Sprintf("embedding OPERATOR(%s.<=>) $1::%s.halfvec", c.ext, c.ext)
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT doc_key,chunk_index,1-(%s) FROM %s ORDER BY %s LIMIT $2", distance, c.table, distance), literal, limit)
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf("WITH candidates AS MATERIALIZED (SELECT doc_key,chunk_index,%s AS distance FROM %s ORDER BY %s LIMIT $2) SELECT doc_key,chunk_index,1-distance FROM candidates ORDER BY distance + 0", distance, c.table, distance), literal, limit)
 	if err != nil {
 		return page, fmt.Errorf("search chunks: %w", err)
 	}
