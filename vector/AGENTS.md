@@ -231,12 +231,10 @@ pipeline. Preserve these invariants when changing it.
 - Default storage uses a chunk table and HNSW index per generation.
   `EnsureGeneration` refuses retired generations, `Reclaim` drops their table,
   and queries hold an access-share lock until they finish.
-- `Chunks` attaches to an app-owned table without DDL, checking the declared
-  halfvec dimension. It preserves vector values and orders raw chunk searches
-  by distance. Hits have nil revisions. Callers own freshness, hydration, and
-  transaction completion. Callers serialize replacements for the same document.
-  Compare ScanCap with the raw hit count before rollup. A short approximate
-  page alone does not prove that the scan found all matches.
+- `Chunks` attaches to an app-owned table without DDL. `ReplaceTx` and
+  `SearchTx` use the caller's transaction. Callers serialize replacements for
+  the same document and end the transaction. ScanCap is the maximum scan size;
+  compare it with the raw hit count before rolling up documents.
 - Shared storage uses a caller-installed chunk table with `generation_id bigint`,
   `doc_key` matching the document key and cascading on delete, `chunk_index`
   integer or bigint, unbounded halfvec `embedding`, and primary key

@@ -20,7 +20,6 @@ import (
 	"strings"
 
 	"go.kenn.io/kit/search/postgres"
-	"go.kenn.io/kit/search/sqlquery"
 )
 
 // Schema names the source documents and managed tables.
@@ -113,7 +112,7 @@ func New[K comparable, G ~string](ctx context.Context, db *sql.DB, schema Schema
 	}
 	if schema.SharedChunks {
 		name := schema.Prefix + "_chunks"
-		if err := checkTable(ctx, db, postgres.QuoteIdentifier(name), "generation_id,doc_key,chunk_index,embedding"); err != nil {
+		if err := checkTable(ctx, db, name, "generation_id,doc_key,chunk_index,embedding"); err != nil {
 			return nil, fmt.Errorf("check table %s: %w", name, err)
 		}
 	}
@@ -155,15 +154,15 @@ func checkCatalog(ctx context.Context, db *sql.DB, schema Schema) error {
 		{schema.Prefix + "_generations", "id,gen_key,fingerprint,dimension,state"},
 		{schema.Prefix + "_stamps", "generation_id,doc_key,revision"},
 	} {
-		if err := checkTable(ctx, db, postgres.QuoteIdentifier(table.name), table.columns); err != nil {
+		if err := checkTable(ctx, db, table.name, table.columns); err != nil {
 			return fmt.Errorf("check table %s: %w", table.name, err)
 		}
 	}
 	return nil
 }
 
-func checkTable(ctx context.Context, q sqlquery.Queryer, name, columns string) error {
-	rows, err := q.QueryContext(ctx, "SELECT "+columns+" FROM "+name+" WHERE false")
+func checkTable(ctx context.Context, db *sql.DB, name, columns string) error {
+	rows, err := db.QueryContext(ctx, "SELECT "+columns+" FROM "+postgres.QuoteIdentifier(name)+" WHERE false")
 	if err != nil {
 		return err
 	}

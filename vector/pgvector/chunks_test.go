@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,7 +22,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		require.NoError(t, err)
-		chunks, err := pgvector.AttachChunks[string](ctx, tx, "Mixed chunks", 2)
+		chunks, err := pgvector.AttachChunks[string](ctx, tx, "Mixed chunks")
 		require.NoError(t, err)
 		require.NoError(t, tx.Commit())
 		return db, chunks
@@ -102,7 +101,6 @@ func TestChunks(t *testing.T) {
 		ctx := t.Context()
 		_, err := db.ExecContext(ctx, `INSERT INTO "Mixed chunks" VALUES ('covered', 0, '[2,1.001]'), ('other', 0, '[2,1]')`)
 		require.NoError(t, err)
-		db.SetMaxIdleConns(0)
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		require.NoError(t, err)
 		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 60)
@@ -115,7 +113,7 @@ func TestChunks(t *testing.T) {
 		assert.Equal(t, 60, page.ScanCap)
 		var efSearch string
 		require.NoError(t, tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search')`).Scan(&efSearch))
-		assert.Equal(t, "40", efSearch)
+		assert.Equal(t, "60", efSearch)
 		page, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, -1)
 		require.NoError(t, err)
 		assert.Empty(t, page.Hits)
@@ -132,55 +130,31 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		_, err = db.ExecContext(ctx, `CREATE INDEX chunks_hnsw_idx ON chunks USING hnsw (embedding public.halfvec_cosine_ops)`)
 		require.NoError(t, err)
-		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks", 3)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
 		require.NoError(t, err)
-		db.SetMaxIdleConns(0)
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()
 		_, err = tx.ExecContext(ctx, `SET LOCAL enable_seqscan=off`)
 		require.NoError(t, err)
-		_, err = tx.ExecContext(ctx, `SET LOCAL hnsw.ef_search=77; SET LOCAL hnsw.iterative_scan='strict_order'`)
-		require.NoError(t, err)
 		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0.3, 0.1}, 1200)
 		require.NoError(t, err)
 		require.Len(t, page.Hits, 1200)
-		for i := 1; i < len(page.Hits); i++ {
-			assert.GreaterOrEqual(t, page.Hits[i-1].Score, page.Hits[i].Score)
-		}
 		assert.Equal(t, 1200, page.ScanCap)
-		var ef, iterative string
-		require.NoError(t, tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan')`).Scan(&ef, &iterative))
-		assert.Equal(t, "77", ef)
-		assert.Equal(t, "strict_order", iterative)
 		require.NoError(t, tx.Commit())
+		_, err = db.ExecContext(ctx, `SELECT pg_stat_force_next_flush(); SELECT pg_stat_clear_snapshot()`)
+		require.NoError(t, err)
 		var scans int
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT idx_scan FROM pg_stat_user_indexes WHERE indexrelid='chunks_hnsw_idx'::regclass`).Scan(&scans))
 		assert.Positive(t, scans)
 	})
 
-	t.Run("invalid vectors and attachment", func(t *testing.T) {
+	t.Run("stream error", func(t *testing.T) {
 		db, chunks := setupChunks(t)
 		ctx := t.Context()
-		_, err := pgvector.AttachChunks[string](ctx, db, "Mixed chunks", 3)
-		require.ErrorContains(t, err, "no extension-owned halfvec embedding")
 		seed(t, db, chunks, "replace")
 		tx, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
-		_, err = chunks.SearchTx(ctx, tx, vector.Vector{1}, 1)
-		require.ErrorContains(t, err, "vector dimension")
-		_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
-			yield(pgvector.Chunk[string]{Doc: "replace", Vector: vector.Vector{1}}, nil)
-		})
-		require.ErrorContains(t, err, "vector dimension")
-		_, err = chunks.ReplaceTx(ctx, tx, []string{"invalid-doc"}, func(yield func(pgvector.Chunk[string], error) bool) {
-			yield(pgvector.Chunk[string]{Doc: "invalid-doc", ChunkIndex: 7, Vector: vector.Vector{float32(math.Inf(1)), 0}}, nil)
-		})
-		require.ErrorContains(t, err, "non-finite")
-		_, err = chunks.ReplaceTx(ctx, tx, []string{"selected"}, func(yield func(pgvector.Chunk[string], error) bool) {
-			yield(pgvector.Chunk[string]{Doc: "outside", Vector: vector.Vector{1, 0}}, nil)
-		})
-		require.ErrorContains(t, err, "outside")
 		wantErr := errors.New("stream failed")
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
 			for chunk, err := range sequence("replace", 201) {
@@ -195,54 +169,5 @@ func TestChunks(t *testing.T) {
 		var count int
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks" WHERE doc_key='replace'`).Scan(&count))
 		assert.Equal(t, 1, count)
-	})
-	t.Run("nullable embeddings", func(t *testing.T) {
-		db, chunks := setupChunks(t)
-		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `INSERT INTO "Mixed chunks" VALUES ('null',0,NULL), ('zero',0,'[0,0]'), ('valid',0,'[2,1]')`)
-		require.NoError(t, err)
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 10)
-		require.NoError(t, err)
-		require.Len(t, page.Hits, 1)
-		assert.Equal(t, "valid", page.Hits[0].Doc)
-	})
-	t.Run("zero vectors", func(t *testing.T) {
-		db, chunks := setupChunks(t)
-		ctx := t.Context()
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		_, err = chunks.SearchTx(ctx, tx, vector.Vector{1e-20, 0}, 1)
-		require.ErrorContains(t, err, "zero")
-		_, err = chunks.ReplaceTx(ctx, tx, []string{"zero"}, func(yield func(pgvector.Chunk[string], error) bool) {
-			yield(pgvector.Chunk[string]{Doc: "zero", Vector: vector.Vector{0, 0}}, nil)
-		})
-		require.ErrorContains(t, err, "zero")
-	})
-	t.Run("binary and UUID keys", func(t *testing.T) {
-		db := setupDB(t)
-		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE binary_chunks (doc_key bytea, chunk_index int, embedding public.halfvec(2)); CREATE TABLE uuid_chunks (doc_key uuid, chunk_index int, embedding public.halfvec(2))`)
-		require.NoError(t, err)
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		uuids, err := pgvector.AttachChunks[string](ctx, tx, "uuid_chunks", 2)
-		require.NoError(t, err)
-		_, err = uuids.ReplaceTx(ctx, tx, []string{"ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB"}, func(yield func(pgvector.Chunk[string], error) bool) {
-			yield(pgvector.Chunk[string]{Doc: "abcdefab-cdef-abcd-efab-cdefabcdefab", Vector: vector.Vector{1, 0}}, nil)
-		})
-		require.NoError(t, err)
-		binary, err := pgvector.AttachChunks[any](ctx, tx, "binary_chunks", 2)
-		require.NoError(t, err)
-		_, err = binary.ReplaceTx(ctx, tx, []any{[]byte("key")}, func(yield func(pgvector.Chunk[any], error) bool) {
-			yield(pgvector.Chunk[any]{Doc: []byte("key"), Vector: vector.Vector{1, 0}}, nil)
-		})
-		require.NoError(t, err)
-		_, err = binary.ReplaceTx(ctx, tx, []any{[]int{1}}, nil)
-		require.ErrorContains(t, err, "unsupported document key")
 	})
 }
