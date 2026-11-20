@@ -132,14 +132,17 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 	var args []any
 	var batchKey any
 	var values []string
+	var batches []insertedBatch
 	count := 0
 	flush := func() error {
 		if len(values) == 0 {
 			return nil
 		}
-		if err := c.insertBatch(ctx, tx, batchKey, values, args); err != nil {
+		ids, err := c.insertBatch(ctx, tx, batchKey, values, args)
+		if err != nil {
 			return err
 		}
+		batches = append(batches, insertedBatch{ids: ids, count: len(values)})
 		args, values = nil, nil
 		return nil
 	}
@@ -190,28 +193,40 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 	if err := flush(); err != nil {
 		return 0, fmt.Errorf("insert chunks: %w", err)
 	}
+	if err := c.checkInsertedBatches(ctx, tx, batches); err != nil {
+		return 0, fmt.Errorf("check inserted chunks: %w", err)
+	}
 	return count, nil
 }
 
-// insertBatch checks after insertion because column precision can change a key.
-// Triggers can also change rows after INSERT RETURNING reports them, so it
-// re-reads the inserted ctids, which stay valid for this transaction's statements.
-func (c *Chunks[K]) insertBatch(ctx context.Context, tx *sql.Tx, key any, values []string, args []any) error {
-	query := "WITH inserted AS (INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) RETURNING doc_key, ctid) SELECT count(*), count(*) FILTER (WHERE doc_key" + c.keyCollation + c.keyEqual + "$1::" + c.keyBaseType + "), array_agg(ctid::text)::text FROM inserted"
+type insertedBatch struct {
+	ids   string
+	count int
+}
+
+// insertBatch checks returned keys and records row locations.
+func (c *Chunks[K]) insertBatch(ctx context.Context, tx *sql.Tx, key any, values []string, args []any) (string, error) {
+	query := "WITH inserted AS (INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) RETURNING doc_key, tableoid, ctid) SELECT count(*), count(*) FILTER (WHERE doc_key" + c.keyCollation + c.keyEqual + "$1::" + c.keyBaseType + "), array_agg(tableoid::text || ':' || ctid::text)::text FROM inserted"
 	var inserted, matched int
 	var ids string
 	if err := tx.QueryRowContext(ctx, query, append([]any{key}, args...)...).Scan(&inserted, &matched, &ids); err != nil {
-		return err
+		return "", err
 	}
 	if matched != len(values) || inserted != len(values) {
-		return errors.New("pgvector: chunk document is outside the selected keys")
+		return "", errors.New("pgvector: chunk document is outside the selected keys")
 	}
-	var present int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM "+c.table+" WHERE ctid = ANY($1::text::tid[])", ids).Scan(&present); err != nil {
-		return fmt.Errorf("check inserted chunks: %w", err)
-	}
-	if present != len(values) {
-		return errors.New("pgvector: inserted chunks changed during insertion")
+	return ids, nil
+}
+
+func (c *Chunks[K]) checkInsertedBatches(ctx context.Context, tx *sql.Tx, batches []insertedBatch) error {
+	for _, batch := range batches {
+		var present int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM "+c.table+" WHERE ctid = ANY(ARRAY(SELECT pg_catalog.split_part(id, ':', 2)::tid FROM pg_catalog.unnest($1::text[]) AS id)) AND tableoid::text || ':' || ctid::text = ANY($1::text[])", batch.ids).Scan(&present); err != nil {
+			return fmt.Errorf("check inserted chunks: %w", err)
+		}
+		if present != batch.count {
+			return errors.New("pgvector: inserted chunks changed during insertion")
+		}
 	}
 	return nil
 }

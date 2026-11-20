@@ -167,6 +167,47 @@ func TestChunks(t *testing.T) {
 		assert.Equal(t, 2, original)
 	})
 
+	t.Run("later batch changes an earlier chunk", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2)); CREATE FUNCTION remove_previous() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.doc_key = 'B' THEN DELETE FROM chunks WHERE doc_key = 'A'; END IF; RETURN NEW; END $$; CREATE TRIGGER remove_previous AFTER INSERT ON chunks FOR EACH ROW EXECUTE FUNCTION remove_previous()`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		stream := func(yield func(pgvector.Chunk[string], error) bool) {
+			if yield(pgvector.Chunk[string]{Doc: "A", Vector: vector.Vector{1, 0}}, nil) {
+				yield(pgvector.Chunk[string]{Doc: "B", Vector: vector.Vector{0, 1}}, nil)
+			}
+		}
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"A", "B"}, stream)
+		require.Error(t, err)
+	})
+
+	t.Run("partition row locations", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2)) PARTITION BY RANGE (chunk_index); CREATE TABLE chunks_low PARTITION OF chunks FOR VALUES FROM (0) TO (10); CREATE TABLE chunks_high PARTITION OF chunks FOR VALUES FROM (10) TO (20); INSERT INTO chunks VALUES ('B', 10, '[0,1]')`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		n, err := chunks.ReplaceTx(ctx, tx, []string{"A"}, sequence("A", 1))
+		require.NoError(t, err)
+		assert.Equal(t, 1, n)
+		require.NoError(t, tx.Commit())
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM chunks WHERE (doc_key = 'A' AND chunk_index = 0) OR (doc_key = 'B' AND chunk_index = 10)`).Scan(&count))
+		assert.Equal(t, 2, count)
+		var sameLocation bool
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT (SELECT ctid::text FROM chunks WHERE doc_key = 'A') = (SELECT ctid::text FROM chunks WHERE doc_key = 'B')`).Scan(&sameLocation))
+		assert.True(t, sameLocation)
+	})
+
 	t.Run("trigger skips delete", func(t *testing.T) {
 		for _, replace := range []bool{false, true} {
 			t.Run(strconv.FormatBool(replace), func(t *testing.T) {
