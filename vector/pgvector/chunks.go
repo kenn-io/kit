@@ -97,8 +97,10 @@ AND p.attnotnull AND p.atttypid IN ('pg_catalog.int4'::pg_catalog.regtype, 'pg_c
 // Each vector must have the table's fixed dimension.
 // Roll back tx on error. A nil sequence clears the selected documents.
 // Callers must serialize replacements for each document through commit.
+// tx must use READ COMMITTED isolation; ReplaceTx rejects other levels before
+// deleting rows or reading chunks.
 func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks iter.Seq2[Chunk[K], error]) (int, error) {
-	selected, err := selectedChunkKeys(tx, c.keyEqual, keys)
+	selected, err := selectedChunkKeys(ctx, tx, c.keyEqual, keys)
 	if err != nil {
 		return 0, err
 	}
@@ -135,14 +137,8 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		if len(values) == 0 {
 			return nil
 		}
-		// Check again after insertion because column precision can change a key.
-		query := "WITH inserted AS (INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) RETURNING doc_key) SELECT count(*), count(*) FILTER (WHERE doc_key" + c.keyCollation + c.keyEqual + "$1::" + c.keyBaseType + ") FROM inserted"
-		var inserted, matched int
-		if err := tx.QueryRowContext(ctx, query, append([]any{batchKey}, args...)...).Scan(&inserted, &matched); err != nil {
+		if err := c.insertBatch(ctx, tx, batchKey, values, args); err != nil {
 			return err
-		}
-		if matched != len(values) || inserted != len(values) {
-			return errors.New("pgvector: chunk document is outside the selected keys")
 		}
 		args, values = nil, nil
 		return nil
@@ -197,6 +193,29 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 	return count, nil
 }
 
+// insertBatch checks after insertion because column precision can change a key.
+// Triggers can also change rows after INSERT RETURNING reports them, so it
+// re-reads the inserted ctids, which stay valid for this transaction's statements.
+func (c *Chunks[K]) insertBatch(ctx context.Context, tx *sql.Tx, key any, values []string, args []any) error {
+	query := "WITH inserted AS (INSERT INTO " + c.table + " (doc_key,chunk_index,embedding) SELECT v.doc_key,v.chunk_index,v.embedding FROM (VALUES " + strings.Join(values, ",") + ") AS v(doc_key,chunk_index,embedding) RETURNING doc_key, ctid) SELECT count(*), count(*) FILTER (WHERE doc_key" + c.keyCollation + c.keyEqual + "$1::" + c.keyBaseType + "), array_agg(ctid::text)::text FROM inserted"
+	var inserted, matched int
+	var ids string
+	if err := tx.QueryRowContext(ctx, query, append([]any{key}, args...)...).Scan(&inserted, &matched, &ids); err != nil {
+		return err
+	}
+	if matched != len(values) || inserted != len(values) {
+		return errors.New("pgvector: chunk document is outside the selected keys")
+	}
+	var present int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM "+c.table+" WHERE ctid = ANY($1::text::tid[])", ids).Scan(&present); err != nil {
+		return fmt.Errorf("check inserted chunks: %w", err)
+	}
+	if present != len(values) {
+		return errors.New("pgvector: inserted chunks changed during insertion")
+	}
+	return nil
+}
+
 func comparableChunkKey(key any) any {
 	if b, ok := key.([]byte); ok {
 		return string(b)
@@ -249,12 +268,15 @@ func (c *Chunks[K]) hasSelectedKey(ctx context.Context, tx *sql.Tx, key any, has
 	return found, nil
 }
 
-func selectedChunkKeys[K comparable](tx *sql.Tx, equality string, keys []K) ([]any, error) {
+func selectedChunkKeys[K comparable](ctx context.Context, tx *sql.Tx, equality string, keys []K) ([]any, error) {
 	if tx == nil {
 		return nil, errors.New("pgvector: nil transaction")
 	}
 	if equality == "" {
 		return nil, errors.New("pgvector: document key equality cannot be resolved")
+	}
+	if err := requireReadCommitted(ctx, tx, "ReplaceTx"); err != nil {
+		return nil, err
 	}
 	selected := make([]any, len(keys))
 	for i, key := range keys {

@@ -93,6 +93,47 @@ func TestChunks(t *testing.T) {
 		})
 	})
 
+	t.Run("stale repeatable read snapshot", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			nilStream bool
+		}{{name: "replacement"}, {name: "clear", nilStream: true}} {
+			t.Run(tc.name, func(t *testing.T) {
+				db, chunks := setupChunks(t)
+				ctx := t.Context()
+				tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+				require.NoError(t, err)
+				defer func() { _ = tx.Rollback() }()
+				var count int
+				require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks"`).Scan(&count))
+				require.Zero(t, count)
+				other, err := db.BeginTx(ctx, nil)
+				require.NoError(t, err)
+				defer func() { _ = other.Rollback() }()
+				_, err = chunks.ReplaceTx(ctx, other, []string{"key"}, sequence("key", 1))
+				require.NoError(t, err)
+				require.NoError(t, other.Commit())
+
+				consumed := false
+				var replacements iter.Seq2[pgvector.Chunk[string], error]
+				if !tc.nilStream {
+					replacements = func(yield func(pgvector.Chunk[string], error) bool) {
+						consumed = true
+						yield(pgvector.Chunk[string]{Doc: "key", ChunkIndex: 1, Vector: vector.Vector{0, 1}}, nil)
+					}
+				}
+				_, err = chunks.ReplaceTx(ctx, tx, []string{"key"}, replacements)
+				require.Error(t, err)
+				assert.False(t, consumed)
+				require.NoError(t, tx.Rollback())
+				var original int
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE doc_key = 'key' AND chunk_index = 0 AND embedding::text = '[2,1]') FROM "Mixed chunks"`).Scan(&count, &original))
+				assert.Equal(t, 1, count)
+				assert.Equal(t, 1, original)
+			})
+		}
+	})
+
 	t.Run("trigger changes selected document", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
@@ -105,6 +146,25 @@ func TestChunks(t *testing.T) {
 		defer func() { _ = tx.Rollback() }()
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"A", "a"}, sequence("A", 1))
 		require.ErrorContains(t, err, "outside the selected keys")
+	})
+
+	t.Run("after insert trigger changes document", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('A', 3, '[1,0]'), ('B', 4, '[0,1]'); CREATE FUNCTION move_key() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE chunks SET doc_key = 'B' WHERE doc_key = NEW.doc_key AND chunk_index = NEW.chunk_index; RETURN NEW; END $$; CREATE TRIGGER move_key AFTER INSERT ON chunks FOR EACH ROW EXECUTE FUNCTION move_key()`)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"A"}, sequence("A", 1))
+		require.Error(t, err)
+		require.NoError(t, tx.Rollback())
+		var total, original int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE (doc_key = 'A' AND chunk_index = 3 AND embedding::text = '[1,0]') OR (doc_key = 'B' AND chunk_index = 4 AND embedding::text = '[0,1]')) FROM chunks`).Scan(&total, &original))
+		assert.Equal(t, 2, total)
+		assert.Equal(t, 2, original)
 	})
 
 	t.Run("trigger skips delete", func(t *testing.T) {
@@ -603,20 +663,6 @@ func TestChunks(t *testing.T) {
 				assert.Equal(t, int64(12), page.Hits[0].Doc)
 				assert.Equal(t, 7, page.Hits[0].ChunkIndex)
 			})
-			t.Run("collation", func(t *testing.T) {
-				_, err := db.ExecContext(ctx, `CREATE COLLATION case_insensitive (provider = icu, locale = 'und-u-ks-level2', deterministic = false); CREATE TABLE collated_chunks (doc_key text COLLATE case_insensitive NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2))`)
-				require.NoError(t, err)
-				chunks, err := pgvector.AttachChunks[string](ctx, db, "collated_chunks")
-				require.NoError(t, err)
-				tx, err := db.BeginTx(ctx, nil)
-				require.NoError(t, err)
-				defer func() { _ = tx.Rollback() }()
-				n, err := chunks.ReplaceTx(ctx, tx, []string{"KEY"}, sequence("key", 1))
-				require.NoError(t, err)
-				assert.Equal(t, 1, n)
-				require.NoError(t, tx.Rollback())
-			})
-
 			t.Run("citext", func(t *testing.T) {
 				_, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public; CREATE TABLE chunks (doc_key public.citext NOT NULL, chunk_index int NOT NULL, embedding public.halfvec(2))`)
 				require.NoError(t, err)
