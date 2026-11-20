@@ -187,5 +187,4 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks" WHERE doc_key='replace'`).Scan(&count))
 		assert.Equal(t, 1, count)
 	})
-
 }
