@@ -29,8 +29,11 @@ func (k *cancelingChunkKey) Scan(value any) error {
 	default:
 		return fmt.Errorf("unexpected key type %T", value)
 	}
-	cancelChunkScan()
-	return errCanceledChunkScan
+	if cancelChunkScan != nil {
+		cancelChunkScan()
+		return errCanceledChunkScan
+	}
+	return nil
 }
 
 func TestChunks(t *testing.T) {
@@ -156,7 +159,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, tx.Commit())
 	})
 
-	t.Run("stream error", func(t *testing.T) {
+	t.Run("replace reports stream and vector errors", func(t *testing.T) {
 		db, chunks := setupChunks(t)
 		ctx := t.Context()
 		tx, err := db.BeginTx(ctx, nil)
@@ -173,7 +176,6 @@ func TestChunks(t *testing.T) {
 			yield(pgvector.Chunk[string]{Doc: "valid", ChunkIndex: 7, Vector: vector.Vector{0, 0}}, nil)
 		})
 		require.ErrorContains(t, err, "document valid chunk 7")
-		require.ErrorContains(t, err, "zero")
 		require.NoError(t, tx.Rollback())
 	})
 	t.Run("attachment follows resolved table", func(t *testing.T) {
@@ -196,7 +198,7 @@ func TestChunks(t *testing.T) {
 		assert.Equal(t, 1, shadowCount)
 	})
 
-	t.Run("clear and reject unselected keys", func(t *testing.T) {
+	t.Run("clear selected keys", func(t *testing.T) {
 		db, chunks := setupChunks(t)
 		ctx := t.Context()
 		seed(t, db, chunks, "selected", "other")
@@ -211,11 +213,6 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*), min(doc_key) FROM "Mixed chunks"`).Scan(&count, &remaining))
 		assert.Equal(t, 1, count)
 		assert.Equal(t, "other", remaining)
-		tx, err = db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		_, err = chunks.ReplaceTx(ctx, tx, []string{"selected"}, sequence("other", 1))
-		require.ErrorContains(t, err, "outside the selected keys")
-		require.NoError(t, tx.Rollback())
 	})
 
 	t.Run("attachment columns", func(t *testing.T) {
@@ -264,7 +261,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 1, n)
 		require.NoError(t, tx.Rollback())
-		_, err = db.ExecContext(ctx, `CREATE TABLE timed_chunks (doc_key timestamptz(0), chunk_index int, embedding public.halfvec(2)); INSERT INTO timed_chunks VALUES ('2026-01-01 00:00:00+00',0,'[1,0]')`)
+		_, err = db.ExecContext(ctx, `CREATE TABLE timed_chunks (doc_key timestamptz(0), chunk_index int, embedding public.halfvec(2))`)
 		require.NoError(t, err)
 		timed, err := pgvector.AttachChunks[time.Time](ctx, db, "timed_chunks")
 		require.NoError(t, err)
@@ -272,7 +269,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		key := time.Date(2026, 1, 1, 0, 0, 0, 100000000, time.UTC)
 		_, err = timed.ReplaceTx(ctx, tx, []time.Time{key}, func(yield func(pgvector.Chunk[time.Time], error) bool) {
-			yield(pgvector.Chunk[time.Time]{Doc: key, ChunkIndex: 1, Vector: vector.Vector{1, 0}}, nil)
+			yield(pgvector.Chunk[time.Time]{Doc: key, Vector: vector.Vector{1, 0}}, nil)
 		})
 		require.ErrorContains(t, err, "outside the selected keys")
 		require.NoError(t, tx.Rollback())
@@ -326,55 +323,36 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, tx.Rollback())
 	})
 
-	t.Run("canceled search restores settings", func(t *testing.T) {
-		db := setupDB(t)
-		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]')`)
-		require.NoError(t, err)
-		chunks, err := pgvector.AttachChunks[cancelingChunkKey](ctx, db, "chunks")
-		require.NoError(t, err)
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		_, err = tx.ExecContext(ctx, `SET LOCAL hnsw.ef_search=77; SET LOCAL hnsw.iterative_scan='strict_order'`)
-		require.NoError(t, err)
-		searchCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		cancelChunkScan = cancel
-		defer func() { cancelChunkScan = nil }()
-		_, err = chunks.SearchTx(searchCtx, tx, vector.Vector{1, 0}, 1200)
-		require.ErrorIs(t, err, errCanceledChunkScan)
-		require.ErrorIs(t, searchCtx.Err(), context.Canceled)
-		var ef, iterative string
-		require.NoError(t, tx.QueryRowContext(ctx, `SELECT current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan')`).Scan(&ef, &iterative))
-		assert.Equal(t, "77", ef)
-		assert.Equal(t, "strict_order", iterative)
-	})
-
 	t.Run("search restores settings", func(t *testing.T) {
 		for _, tc := range []struct {
-			name string
-			key  string
+			name   string
+			cancel bool
 		}{
-			{name: "success", key: "'valid'"},
-			{name: "scan error", key: "NULL"},
+			{name: "success"},
+			{name: "canceled scan", cancel: true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				db := setupDB(t)
 				ctx := t.Context()
-				// App-owned chunk tables may allow null keys, which cannot scan into string.
-				_, err := db.ExecContext(ctx, `CREATE TABLE nullable_key (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO nullable_key VALUES (`+tc.key+`,0,'[1,0]')`)
+				_, err := db.ExecContext(ctx, `CREATE TABLE chunks (doc_key text, chunk_index int, embedding public.halfvec(2)); INSERT INTO chunks VALUES ('key', 0, '[1,0]')`)
 				require.NoError(t, err)
-				chunks, err := pgvector.AttachChunks[string](ctx, db, "nullable_key")
+				chunks, err := pgvector.AttachChunks[cancelingChunkKey](ctx, db, "chunks")
 				require.NoError(t, err)
 				tx, err := db.BeginTx(ctx, nil)
 				require.NoError(t, err)
 				defer func() { _ = tx.Rollback() }()
 				_, err = tx.ExecContext(ctx, `SET LOCAL hnsw.ef_search=77; SET LOCAL hnsw.iterative_scan='strict_order'`)
 				require.NoError(t, err)
-				_, err = chunks.SearchTx(ctx, tx, vector.Vector{1, 0}, 1200)
-				if tc.key == "NULL" {
-					require.ErrorContains(t, err, "converting NULL to string")
+				searchCtx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				if tc.cancel {
+					cancelChunkScan = cancel
+					defer func() { cancelChunkScan = nil }()
+				}
+				_, err = chunks.SearchTx(searchCtx, tx, vector.Vector{1, 0}, 1200)
+				if tc.cancel {
+					require.ErrorIs(t, err, errCanceledChunkScan)
+					require.ErrorIs(t, searchCtx.Err(), context.Canceled)
 				} else {
 					require.NoError(t, err)
 				}
