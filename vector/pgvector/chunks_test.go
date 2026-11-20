@@ -130,6 +130,7 @@ func TestChunks(t *testing.T) {
 		page, err := chunks.SearchTx(ctx, tx, vector.Vector{1, 0.3, 0.1}, 1200)
 		require.NoError(t, err)
 		require.Equal(t, 1200, len(page.Hits))
+		assert.Equal(t, 1200, page.ScanCap)
 		require.NoError(t, tx.Commit())
 		_, err = db.ExecContext(ctx, `SELECT pg_stat_force_next_flush(); SELECT pg_stat_clear_snapshot()`)
 		require.NoError(t, err)
