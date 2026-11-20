@@ -262,18 +262,6 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 1, n)
 		require.NoError(t, tx.Rollback())
-		_, err = db.ExecContext(ctx, `CREATE TABLE timed_chunks (doc_key timestamptz(0), chunk_index int, embedding public.halfvec(2))`)
-		require.NoError(t, err)
-		timed, err := pgvector.AttachChunks[time.Time](ctx, db, "timed_chunks")
-		require.NoError(t, err)
-		tx, err = db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		key := time.Date(2026, 1, 1, 0, 0, 0, 100000000, time.UTC)
-		_, err = timed.ReplaceTx(ctx, tx, []time.Time{key}, func(yield func(pgvector.Chunk[time.Time], error) bool) {
-			yield(pgvector.Chunk[time.Time]{Doc: key, Vector: vector.Vector{1, 0}}, nil)
-		})
-		require.ErrorContains(t, err, "outside the selected keys")
-		require.NoError(t, tx.Rollback())
 	})
 
 	t.Run("clear with changed search path", func(t *testing.T) {
@@ -327,27 +315,41 @@ func TestChunks(t *testing.T) {
 		assert.Zero(t, count)
 	})
 
-	t.Run("clear rounded timestamp key", func(t *testing.T) {
+	t.Run("rounded timestamp key", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
 		_, err := db.ExecContext(ctx, `CREATE TABLE timed_chunks (doc_key timestamptz(0), chunk_index int, embedding public.halfvec(2))`)
 		require.NoError(t, err)
 		key := time.Date(2026, 1, 1, 0, 0, 0, 100000000, time.UTC)
-		other := key.Add(time.Minute)
+		other := key.Truncate(time.Second).Add(time.Minute)
 		_, err = db.ExecContext(ctx, `INSERT INTO timed_chunks VALUES ($1, 0, '[1,0]'), ($2, 0, '[1,0]')`, key, other)
 		require.NoError(t, err)
 		chunks, err := pgvector.AttachChunks[time.Time](ctx, db, "timed_chunks")
 		require.NoError(t, err)
-		tx, err := db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		_, err = chunks.ReplaceTx(ctx, tx, []time.Time{key}, nil)
-		require.ErrorContains(t, err, "column precision")
-		require.NoError(t, tx.Rollback())
-		var selected, remaining int
-		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE doc_key = $1::timestamptz(0)), count(*) FILTER (WHERE doc_key = $2::timestamptz(0)) FROM timed_chunks`, key, other).Scan(&selected, &remaining))
-		assert.Equal(t, 1, selected)
-		assert.Equal(t, 1, remaining)
+		for _, tc := range []struct {
+			name   string
+			keys   []time.Time
+			stream iter.Seq2[pgvector.Chunk[time.Time], error]
+		}{
+			{name: "nil stream", keys: []time.Time{key}},
+			{name: "empty stream", keys: []time.Time{key}, stream: func(func(pgvector.Chunk[time.Time], error) bool) {}},
+			{name: "other key only", keys: []time.Time{key, other}, stream: func(yield func(pgvector.Chunk[time.Time], error) bool) {
+				yield(pgvector.Chunk[time.Time]{Doc: other, Vector: vector.Vector{1, 0}}, nil)
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				tx, err := db.BeginTx(ctx, nil)
+				require.NoError(t, err)
+				defer func() { _ = tx.Rollback() }()
+				_, err = chunks.ReplaceTx(ctx, tx, tc.keys, tc.stream)
+				require.ErrorContains(t, err, "column precision")
+				require.NoError(t, tx.Rollback())
+				var selected, remaining int
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE doc_key = $1::timestamptz(0)), count(*) FILTER (WHERE doc_key = $2::timestamptz(0)) FROM timed_chunks`, key, other).Scan(&selected, &remaining))
+				assert.Equal(t, 1, selected)
+				assert.Equal(t, 1, remaining)
+			})
+		}
 	})
 
 	t.Run("selected keys are stable during streaming", func(t *testing.T) {

@@ -83,15 +83,13 @@ func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks 
 		}
 		selected[i] = value
 	}
-	if chunks == nil {
-		var changed bool
-		query := "SELECT EXISTS (SELECT 1 FROM unnest($1::" + c.keyType + "[]) AS key WHERE key IS DISTINCT FROM key::" + c.keyColumnType + c.keyCollation + ")"
-		if err := tx.QueryRowContext(ctx, query, selected).Scan(&changed); err != nil {
-			return 0, fmt.Errorf("check document keys: %w", err)
-		}
-		if changed {
-			return 0, errors.New("pgvector: selected document key changes with column precision")
-		}
+	var changed bool
+	query := "SELECT EXISTS (SELECT 1 FROM unnest($1::" + c.keyType + "[]) AS key WHERE key IS DISTINCT FROM key::" + c.keyColumnType + c.keyCollation + ")"
+	if err := tx.QueryRowContext(ctx, query, selected).Scan(&changed); err != nil {
+		return 0, fmt.Errorf("check document keys: %w", err)
+	}
+	if changed {
+		return 0, errors.New("pgvector: selected document key changes with column precision")
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key = ANY($1)", selected); err != nil {
 		return 0, fmt.Errorf("delete chunks: %w", err)
