@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/vector"
@@ -273,6 +274,57 @@ func TestChunks(t *testing.T) {
 		})
 		require.ErrorContains(t, err, "outside the selected keys")
 		require.NoError(t, tx.Rollback())
+	})
+
+	t.Run("clear with changed search path", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		otherSchema := uniqueName(t, "other")
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA `+otherSchema)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			// Cleanup runs after the test context is canceled.
+			_, err := db.ExecContext(context.WithoutCancel(ctx), `DROP SCHEMA `+otherSchema+` CASCADE`)
+			assert.NoError(t, err)
+		})
+		_, err = db.ExecContext(ctx, `CREATE DOMAIN doc_key_type AS text`)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `CREATE DOMAIN `+otherSchema+`.doc_key_type AS integer`)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `CREATE TABLE domain_chunks (doc_key doc_key_type, chunk_index int, embedding public.halfvec(2))`)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `INSERT INTO domain_chunks VALUES ('alpha', 0, '[1,0]')`)
+		require.NoError(t, err)
+		db.SetMaxOpenConns(1)
+		conn, err := db.Conn(ctx)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		err = conn.Raw(func(driverConn any) error {
+			pgConn := driverConn.(*stdlib.Conn).Conn()
+			for _, name := range []string{"doc_key_type", "_doc_key_type"} {
+				typ, err := pgConn.LoadType(ctx, name)
+				if err != nil {
+					return err
+				}
+				pgConn.TypeMap().RegisterType(typ)
+			}
+			return nil
+		})
+		require.NoError(t, err)
+		require.NoError(t, conn.Close())
+		chunks, err := pgvector.AttachChunks[string](ctx, db, "domain_chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = tx.ExecContext(ctx, `SET LOCAL search_path = `+otherSchema+`, public`)
+		require.NoError(t, err)
+		_, err = chunks.ReplaceTx(ctx, tx, []string{"alpha"}, nil)
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit())
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM domain_chunks`).Scan(&count))
+		assert.Zero(t, count)
 	})
 
 	t.Run("clear rounded timestamp key", func(t *testing.T) {

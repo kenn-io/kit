@@ -37,7 +37,10 @@ type ChunkPage[K comparable] struct {
 // AttachChunks resolves a table on the queryer's search path without changing it.
 // Keys must be supported by database/sql for both binding and scanning.
 func AttachChunks[K comparable](ctx context.Context, q sqlquery.Queryer, table string) (*Chunks[K], error) {
-	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname, kn.nspname, kt.typname, pg_catalog.format_type(k.atttypid, k.atttypmod), COALESCE(cn.nspname, ''), COALESCE(co.collname, '')
+	query := sqlquery.Query{SQL: `SELECT n.nspname, c.relname, en.nspname, kn.nspname, kt.typname,
+CASE WHEN k.atttypmod = -1 THEN format('%I.%I', kn.nspname, kt.typname)
+     WHEN kn.nspname <> 'pg_catalog' THEN format('%I.%I', kn.nspname, kt.typname) || substr(format_type(k.atttypid, k.atttypmod), length(format_type(k.atttypid, -1)) + 1)
+     ELSE format_type(k.atttypid, k.atttypmod) END, COALESCE(cn.nspname, ''), COALESCE(co.collname, '')
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 JOIN pg_attribute k ON k.attrelid=c.oid AND k.attname='doc_key' AND NOT k.attisdropped
 JOIN pg_type kt ON kt.oid=k.atttypid JOIN pg_namespace kn ON kn.oid=kt.typnamespace
