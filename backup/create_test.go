@@ -184,6 +184,60 @@ func buildAttachmentHistory(tb testing.TB, base, count int) (*Repo, CreateOption
 	return r, opts, add
 }
 
+func TestBuildAttachmentHistoryMatchesCreate(t *testing.T) {
+	for _, base := range []int{0, 4} {
+		t.Run(fmt.Sprintf("base-%d", base), func(t *testing.T) {
+			fast, _, _ := buildAttachmentHistory(t, base, 8)
+			real := initTestRepo(t)
+			dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
+			opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
+			next := 0
+			add := func() {
+				ref := writeLooseAttachment(t, attachmentsDir, []byte(fmt.Sprintf("attachment %d", next)))
+				next++
+				_, err := db.ExecContext(t.Context(),
+					`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path) VALUES (?, ?, ?, '', '')`,
+					ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
+				require.NoError(t, err)
+			}
+			for range base {
+				add()
+			}
+			if base > 0 {
+				_, err := Create(t.Context(), real, newTestApp(), opts)
+				require.NoError(t, err)
+			}
+			for range 8 {
+				add()
+				_, err := Create(t.Context(), real, newTestApp(), opts)
+				require.NoError(t, err)
+			}
+			fastSnapshots, err := fast.ListSnapshots()
+			require.NoError(t, err)
+			realSnapshots, err := real.ListSnapshots()
+			require.NoError(t, err)
+			require.Len(t, fastSnapshots, 8+min(base, 1))
+			require.Len(t, realSnapshots, len(fastSnapshots))
+			for i := range fastSnapshots {
+				require.Equal(t, realSnapshots[i].Attachments.Lists, fastSnapshots[i].Attachments.Lists, "snapshot %d", i)
+			}
+			if base == 0 {
+				known, err := fast.LoadBlobIndex()
+				require.NoError(t, err)
+				for i, expected := range [][]int{{3}, {3, 1}, {3, 2}, {3, 2, 1}, {7}} {
+					var sizes []int
+					for _, id := range fastSnapshots[i].Attachments.Lists {
+						refs, _, err := LoadListRefs(fast, known, []string{id}, nil, testPackExt)
+						require.NoError(t, err)
+						sizes = append(sizes, len(refs))
+					}
+					require.Equal(t, expected, sizes, "snapshot %d", i)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildAttachmentHistory(t *testing.T) {
 	for _, base := range []int{0, 4} {
 		t.Run(fmt.Sprintf("base-%d", base), func(t *testing.T) {
