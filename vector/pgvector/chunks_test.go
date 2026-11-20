@@ -419,6 +419,37 @@ func TestChunks(t *testing.T) {
 		}
 	})
 
+	t.Run("rounded domain timestamp key", func(t *testing.T) {
+		db := setupDB(t)
+		ctx := t.Context()
+		_, err := db.ExecContext(ctx, `CREATE DOMAIN seconds AS timestamptz(0)`)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `CREATE TABLE domain_timed_chunks (doc_key seconds, chunk_index int, embedding public.halfvec(2))`)
+		require.NoError(t, err)
+		key := time.Date(2026, 1, 1, 0, 0, 0, 100000000, time.UTC)
+		_, err = db.ExecContext(ctx, `INSERT INTO domain_timed_chunks VALUES ($1, 0, '[1,0]')`, key)
+		require.NoError(t, err)
+		chunks, err := pgvector.AttachChunks[time.Time](ctx, db, "domain_timed_chunks")
+		require.NoError(t, err)
+		tx, err := db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = chunks.ReplaceTx(ctx, tx, []time.Time{key}, nil)
+		require.ErrorContains(t, err, "column precision")
+		require.NoError(t, tx.Rollback())
+		var count int
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM domain_timed_chunks`).Scan(&count))
+		assert.Equal(t, 1, count)
+		tx, err = db.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+		_, err = chunks.ReplaceTx(ctx, tx, []time.Time{key.Truncate(time.Second)}, nil)
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit())
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM domain_timed_chunks`).Scan(&count))
+		assert.Zero(t, count)
+	})
+
 	t.Run("selected keys are stable during streaming", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
