@@ -53,23 +53,11 @@ WHERE a.attrelid=to_regclass($1) AND a.attname='embedding' AND NOT a.attisdroppe
 }
 
 // ReplaceTx deletes the selected documents' chunks and streams replacements.
-// Roll back tx on error. A nil sequence clears the selected documents.
+// Roll back tx on error.
 // Callers must serialize replacements for each document through commit.
 func (c *Chunks[K]) ReplaceTx(ctx context.Context, tx *sql.Tx, keys []K, chunks iter.Seq2[Chunk[K], error]) (int, error) {
-	for start := 0; start < len(keys); start += 200 {
-		batch := keys[start:min(start+200, len(keys))]
-		args := make([]any, len(batch))
-		placeholders := make([]string, len(batch))
-		for i, key := range batch {
-			args[i] = key
-			placeholders[i] = fmt.Sprintf("$%d", i+1)
-		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key IN ("+strings.Join(placeholders, ",")+")", args...); err != nil {
-			return 0, fmt.Errorf("delete chunks: %w", err)
-		}
-	}
-	if chunks == nil {
-		return 0, nil
+	if _, err := tx.ExecContext(ctx, "DELETE FROM "+c.table+" WHERE doc_key = ANY($1)", keys); err != nil {
+		return 0, fmt.Errorf("delete chunks: %w", err)
 	}
 	var args []any
 	var values []string
@@ -124,25 +112,19 @@ func (c *Chunks[K]) SearchTx(ctx context.Context, tx *sql.Tx, query vector.Vecto
 		}
 	}
 	distance := fmt.Sprintf("embedding OPERATOR(%s.<=>) $1::%s.halfvec", c.ext, c.ext)
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT doc_key,chunk_index,1-(%s) FROM %s ORDER BY %s LIMIT $2", distance, c.table, distance), vectorliteral.Format(query), limit)
-	if err != nil {
-		return page, fmt.Errorf("search chunks: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
+	q := sqlquery.Query{SQL: fmt.Sprintf("SELECT doc_key,chunk_index,1-(%s) FROM %s ORDER BY %s LIMIT $2", distance, c.table, distance), Args: []any{vectorliteral.Format(query), limit}}
+	hits, err := q.All(ctx, tx, func(rows *sql.Rows) (vector.Hit[K], error) {
 		var hit vector.Hit[K]
 		var score float64
 		if err := rows.Scan(&hit.Doc, &hit.ChunkIndex, &score); err != nil {
-			return page, fmt.Errorf("scan chunk: %w", err)
+			return hit, err
 		}
 		hit.Score = float32(score)
-		page.Hits = append(page.Hits, hit)
+		return hit, nil
+	})
+	if err != nil {
+		return page, fmt.Errorf("search chunks: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return page, fmt.Errorf("iterate chunks: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return page, fmt.Errorf("close chunks: %w", err)
-	}
+	page.Hits = hits
 	return page, nil
 }

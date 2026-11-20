@@ -3,7 +3,6 @@ package pgvector_test
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"iter"
 	"testing"
 
@@ -59,7 +58,7 @@ func TestChunks(t *testing.T) {
 		seed(t, db, chunks, "replace", "covered", "other")
 		tx, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
-		n, err := chunks.ReplaceTx(ctx, tx, []string{"replace"}, func(yield func(pgvector.Chunk[string], error) bool) {
+		n, err := chunks.ReplaceTx(ctx, tx, []string{"replace", "covered"}, func(yield func(pgvector.Chunk[string], error) bool) {
 			for chunk, err := range sequence("replace", 201) {
 				if chunk.ChunkIndex == 200 {
 					var flushed int
@@ -77,22 +76,11 @@ func TestChunks(t *testing.T) {
 		var stored string
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT embedding::text FROM "Mixed chunks" WHERE doc_key='replace' AND chunk_index=200`).Scan(&stored))
 		assert.Equal(t, "[2,1]", stored)
-		keys := make([]string, 201)
-		keys[0] = "replace"
-		for i := 1; i < len(keys)-1; i++ {
-			keys[i] = fmt.Sprintf("batch-%d", i)
-		}
-		keys[200] = "covered"
-		tx, err = db.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		_, err = chunks.ReplaceTx(ctx, tx, keys, nil)
-		require.NoError(t, err)
-		require.NoError(t, tx.Commit())
 		var count int
-		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks"`).Scan(&count))
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM "Mixed chunks" WHERE doc_key != 'replace'`).Scan(&count))
 		assert.Equal(t, 1, count)
 		var remaining string
-		require.NoError(t, db.QueryRowContext(ctx, `SELECT doc_key FROM "Mixed chunks"`).Scan(&remaining))
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT doc_key FROM "Mixed chunks" WHERE doc_key != 'replace'`).Scan(&remaining))
 		assert.Equal(t, "other", remaining)
 	})
 
