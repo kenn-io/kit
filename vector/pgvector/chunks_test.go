@@ -16,8 +16,10 @@ import (
 	"go.kenn.io/kit/vector/pgvector"
 )
 
-var cancelChunkScan context.CancelFunc
-var errCanceledChunkScan = errors.New("canceled during scan")
+var (
+	cancelChunkScan      context.CancelFunc
+	errCanceledChunkScan = errors.New("canceled during scan")
+)
 
 type cancelingChunkKey string
 
@@ -156,7 +158,7 @@ func TestChunks(t *testing.T) {
 		_, err = chunks.ReplaceTx(ctx, tx, []string{"selected"}, func(yield func(pgvector.Chunk[string], error) bool) {
 			yield(pgvector.Chunk[string]{Doc: "selected", Vector: vector.Vector{1e-9, 0}}, nil)
 		})
-		assert.Error(t, err)
+		require.Error(t, err)
 		require.NoError(t, tx.Rollback())
 		var selected, other int
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE doc_key = 'selected'), count(*) FILTER (WHERE doc_key = 'other') FROM "Mixed chunks"`).Scan(&selected, &other))
@@ -166,7 +168,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()
 		_, err = chunks.SearchTx(ctx, tx, vector.Vector{1e-9, 0}, 10)
-		assert.Error(t, err)
+		require.Error(t, err)
 		require.NoError(t, tx.Rollback())
 	})
 
@@ -453,6 +455,7 @@ func TestChunks(t *testing.T) {
 		require.NoError(t, err)
 		rows, err := tx.QueryContext(ctx, `SELECT doc_key FROM binary_keys ORDER BY chunk_index`)
 		require.NoError(t, err)
+		defer rows.Close()
 		var keys []string
 		for rows.Next() {
 			var key []byte

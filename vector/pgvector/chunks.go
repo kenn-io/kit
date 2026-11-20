@@ -175,8 +175,10 @@ func chunkVector(v vector.Vector) (string, error) {
 // restoreHNSW undoes SearchTx's settings. It skips PostgreSQL errors, which
 // abort tx, and still restores after Go-side errors such as a failed scan.
 func restoreHNSW(ctx context.Context, tx *sql.Tx, resultErr error, previousEF, previousIterative string, iterative bool) error {
-	var server interface{ SQLState() string }
-	if errors.As(resultErr, &server) {
+	if _, ok := errors.AsType[interface {
+		error
+		SQLState() string
+	}](resultErr); ok {
 		return resultErr
 	}
 	// Restore settings even if the search context expired while tx remains live.
