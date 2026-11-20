@@ -253,7 +253,7 @@ func TestChunks(t *testing.T) {
 	t.Run("key equality follows the column", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE uuid_chunks (doc_key uuid, chunk_index int, embedding public.halfvec(2)); CREATE TABLE binary_chunks (doc_key bytea, chunk_index bigint, embedding public.halfvec(2))`)
+		_, err := db.ExecContext(ctx, `CREATE TABLE uuid_chunks (doc_key uuid, chunk_index int, embedding public.halfvec(2))`)
 		require.NoError(t, err)
 		chunks, err := pgvector.AttachChunks[string](ctx, db, "uuid_chunks")
 		require.NoError(t, err)
@@ -265,12 +265,6 @@ func TestChunks(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.Equal(t, 1, n)
-		binary, err := pgvector.AttachChunks[any](ctx, tx, "binary_chunks")
-		require.NoError(t, err)
-		_, err = binary.ReplaceTx(ctx, tx, []any{[]byte("key")}, func(yield func(pgvector.Chunk[any], error) bool) {
-			yield(pgvector.Chunk[any]{Doc: []byte("key"), Vector: vector.Vector{1, 0}}, nil)
-		})
-		require.NoError(t, err)
 		require.NoError(t, tx.Rollback())
 		_, err = db.ExecContext(ctx, `CREATE COLLATION case_insensitive (provider = icu, locale = 'und-u-ks-level2', deterministic = false); CREATE TABLE collated_chunks (doc_key text COLLATE case_insensitive, chunk_index int, embedding public.halfvec(2))`)
 		require.NoError(t, err)
@@ -300,7 +294,7 @@ func TestChunks(t *testing.T) {
 	t.Run("selected keys are stable during streaming", func(t *testing.T) {
 		db := setupDB(t)
 		ctx := t.Context()
-		_, err := db.ExecContext(ctx, `CREATE TABLE binary_keys (doc_key bytea, chunk_index int, embedding public.halfvec(2))`)
+		_, err := db.ExecContext(ctx, `CREATE TABLE binary_keys (doc_key bytea, chunk_index bigint, embedding public.halfvec(2))`)
 		require.NoError(t, err)
 		chunks, err := pgvector.AttachChunks[any](ctx, db, "binary_keys")
 		require.NoError(t, err)
