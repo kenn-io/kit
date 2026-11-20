@@ -1,7 +1,8 @@
 ---
+type: Explanation
 title: "OpenSSH Package Threat Model"
 description: "Trust boundaries, attacker capabilities, and security guarantees for OpenSSH helpers."
-last_edited: 2026-08-13
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # OpenSSH Package Threat Model

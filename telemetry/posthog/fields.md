@@ -1,7 +1,8 @@
 ---
+type: Reference
 title: "PostHog event fields"
 description: "Shared PostHog event fields and their meanings."
-last_edited: 2026-11-17
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # PostHog event fields

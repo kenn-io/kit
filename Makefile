@@ -7,7 +7,7 @@ CUSTOM_GCL := $(CUSTOM_GCL_DIR)/custom-gcl
 # one Go build cache instead of each compiling its own copy of every package.
 # Read `go env` first so flags saved with `go env -w GOFLAGS=...` survive the
 # export. GOFLAGS=-trimpath=false opts out. Debuggers need a source mapping:
-# docs/development.md#debugging-trimmed-builds.
+# docs/guides/development.md#debugging-trimmed-builds.
 ifeq ($(origin GOFLAGS),undefined)
 GOFLAGS := $(shell go env GOFLAGS)
 endif
@@ -16,7 +16,7 @@ override GOFLAGS += -trimpath
 endif
 export GOFLAGS
 
-.PHONY: lint lint-golangci lint-config lint-config-check custom-gcl nilaway lint-workflow-retries lint-frontmatter lint-frontmatter-changed
+.PHONY: lint lint-golangci lint-config lint-config-check custom-gcl nilaway lint-workflow-retries lint-frontmatter lint-frontmatter-changed fix-frontmatter
 
 # lint is the repository lint gate: shared config drift, golangci-lint with the
 # kit analyzers, nilaway, workflow downloads, and Markdown metadata.
@@ -63,12 +63,17 @@ test-vector-sqlite:
 lint-workflow-retries:
 	go run ./cmd/kennlint workflow-retries
 
+FRONTMATTER_FIX_FLAGS = -type-rule 'docs/guides/**=Guide' -type-rule 'docs/explanation/**=Explanation'
+
 lint-frontmatter:
-	go run ./cmd/kennlint frontmatter
+	@go run ./cmd/kennlint frontmatter || { echo "fix locally: make fix-frontmatter (regenerates stale managed indexes; set stale generated.at by hand; BY=<actor> records generated.by)"; exit 1; }
 
 FRONTMATTER_BASE ?= origin/main
 lint-frontmatter-changed:
-	go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE)
+	@go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE) || { echo "fix locally: make fix-frontmatter (regenerates stale managed indexes; set stale generated.at by hand; BY=<actor> records generated.by)"; exit 1; }
+
+fix-frontmatter:
+	go run ./cmd/kennlint frontmatter -fix $(FRONTMATTER_FIX_FLAGS) $(if $(BY),-by $(BY))
 
 # Workflow actions run at the commits in .github/workflows/actions.lock,
 # including actions that other actions call. The organization requires

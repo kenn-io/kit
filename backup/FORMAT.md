@@ -1,7 +1,8 @@
 ---
+type: Reference
 title: "Backup Repository Format"
 description: "On-disk layout and interoperability rules for backup repositories."
-last_edited: 2026-11-11
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # Backup Repository Format

@@ -1,7 +1,8 @@
 ---
+type: Guide
 title: "Confirmed milestone delivery"
 description: "Track confirmed milestone delivery through PostHog."
-last_edited: 2026-10-18
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # Confirmed milestone delivery
