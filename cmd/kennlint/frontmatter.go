@@ -316,7 +316,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if !frontmatterSelected(file, selected, nil) {
 			continue
 		}
-		beyond, resolveErr := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes)
+		beyond, resolveErr := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes, *legacy)
 		if resolveErr != nil {
 			return 0, resolveErr
 		}
@@ -393,7 +393,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 // bundle, or on an excluded path. Such a document, and any SKILL.md reached
 // through an alias, is never read or rewritten through its alias; an eligible
 // in-repository document alias stays supported.
-func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]struct{}, excludes []string) (bool, error) {
+func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]struct{}, excludes []string, legacy bool) (bool, error) {
 	resolved, err := pathresolve.EvalSymlinks(filepath.Join(root, filepath.FromSlash(file)))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -408,6 +408,9 @@ func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]s
 	rel, relErr := filepath.Rel(resolvedRoot, resolved)
 	inside := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	target := filepath.ToSlash(rel)
+	if !legacy && target != file && (path.Base(target) == "log.md" || path.Base(target) == "index.md") {
+		return true, nil // Reserved documents are only handled under their own names.
+	}
 	container := target
 	if isSkillFile(target) {
 		container = path.Dir(target) // A directly owned SKILL.md sits in its own bundle.

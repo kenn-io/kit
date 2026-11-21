@@ -279,9 +279,9 @@ func materializeYAMLAliases(n *yaml.Node) {
 }
 
 func cloneYAMLValue(n *yaml.Node) *yaml.Node {
-	n = resolveYAML(n)
-	if n == nil {
-		return nil
+	// This tree has already been decoded, so aliases have valid targets.
+	for n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
 	}
 	copyNode := *n
 	copyNode.Anchor = ""
