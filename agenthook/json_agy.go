@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // planAgyJSONConfig writes agy's hooks file, whose top-level keys name hook
 // groups. Tool events hold matcher groups and the other events hold handlers
 // directly: https://antigravity.google/docs/hooks/
-// Install keeps its hooks in one group named after the marker; uninstall
-// removes marker commands from every group.
+// Install keeps its hooks in one group named by the marker itself, so each
+// application keeps its own enabled setting; uninstall removes marker
+// commands from every group.
 func planAgyJSONConfig(path, marker, command string, hooks []nativeHook, uninstall bool) ([]byte, bool, error) {
 	root, exists, err := readJSONConfig(path)
 	if err != nil {
@@ -32,12 +32,12 @@ func planAgyJSONConfig(path, marker, command string, hooks []nativeHook, uninsta
 		}
 		// Install refills its own group, which keeps the user's enabled
 		// setting.
-		if removed && agyGroupEmpty(group) && (uninstall || name != agyGroupName(marker)) {
+		if removed && agyGroupEmpty(group) && (uninstall || name != marker) {
 			delete(root, name)
 		}
 	}
 	if !uninstall {
-		name := agyGroupName(marker)
+		name := marker
 		group := map[string]any{}
 		if raw, exists := root[name]; exists {
 			var ok bool
@@ -135,26 +135,4 @@ func agyGroupEmpty(group map[string]any) bool {
 		}
 	}
 	return true
-}
-
-// agyGroupName turns a marker such as "--source example" into a readable
-// group name such as "source-example".
-func agyGroupName(marker string) string {
-	var name strings.Builder
-	dash := false
-	for _, r := range strings.ToLower(marker) {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
-			if dash && name.Len() > 0 {
-				name.WriteByte('-')
-			}
-			name.WriteRune(r)
-			dash = false
-			continue
-		}
-		dash = true
-	}
-	if name.Len() == 0 {
-		return "agenthook"
-	}
-	return name.String()
 }

@@ -31,7 +31,7 @@ func TestAgyInstallWritesNamedGroup(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.Changed)
 	command := `"type":"command","command":"/opt/hook --source shared-agent-hook-test"`
-	assert.JSONEq(t, `{"source-shared-agent-hook-test":{
+	assert.JSONEq(t, `{"--source shared-agent-hook-test":{
   "SessionStart":[{`+command+`}],
   "PreInvocation":[{`+command+`,"timeout":2}],
   "PreToolUse":[
@@ -89,7 +89,7 @@ func TestAgyRejectsMatcherOnLifecycleEvent(t *testing.T) {
 
 func TestAgyReinstallKeepsADisabledGroupDisabled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hooks.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{"source-shared-agent-hook-test":{
+	require.NoError(t, os.WriteFile(path, []byte(`{"--source shared-agent-hook-test":{
   "enabled":false,
   "Stop":[{"type":"command","command":"/opt/hook `+testMarker+`"}]
 }}`), 0o600))
@@ -103,10 +103,31 @@ func TestAgyReinstallKeepsADisabledGroupDisabled(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.False(t, result.Changed)
-	assert.JSONEq(t, `{"source-shared-agent-hook-test":{
+	assert.JSONEq(t, `{"--source shared-agent-hook-test":{
   "enabled":false,
   "Stop":[{"type":"command","command":"/opt/hook --source shared-agent-hook-test"}]
 }}`, string(result.Data))
+}
+
+func TestAgyAppsWithSimilarMarkersKeepTheirOwnEnabledSetting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"--source app.one":{
+  "enabled":false,
+  "Stop":[{"type":"command","command":"/opt/one --source app.one"}]
+}}`), 0o600))
+
+	result, err := PlanInstall(AgentAgy, InstallOptions{
+		ConfigPath: path,
+		Command:    "/opt/two --source app-one",
+		Marker:     "--source app-one",
+		Hooks:      []Hook{{Event: EventStop}},
+	})
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+  "--source app.one":{"enabled":false,"Stop":[{"type":"command","command":"/opt/one --source app.one"}]},
+  "--source app-one":{"Stop":[{"type":"command","command":"/opt/two --source app-one"}]}
+}`, string(result.Data))
 }
 
 type sessionStartHandler struct {
