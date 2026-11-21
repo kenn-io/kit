@@ -123,7 +123,7 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 		if err != nil {
 			return nil, &indexPageError{file, err}
 		}
-		if status := b.fields["status"]; !emptyOptional(status) && (!validString(status) || (status.Value != "stable" && status.Value != "draft")) {
+		if status := b.fields["status"]; status != nil && !emptyOptional(status) && (!validString(status) || (status.Value != "stable" && status.Value != "draft")) {
 			continue
 		}
 		title, description := b.fields["title"], b.fields["description"]
@@ -149,10 +149,21 @@ func refreshTrackedIndex(root, file string, files []string, skillDirs map[string
 	if err != nil {
 		return nil, false, err
 	}
-	bounds, err := findIndexBlock(src)
+	body := src
+	block, err := parseFrontmatter(src)
+	switch {
+	case err == nil:
+		body = block.body
+	case !errors.Is(err, errFrontmatterMissing):
+		return src, false, err
+	}
+	bounds, err := findIndexBlock(body)
 	if err != nil || bounds == nil {
 		return src, false, err
 	}
+	offset := len(src) - len(body)
+	bounds.start += offset
+	bounds.finish += offset
 	pages, err := indexPages(root, file, files, skillDirs, excludes)
 	if err != nil {
 		return nil, false, err

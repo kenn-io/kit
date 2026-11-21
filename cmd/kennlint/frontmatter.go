@@ -648,6 +648,6 @@ func frontmatterExcludedTarget(root, file string, skillDirs map[string]struct{},
 	if isSkillFile(target) {
 		container = path.Dir(target) // A directly owned SKILL.md sits in its own bundle.
 	}
-	reserved := (base == "index.md" || base == "log.md" || isSkillFile(target)) && target != file
+	reserved := (path.Base(file) == "index.md" || base == "index.md" || base == "log.md" || isSkillFile(target)) && target != file
 	return !inside || frontmatterHiddenPath(target) || frontmatterInSkillDirectory(container, skillDirs) || !frontmatterSelected(target, nil, excludes) || reserved, nil
 }

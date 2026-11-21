@@ -17,6 +17,7 @@ import (
 )
 
 func TestRefreshIndex(t *testing.T) {
+	const metadata = "---\r\nexample: \"first\r\n" + indexBegin + "\r\nkeep me\r\n" + indexEnd + "\r\nlast\"\r\n---\r\n"
 	tests := []struct {
 		name, src, want string
 		pages           []indexPage
@@ -26,6 +27,8 @@ func TestRefreshIndex(t *testing.T) {
 		{"escaped CRLF", "top\r\n" + indexBegin + "\r\n" + indexEnd + "\r\nend", "top\r\n" + indexBegin + "\r\n- [A\\[b\\]\\\\c](a%20b/x.md) - two words\r\n- [Z](z.md) - last\r\n" + indexEnd + "\r\nend", []indexPage{{"a b/x.md", `A[b]\c`, "two\n words"}, {"z.md", "Z", "last"}}, false},
 		{"fenced backticks", "```markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n```\n", "```markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n```\n", []indexPage{{"page.md", "Page", "Description"}}, false},
 		{"fenced tildes and real block", "~~~markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n~~~\n" + indexBegin + "\nold\n" + indexEnd + "\n", "~~~markdown\n" + indexBegin + "\nexample\n" + indexEnd + "\n~~~\n" + indexBegin + "\n- [Page](page.md) - Description\n" + indexEnd + "\n", []indexPage{{"page.md", "Page", "Description"}}, false},
+		{"metadata markers only", metadata + "# Index\r\n", metadata + "# Index\r\n", nil, false},
+		{"metadata and body markers", metadata + indexBegin + "\r\nold\r\n" + indexEnd + "\r\n", metadata + indexBegin + "\r\n" + indexEnd + "\r\n", nil, false},
 		{"unmarked", "untouched\n", "untouched\n", nil, false},
 		{"missing end", indexBegin + "\n", "", nil, true},
 		{"end first", indexEnd + "\n" + indexBegin + "\n", "", nil, true},
@@ -347,12 +350,18 @@ func TestIndexReviewBundleBoundaries(t *testing.T) {
 	repo.WriteFile("docs/.drafts/index.md", protected)
 	require.NoError(t, os.MkdirAll("docs/import", 0o700))
 	require.NoError(t, os.Symlink(target, "docs/import/index.md"))
+	repo.WriteFile("ordinary/page.md", protected)
+	require.NoError(t, os.MkdirAll("docs/linked", 0o700))
+	require.NoError(t, os.Symlink("../../ordinary/page.md", "docs/linked/index.md"))
 	repo.Run("add", ".")
 	var out, errs bytes.Buffer
 	n, err := runFrontmatter(t.Context(), []string{"-fix", "docs"}, &out, &errs)
 	require.NoError(t, err)
 	assert.Zero(t, n, errs.String())
 	got, err := os.ReadFile(target)
+	require.NoError(t, err)
+	assert.Equal(t, protected, string(got))
+	got, err = os.ReadFile("ordinary/page.md")
 	require.NoError(t, err)
 	assert.Equal(t, protected, string(got))
 	got, err = os.ReadFile("docs/.drafts/index.md")
