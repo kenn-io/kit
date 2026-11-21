@@ -428,3 +428,91 @@ func requireEmptyCommon(output CommonOutput) error {
 	}
 	return nil
 }
+
+// encodeAgyResponse follows agy's hook output schemas. PreToolUse and Stop
+// require a decision, and PreInvocation ends a turn with terminationBehavior:
+// https://antigravity.google/docs/hooks/
+func encodeAgyResponse(event Event, value any) (map[string]any, error) {
+	response := map[string]any{}
+	switch output := value.(type) {
+	case SessionStartOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.InitialUserMessage != "" || output.SessionTitle != "" ||
+			len(output.WatchPaths) > 0 || output.ReloadSkills {
+			return nil, errors.New("unsupported SessionStart output fields")
+		}
+		if output.AdditionalContext != "" {
+			response["injectSteps"] = []any{map[string]any{"systemMessage": output.AdditionalContext}}
+		}
+	case UserPromptSubmitOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		// PreInvocation runs before every model call, so injected context
+		// would repeat within a turn.
+		if output.AdditionalContext != "" || output.SessionTitle != "" ||
+			output.SuppressOriginalPrompt {
+			return nil, errors.New("unsupported UserPromptSubmit output fields")
+		}
+		switch output.Decision {
+		case DecisionBlock:
+			response["terminationBehavior"] = "terminate"
+			if output.Reason != "" {
+				response["injectSteps"] = []any{map[string]any{"errorMessage": output.Reason}}
+			}
+		case "":
+			if output.Reason != "" {
+				return nil, errors.New("UserPromptSubmit reason requires a block decision")
+			}
+		default:
+			return nil, fmt.Errorf("agy UserPromptSubmit does not support decision %q", output.Decision)
+		}
+	case PreToolUseOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if len(output.UpdatedInput) > 0 || output.AdditionalContext != "" {
+			return nil, errors.New("unsupported PreToolUse output fields")
+		}
+		// agy's "allow" defers to its normal permission flow, and
+		// "auto_approve" skips it.
+		switch output.PermissionDecision {
+		case "", PermissionDecisionDefer:
+			response["decision"] = "allow"
+		case PermissionDecisionAllow:
+			response["decision"] = "auto_approve"
+		case PermissionDecisionDeny, PermissionDecisionAsk:
+			response["decision"] = string(output.PermissionDecision)
+		default:
+			return nil, fmt.Errorf(
+				"agy PreToolUse does not support permission decision %q", output.PermissionDecision,
+			)
+		}
+		addValue(response, "reason", output.PermissionDecisionReason)
+	case StopOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.AdditionalContext != "" {
+			return nil, errors.New("unsupported Stop output fields")
+		}
+		// Any decision other than "continue" lets agy stop.
+		switch output.Decision {
+		case DecisionBlock:
+			response["decision"] = "continue"
+		case "":
+			if output.Reason != "" {
+				return nil, errors.New("Stop reason requires a block decision")
+			}
+			response["decision"] = "allow"
+		default:
+			return nil, fmt.Errorf("agy Stop does not support decision %q", output.Decision)
+		}
+		addValue(response, "reason", output.Reason)
+	default:
+		return nil, fmt.Errorf("agy does not support %s output", event)
+	}
+	return response, nil
+}

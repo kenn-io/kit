@@ -42,6 +42,11 @@ func normalize(agent Agent, input io.Reader) ([]byte, error) {
 	}
 
 	promoteAliases(payload)
+	if agent == AgentAgy {
+		if err := promoteAgyFields(payload); err != nil {
+			return nil, fmt.Errorf("normalize Antigravity CLI hook payload: %w", err)
+		}
+	}
 	if agent == AgentHermes {
 		if err := promoteHermesExtra(payload); err != nil {
 			return nil, fmt.Errorf("normalize Hermes Agent hook payload: %w", err)
@@ -93,6 +98,25 @@ func promoteAliases(payload map[string]json.RawMessage) {
 	for _, alias := range aliases {
 		promoteFirst(payload, alias.canonical, payload, alias.native...)
 	}
+}
+
+// promoteAgyFields maps agy's camelCase fields and nested toolCall:
+// https://antigravity.google/docs/hooks/
+func promoteAgyFields(payload map[string]json.RawMessage) error {
+	promoteFirst(payload, "session_id", payload, "conversationId")
+	promoteFirst(payload, "model", payload, "modelName")
+	promoteFirst(payload, "prompt", payload, "lastUserInput")
+	raw, ok := payload["toolCall"]
+	if !ok {
+		return nil
+	}
+	var call map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &call); err != nil {
+		return fmt.Errorf("field %q must be an object: %w", "toolCall", err)
+	}
+	promoteFirst(payload, "tool_name", call, "name")
+	promoteFirst(payload, "tool_input", call, "args")
+	return nil
 }
 
 func promoteHermesExtra(payload map[string]json.RawMessage) error {

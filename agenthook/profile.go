@@ -14,6 +14,7 @@ import (
 type Agent string
 
 const (
+	AgentAgy      Agent = "agy"
 	AgentClaude   Agent = "claude"
 	AgentCodex    Agent = "codex"
 	AgentCopilot  Agent = "copilot"
@@ -67,6 +68,8 @@ const (
 	formatHermesYAML
 	// formatScript writes a kit-owned JavaScript module the harness loads.
 	formatScript
+	// formatAgyJSON writes a named agy hook group.
+	formatAgyJSON
 )
 
 type windowsCommandStyle uint8
@@ -84,6 +87,7 @@ type responseFormat uint8
 
 const (
 	responseUnknown responseFormat = iota
+	responseAgy
 	responseClaude
 	responseCopilot
 	responseCursor
@@ -123,6 +127,7 @@ type profileSpec struct {
 }
 
 var profileOrder = []Agent{
+	AgentAgy,
 	AgentClaude,
 	AgentCodex,
 	AgentCopilot,
@@ -137,6 +142,7 @@ var profileOrder = []Agent{
 }
 
 var profiles = map[Agent]profileSpec{
+	AgentAgy:      agyProfile(),
 	AgentClaude:   claudeProfile(),
 	AgentCodex:    codexProfile(),
 	AgentCopilot:  copilotProfile(),
