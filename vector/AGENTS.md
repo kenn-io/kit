@@ -178,9 +178,8 @@ pipeline. Preserve these invariants when changing it.
 - Lifecycle errors wrap `ErrGenerationNotFound` for a key never ensured and
   `ErrRetired` for a retired generation used as live, so callers match them
   with `errors.Is`.
-- A retired generation never leaves retired. `SetGenerationState` and
-  `EnsureGeneration` refuse any other state, and ensuring it as retired does
-  not recreate reclaimed storage.
+- In default storage, retired generations stay retired. `SetGenerationState` and
+  `EnsureGeneration` refuse to restore them; `Reclaim` leaves their storage gone.
 - `ActiveGeneration` returns the newest active generation by ordinal.
   `LiveGenerations` still returns building generations ahead of active ones.
   Callers that serve only the active generation select it themselves.
@@ -221,20 +220,36 @@ pipeline. Preserve these invariants when changing it.
 
 ## PostgreSQL storage
 
+- `SaveDocuments` requires READ COMMITTED. Roll back on error; retry a busy
+  generation in a new transaction. Save documents in a consistent order.
+  Stale keys correspond to input entries in order, including repeated keys.
+  An open save transaction holds its generation lock until it ends; lifecycle
+  operations wait. Keep transactions short and use lifecycle deadlines.
 - `pgvector.New` attaches without DDL; `Install` owns setup. Source keys must
   be unique, and revisions must change when content is replaced. Deleting a
   source row cascades to its stamps and vectors; `TRUNCATE` requires `CASCADE`.
-- Re-ensuring an existing generation with the same model needs no DDL.
-  `EnsureGeneration` refuses `retired`, and `Activate` retires the others
-  without dropping anything. `Reclaim` frees a retired generation's chunk
-  table and stamps; it requires an owner role. `QueryGeneration` holds an
-  access-share table lock until the query ends, so reclamation waits for an
-  in-flight query. A query using a stale generation list returns no hits if
-  reclamation completed before it locked the retired table.
+- Default storage uses a chunk table and HNSW index per generation.
+  `EnsureGeneration` refuses retired generations, `Reclaim` drops their table,
+  and queries hold an access-share lock until they finish.
+- `Chunks` attaches to an app-owned table without DDL. `ReplaceTx` and
+  `SearchTx` use the caller's transaction. The table requires non-null `text`
+  or `bigint` keys, non-null `integer` or `bigint` positions, and `halfvec(N)`.
+  Use a trusted `search_path` and N-dimensional vectors. Keep other queries out
+  of the transaction during search, serialize replacements for the same
+  document, and end the transaction. ScanCap is the maximum scan size;
+  compare it with the raw hit count before rolling up documents.
+- Shared storage uses a caller-installed chunk table with `generation_id bigint`,
+  `doc_key` matching the document key and cascading on delete, `chunk_index`
+  integer or bigint, unbounded halfvec `embedding`, and primary key
+  `(generation_id, doc_key, chunk_index)`. Without an app-installed vector
+  index, searches are exact. Apps own any index they add and its search
+  behavior. Kit creates or tunes none. `EnsureGeneration` restores retired
+  generations only as building; `SetGenerationState` cannot restore them.
+  `Reclaim` deletes their rows.
 - `PendingForGeneration` and `SaveVectors` return `ErrRetired` for retired
   generations. `SaveVectors` and `QueryGeneration` reject non-finite or
   zero-norm vectors before PostgreSQL converts them to halfvec.
-- The candidate query orders by distance alone so the HNSW index is used.
+- The default candidate query orders by distance alone so the HNSW index is used.
   Freshness is checked during the index scan; do not add a tie-break to that
   inner `ORDER BY`.
 - `Activate` counts uncovered documents and publishes in one transaction. An

@@ -17,6 +17,16 @@ type generationRow struct {
 	state       vector.State
 }
 
+func (s *Store[K, G]) lifecycleLock(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::regclass::oid::text, 1))`, s.generations())
+	return err
+}
+
+func (s *Store[K, G]) lockGeneration(ctx context.Context, tx *sql.Tx, id int64) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::regclass::oid::text || ':' || $2::bigint::text, 0))`, s.generations(), id)
+	return err
+}
+
 // lookup reads a generation row, locking it when lock is set. It rejects persisted states this version cannot interpret.
 func (s *Store[K, G]) lookup(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
@@ -73,10 +83,10 @@ func (s *Store[K, G]) ensureStorage(ctx context.Context, tx *sql.Tx, id int64, d
 	return nil
 }
 
-// EnsureGeneration registers a model and creates its chunk table and HNSW index.
+// EnsureGeneration registers a model. Default storage creates a chunk table and HNSW index.
 // An existing generation with the same model needs no sequence value and no DDL.
-// The state must be pending, building, or active; a retired generation is never
-// re-ensured and returns ErrRetired.
+// The state must be pending, building, or active. Shared storage permits
+// re-ensuring a retired generation as building.
 func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.Generation, state vector.State) error {
 	if state != vector.StatePending && state != vector.StateBuilding && state != vector.StateActive {
 		return fmt.Errorf("invalid generation state %q", state)
@@ -84,11 +94,14 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if model.Dimensions <= 0 || model.Dimensions > 4000 {
 		return fmt.Errorf("invalid generation dimension %d", model.Dimensions)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = s.lifecycleLock(ctx, tx); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if errors.Is(err, vector.ErrGenerationNotFound) {
 		row, err = s.insertGeneration(ctx, tx, gen, model.Fingerprint(), model.Dimensions, state)
@@ -96,7 +109,10 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if err != nil {
 		return err
 	}
-	if row.state == vector.StateRetired {
+	if err = s.lockGeneration(ctx, tx, row.id); err != nil {
+		return err
+	}
+	if row.state == vector.StateRetired && (!s.schema.SharedChunks || state != vector.StateBuilding) {
 		return vector.ErrRetired
 	}
 	if row.fingerprint != model.Fingerprint() || row.dim != model.Dimensions {
@@ -105,8 +121,10 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2`, s.generations()), state, row.id); err != nil {
 		return err
 	}
-	if err = s.ensureStorage(ctx, tx, row.id, model.Dimensions); err != nil {
-		return err
+	if !s.schema.SharedChunks {
+		if err = s.ensureStorage(ctx, tx, row.id, model.Dimensions); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -118,13 +136,19 @@ func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vecto
 	if !knownState(state) {
 		return fmt.Errorf("invalid generation state %q", state)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = s.lifecycleLock(ctx, tx); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
+		return err
+	}
+	if err = s.lockGeneration(ctx, tx, row.id); err != nil {
 		return err
 	}
 	if row.state == vector.StateRetired && state != vector.StateRetired {
@@ -139,17 +163,47 @@ func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state vecto
 // Activate publishes a fully covered generation and retires the others. Retired
 // generations keep their storage.
 func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = s.lifecycleLock(ctx, tx); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
 		return err
 	}
 	if row.state == vector.StateRetired {
 		return vector.ErrRetired
+	}
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT id FROM %s WHERE id=$1 OR state IN ($2,$3) ORDER BY id`, s.generations()), row.id, vector.StateActive, vector.StateBuilding)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			break
+		}
+		ids = append(ids, id)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err = s.lockGeneration(ctx, tx, id); err != nil {
+			return err
+		}
 	}
 	var backlog int64
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s d LEFT JOIN %s stamp ON stamp.generation_id=$1 AND stamp.doc_key=d.%s WHERE NOT %s`, postgres.QuoteIdentifier(s.schema.DocsTable), s.stamps(), postgres.QuoteIdentifier(s.schema.IDColumn), s.covered("d", "stamp")), row.id).Scan(&backlog)
@@ -166,23 +220,34 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 	return tx.Commit()
 }
 
-// Reclaim drops a retired generation's chunk table and stamps while keeping
-// its generation row. It requires a role that owns the managed tables. A
-// query's ACCESS SHARE lock keeps the chunk table until that query finishes.
+// Reclaim removes a retired generation's chunks and stamps while keeping
+// its generation row. Default storage requires a role that owns the tables.
 func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin generation reclamation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = s.lifecycleLock(ctx, tx); err != nil {
+		return err
+	}
 	row, err := s.lookup(ctx, tx, gen, true)
 	if err != nil {
+		return err
+	}
+	if err = s.lockGeneration(ctx, tx, row.id); err != nil {
 		return err
 	}
 	if row.state != vector.StateRetired {
 		return fmt.Errorf("generation %v is %s; reclaim only a retired generation", gen, row.state)
 	}
-	if _, err = tx.ExecContext(ctx, "DROP TABLE IF EXISTS "+s.chunks(row.id)); err != nil {
+	q := "DROP TABLE IF EXISTS " + s.chunks(row.id)
+	args := []any{}
+	if s.schema.SharedChunks {
+		q = "DELETE FROM " + s.chunkTable(row.id) + " WHERE generation_id=$1"
+		args = append(args, row.id)
+	}
+	if _, err = tx.ExecContext(ctx, q, args...); err != nil {
 		return fmt.Errorf("drop retired vectors for generation %v: %w", gen, err)
 	}
 	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE generation_id=$1`, s.stamps()), row.id); err != nil {

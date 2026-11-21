@@ -18,7 +18,7 @@ func Install(ctx context.Context, db *sql.DB, schema Schema) error {
 		return errors.New("db is nil")
 	}
 	_, createErr := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS vector`)
-	_, err := extensionSchema(ctx, db)
+	_, err := extensionSchema(ctx, db, schema.SharedChunks)
 	if err != nil {
 		return errors.Join(err, createErr)
 	}
