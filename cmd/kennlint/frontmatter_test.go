@@ -386,3 +386,33 @@ func TestFrontmatterFixChangedComparesFinalGitContent(t *testing.T) {
 	assert.Contains(t, stdout.String(), "1 fixed")
 	repo.Run("diff", "--quiet", "base", "--", "document.md")
 }
+
+func TestOKFReservedDocumentAliases(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	ordinary := strings.Replace(goodOKF, "type: Guide\n", "", 1)
+	for name, contents := range map[string]string{"log.md": "# Log\n", "index.md": ordinary, "page.md": ordinary} {
+		repo.WriteFile(name, contents)
+	}
+	for alias, target := range map[string]string{"journal.md": "log.md", "contents.md": "index.md", "document.md": "page.md"} {
+		require.NoError(t, os.Symlink(target, alias))
+	}
+	repo.Run("add", ".")
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-type-rule", "**=Guide", "journal.md", "contents.md", "document.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n, stderr.String())
+	assert.Contains(t, stdout.String(), "checked 1 Markdown files (1 fixed)")
+	for name, want := range map[string]string{"log.md": "# Log\n", "index.md": ordinary} {
+		data, err := os.ReadFile(name)
+		require.NoError(t, err)
+		assert.Equal(t, want, string(data))
+	}
+	data, err := os.ReadFile("page.md")
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "type: Guide")
+}

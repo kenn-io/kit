@@ -19,6 +19,7 @@ import (
 	"go.kenn.io/kit/consolewindow"
 	gitenv "go.kenn.io/kit/git/env"
 	"go.kenn.io/kit/okf"
+	"go.kenn.io/kit/pathresolve"
 )
 
 // trimmedText is a flag whose value, once set, is non-empty after trimming.
@@ -162,9 +163,19 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	var targets []string
 	for _, file := range files {
 		if frontmatterSelected(file, selected, excludes) && !frontmatterInSkillDirectory(file, skillDirs) {
-			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(file))); !errors.Is(err, fs.ErrNotExist) {
-				targets = append(targets, file)
+			full := filepath.Join(root, filepath.FromSlash(file))
+			resolved, err := pathresolve.EvalSymlinks(full)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
 			}
+			if err != nil {
+				return 0, err
+			}
+			target := filepath.Base(resolved)
+			if !*legacy && target != path.Base(file) && (target == "log.md" || target == "index.md") {
+				continue // Reserved documents are only handled under their own names.
+			}
+			targets = append(targets, file)
 		}
 	}
 	if description.value != "" && len(targets) != 1 {

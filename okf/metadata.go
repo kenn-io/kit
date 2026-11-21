@@ -1,6 +1,9 @@
 package okf
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // NormalizedMetadata returns a fresh mapping using the value rules in OKF v0.3
 // §11.2. Known list fields become slices and known timestamps become UTC strings.
@@ -21,6 +24,10 @@ func normalizeFields(fields map[string]any, family string) {
 			continue
 		}
 		switch family + "." + key {
+		case ".status":
+			if status, ok := value.(string); ok && (strings.TrimSpace(status) == "" || status == "stable") {
+				delete(fields, key)
+			}
 		case ".tags", ".sources", ".verified", ".parameters":
 			items, ok := value.([]any)
 			if !ok {
