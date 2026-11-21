@@ -10,7 +10,7 @@ import (
 // A resource may be an opaque scope descriptor rather than a URL or path.
 func sourcesProblems(sources *yaml.Node, path string) []string {
 	sources = resolveYAML(sources)
-	if emptyOptional(sources) {
+	if sources == nil || emptyOptional(sources) {
 		return nil
 	}
 	entries := sources.Content
@@ -24,7 +24,7 @@ func sourcesProblems(sources *yaml.Node, path string) []string {
 	for i, source := range entries {
 		source = resolveYAML(source)
 		entry := fmt.Sprintf("%s[%d]", path, i)
-		if source.Kind != yaml.MappingNode {
+		if source == nil || source.Kind != yaml.MappingNode {
 			problems = append(problems, entry+" must be a mapping")
 			continue
 		}

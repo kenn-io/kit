@@ -306,12 +306,17 @@ func TestFrontmatterDocumentSymlinkSkillExclusions(t *testing.T) {
 	external := filepath.Join(t.TempDir(), "SKILL.md")
 	require.NoError(t, os.WriteFile(external, []byte(strings.Replace(skill, "Body", "# Skill", 1)), 0o600))
 	repo.WriteFile("skills/a/references/page.md", resource)
-	repo.WriteFile("other/page.md", strings.Replace(goodOKF, "type: Guide\n", "", 1))
+	ordinary := strings.Replace(goodOKF, "type: Guide\n", "", 1)
+	repo.WriteFile("other/page.md", ordinary)
+	repo.WriteFile("other/log.md", resource)
+	repo.WriteFile("other/index.md", ordinary)
 	require.NoError(t, os.MkdirAll("docs", 0o755))
 	for name, target := range map[string]string{
 		"docs/skill.md":    "../skills/a/SKILL.md",
 		"docs/resource.md": "../skills/a/references/page.md",
 		"docs/document.md": "../other/page.md",
+		"docs/journal.md":  "../other/log.md",
+		"docs/contents.md": "../other/index.md",
 		"docs/external.md": external,
 	} {
 		require.NoError(t, os.Symlink(target, name))
@@ -321,7 +326,7 @@ func TestFrontmatterDocumentSymlinkSkillExclusions(t *testing.T) {
 	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-type-rule", "**=Guide", "docs"}, &out, &errs)
 	require.NoError(t, err)
 	assert.Zero(t, n, errs.String())
-	for name, want := range map[string]string{"skills/a/SKILL.md": skill, "skills/a/references/page.md": resource, external: strings.Replace(skill, "Body", "# Skill", 1)} {
+	for name, want := range map[string]string{"other/log.md": resource, "other/index.md": ordinary, "skills/a/SKILL.md": skill, "skills/a/references/page.md": resource, external: strings.Replace(skill, "Body", "# Skill", 1)} {
 		data, err := os.ReadFile(name)
 		require.NoError(t, err)
 		assert.Equal(t, want, string(data), name)

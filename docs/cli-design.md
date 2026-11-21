@@ -3,7 +3,7 @@ type: Guide
 title: "Shared CLI design guidance"
 description: Moved to guides/cli-design.md
 status: deprecated
-generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-21T17:09:08Z" }
 ---
 
 This page moved to [guides/cli-design.md](guides/cli-design.md).
@@ -27,6 +27,10 @@ See [this section](guides/cli-design.md#group-commands-by-task).
 ## Leaf help says what happens and what comes back
 
 See [this section](guides/cli-design.md#leaf-help-says-what-happens-and-what-comes-back).
+
+## Common flags for changing state
+
+See [this section](guides/cli-design.md#common-flags-for-changing-state).
 
 ## Put complete request bodies beside the command that accepts them
 

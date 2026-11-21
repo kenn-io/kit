@@ -1,8 +1,8 @@
 ---
 type: Guide
 title: "Shared CLI design guidance"
-description: "Help, output, result hints, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank."
-generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
+description: "Help, flag, output, result hint, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank."
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:55:50Z" }
 ---
 
 # Shared CLI design guidance
@@ -134,6 +134,44 @@ characters, has no trailing period, and avoids non-imperative openings such as
 descriptions start lowercase and have no trailing period; `--json` always reads
 "print JSON ..." ([lint][docbank-help-lint]).
 
+## Common flags for changing state
+
+Use the same flag for the same promise. These are not global flags: add one
+only to a command that supports its behavior.
+
+| Flag | Promise |
+| --- | --- |
+| `--dry-run` | Preview what this invocation would change, without applying it. |
+| `--apply` | On a command that previews by default, perform the proposed changes. This does not answer a confirmation prompt. |
+| `--yes` | Answer an ordinary confirmation prompt affirmatively. It does not grant permission, bypass validation, or supply a required exact-match confirmation. |
+| `--force` | Override a **named** precondition. Say which one in help. If the flag only answers a prompt, use `--yes` instead. |
+
+A dry run uses the same target selection and validation as apply wherever
+possible. Report what would change, including when nothing would change. Do
+not write target files or settings, enqueue work, send mutating requests, or
+perform the operation and roll it back. Say what cannot be checked until
+apply; a successful preview does not reserve the target or guarantee success.
+Read-only probes can be necessary. Name significant probes in help, including
+any incidental effects of existing implementations (for example, starting a
+daemon or taking a temporary lock). Do not claim those paths are side-effect
+free. New previews should not initialize durable state.
+
+A readiness check answers "is it ready?", not "what would change?" A command
+that saves a plan creates an artifact. Neither is a dry run just because it
+does not apply the target change. Likewise, enabling `--yes` or `--force`
+must not turn a requested dry run into an apply.
+
+For a released equivalent such as `--dry`, **add** `--dry-run` rather than
+replacing the old spelling. Keep existing scripts working; use the canonical
+name in help examples, completions, recovery hints, and docs. For example,
+[Kata v0.19 removed `--dry-run` on `close` and `move`][kata-dry-migration].
+Adopting the shared spelling there means restoring it as an alias, not
+reversing the break for another set of users. Map equivalent flags to the
+same plan path, output, and exit status. Reject contradictory explicit values
+(e.g. `--dry --dry-run=false`) before work begins, regardless of argument
+order. Also reject conflicting preview/apply requests rather than letting the
+last flag silently enable a write.
+
 ## Put complete request bodies beside the command that accepts them
 
 When a command takes JSON, a file, or stdin, its help shows a complete minimal
@@ -166,8 +204,9 @@ Kata's model is the one to copy for a new CLI. Output mode is one global
 selector; `--json` and `--agent` are aliases for `--format`, and conflicting
 selectors are a usage error before the command runs. `--quiet` suppresses
 output but is not a mode, and it never hides an error. `--format` is reserved
-for output; Kata's import uses `--source-format` for its input type
-([agent output][kata-agent-output]).
+for the output encoding; use `--output PATH` for a named destination file,
+not to choose its encoding. Keep any released spellings working. Kata's import
+uses `--source-format` for its input type ([agent output][kata-agent-output]).
 
 The channels are the same in all three: results on stdout; errors, hints,
 progress, and warnings on stderr.
@@ -189,7 +228,9 @@ Kata does ([contract][kata-agent-stability]):
 
 Do not give `--agent` a second meaning. In Roborev, most `--agent` flags pick
 an AI provider or hook profile, and root help has to explain that only
-`job search --agent` selects output.
+`job search --agent` selects output. For a new flag that selects a hook
+harness, use `--harness`, not the output selector. Keep released selectors
+working.
 
 ## Empty and partial results say why
 
@@ -419,6 +460,8 @@ against real accounts or data.
 [roborev-1589]: https://github.com/kenn-io/roborev/pull/1589
 [docbank-1184]: https://github.com/kenn-io/docbank/pull/1184
 [docbank-1191]: https://github.com/kenn-io/docbank/pull/1191
+
+[kata-dry-migration]: https://github.com/kenn-io/kata/blob/0a63b790c4dc7fbfaa6b7b9d6db4974a99400b3a/docs/changelog.md#L850-L855
 
 <!-- Kata at 585e82c078893bbfad4114d429cbd694e335617a -->
 [kata-root-help]: https://github.com/kenn-io/kata/blob/585e82c078893bbfad4114d429cbd694e335617a/cmd/kata/help_root.go#L108-L134

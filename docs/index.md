@@ -20,7 +20,7 @@ release notes. Package APIs are documented in Go documentation.
 - [Adopting packed content storage](guides/adopting-packstore.md) - Integrate packed content storage and maintain its publication and recovery guarantees.
 - [Adopting prek Git hooks](guides/adopting-prek-hooks.md) - Give a repository commit and push hooks that run the same checks as CI, and tell contributors how to use them.
 - [CLI command design template](guides/cli-command-template.md) - Worksheet and review checklist for designing a CLI command or command family.
-- [Shared CLI design guidance](guides/cli-design.md) - Help, output, result hints, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank.
+- [Shared CLI design guidance](guides/cli-design.md) - Help, flag, output, result hint, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank.
 - [Developing kit](guides/development.md) - Development tooling, build conventions, and debugging guidance for kit.
 - [Installing the local embedding server](guides/kennembed.md) - Install and operate the local embedding server and its model assets.
 - [Secret sources](guides/secrets.md) - Configure literal, environment, and private-file secrets with secretref.
