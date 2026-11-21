@@ -3,7 +3,7 @@ type: Guide
 title: "CLI command design template"
 description: Moved to guides/cli-command-template.md
 status: deprecated
-generated: { by: codex/gpt-6.2-astra, at: "2026-11-21T17:12:01Z" }
+generated: { by: codex, at: "2026-11-21T19:55:12Z" }
 ---
 
 This page moved to [guides/cli-command-template.md](guides/cli-command-template.md).
