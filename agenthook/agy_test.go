@@ -87,6 +87,37 @@ func TestAgyRejectsMatcherOnLifecycleEvent(t *testing.T) {
 	require.ErrorContains(t, err, "only supports matchers on PreToolUse")
 }
 
+func TestAgyReinstallKeepsADisabledGroupDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"source-shared-agent-hook-test":{
+  "enabled":false,
+  "Stop":[{"type":"command","command":"/opt/hook `+testMarker+`"}]
+}}`), 0o600))
+
+	result, err := PlanInstall(AgentAgy, InstallOptions{
+		ConfigPath: path,
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+		Hooks:      []Hook{{Event: EventStop}},
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Changed)
+	assert.JSONEq(t, `{"source-shared-agent-hook-test":{
+  "enabled":false,
+  "Stop":[{"type":"command","command":"/opt/hook --source shared-agent-hook-test"}]
+}}`, string(result.Data))
+}
+
+type sessionStartHandler struct {
+	NoopHandler
+	output SessionStartOutput
+}
+
+func (h sessionStartHandler) SessionStart(context.Context, SessionStartInput) (SessionStartOutput, error) {
+	return h.output, nil
+}
+
 type agyRecorder struct {
 	NoopHandler
 	prompt *UserPromptSubmitInput
@@ -197,7 +228,13 @@ func TestHandleEncodesAgyControl(t *testing.T) {
 			name:    "block prompt",
 			payload: invocation,
 			handler: promptHandler{output: UserPromptSubmitOutput{Decision: DecisionBlock, Reason: "policy"}},
-			output:  `{"terminationBehavior":"terminate","injectSteps":[{"errorMessage":"policy"}]}`,
+			output:  `{"terminationBehavior":"terminate","injectSteps":[{"errorMessage":{"userMessage":"policy"}}]}`,
+		},
+		{
+			name:    "session context",
+			payload: `{"conversationId":"c-1","hookEventName":"SessionStart"}`,
+			handler: sessionStartHandler{output: SessionStartOutput{AdditionalContext: "use the staging cluster"}},
+			output:  `{"injectSteps":[{"systemMessage":{"systemMessage":"use the staging cluster"}}]}`,
 		},
 		{
 			name:    "keep going",

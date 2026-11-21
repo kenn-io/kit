@@ -444,7 +444,9 @@ func encodeAgyResponse(event Event, value any) (map[string]any, error) {
 			return nil, errors.New("unsupported SessionStart output fields")
 		}
 		if output.AdditionalContext != "" {
-			response["injectSteps"] = []any{map[string]any{"systemMessage": output.AdditionalContext}}
+			response["injectSteps"] = []any{map[string]any{
+				"systemMessage": map[string]any{"systemMessage": output.AdditionalContext},
+			}}
 		}
 	case UserPromptSubmitOutput:
 		if err := requireEmptyCommon(output.CommonOutput); err != nil {
@@ -460,7 +462,9 @@ func encodeAgyResponse(event Event, value any) (map[string]any, error) {
 		case DecisionBlock:
 			response["terminationBehavior"] = "terminate"
 			if output.Reason != "" {
-				response["injectSteps"] = []any{map[string]any{"errorMessage": output.Reason}}
+				response["injectSteps"] = []any{map[string]any{
+					"errorMessage": map[string]any{"userMessage": output.Reason},
+				}}
 			}
 		case "":
 			if output.Reason != "" {

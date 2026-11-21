@@ -30,7 +30,9 @@ func planAgyJSONConfig(path, marker, command string, hooks []nativeHook, uninsta
 		if err != nil {
 			return nil, false, err
 		}
-		if removed && agyGroupEmpty(group) {
+		// Install refills its own group, which keeps the user's enabled
+		// setting.
+		if removed && agyGroupEmpty(group) && (uninstall || name != agyGroupName(marker)) {
 			delete(root, name)
 		}
 	}
