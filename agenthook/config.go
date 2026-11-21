@@ -294,6 +294,8 @@ func planConfig(
 		return planHermesConfig(path, marker, command, hooks, uninstall)
 	case formatScript:
 		return planScriptConfig(spec, path, marker, argv, hooks, uninstall)
+	case formatAgyJSON:
+		return planAgyJSONConfig(path, marker, command, hooks, uninstall)
 	default:
 		return nil, false, errors.New("unsupported agent hook config format")
 	}
