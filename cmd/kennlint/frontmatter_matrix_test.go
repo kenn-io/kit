@@ -231,6 +231,9 @@ func TestOKFCanonicalFormatting(t *testing.T) {
 		{"attribute whitespace", `<span title="a b">text</span>`, `<span title="a  b">text</span>`, false},
 		{"hard break", "a\nb\n", "a  \nb\n", false},
 		{"prose spacing before hard break", "a  b  \nc\n", "a b  \nc\n", true},
+		{"prose around inline tags", "Text  here. <kbd>a  b</kbd> more  prose", "Text here. <kbd>a  b</kbd> more prose", true},
+		{"nested inline tags", "Text <KBD><b>a b</b> c  d</kbd>", "Text <KBD><b>a b</b> c d</kbd>", false},
+		{"void inline tag", "Text <br> more  prose", "Text <br> more prose", true},
 		{"prose spacing", "Text here.\n", "Text  here.\n", true},
 	}
 	for _, tt := range tests {
@@ -254,6 +257,8 @@ func TestOKFChangedMatrix(t *testing.T) {
 		name, content string
 		stale         bool
 	}{
+		{"default status", strings.Replace(src, "type: Guide", "status: stable\ntype: Guide", 1), false},
+		{"deprecated status", strings.Replace(src, "type: Guide", "status: deprecated\ntype: Guide", 1), true},
 		{"body", strings.Replace(src, "Text here.", "Changed text.", 1), true},
 		{"inline HTML whitespace", strings.Replace(src, "a b**", "a  b**", 1), true},
 		{"backwards timestamp", strings.Replace(strings.Replace(src, "Text here.", "Changed text.", 1), "12:00:00Z", "11:59:59Z", 1), true},

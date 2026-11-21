@@ -73,7 +73,7 @@ lint-frontmatter-changed:
 	@go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE) || { echo "fix locally: make fix-frontmatter (set stale generated.at by hand; BY=<actor> records generated.by)"; exit 1; }
 
 fix-frontmatter:
-	go run ./cmd/kennlint frontmatter -fix $(FRONTMATTER_FIX_FLAGS) $(if $(BY),-by $(BY))
+	go run ./cmd/kennlint frontmatter -fix $(FRONTMATTER_FIX_FLAGS) $${BY:+-by "$$BY"}
 
 # Workflow actions run at the commits in .github/workflows/actions.lock,
 # including actions that other actions call. The organization requires
