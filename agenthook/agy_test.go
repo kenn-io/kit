@@ -198,12 +198,24 @@ func TestHandleNormalizesAgyPayloads(t *testing.T) {
 		{
 			name: "stop",
 			payload: `{` + common + `"hookEventName":"Stop","executionNum":0,` +
-				`"terminationReason":"NO_TOOL_CALL","error":"","fullyIdle":true}`,
+				`"terminationReason":"NO_TOOL_CALL","error":"","fullyIdle":true,"continuationActive":false}`,
 			output: `{"decision":"allow"}`,
 			check: func(t *testing.T, h *agyRecorder) {
 				t.Helper()
 				require.NotNil(t, h.stop)
 				assert.Equal(t, "c-1", h.stop.SessionID)
+				assert.False(t, h.stop.StopHookActive)
+			},
+		},
+		{
+			name: "stop after a continue",
+			payload: `{` + common + `"hookEventName":"Stop","executionNum":1,` +
+				`"terminationReason":"NO_TOOL_CALL","fullyIdle":true,"continuationActive":true}`,
+			output: `{"decision":"allow"}`,
+			check: func(t *testing.T, h *agyRecorder) {
+				t.Helper()
+				require.NotNil(t, h.stop)
+				assert.True(t, h.stop.StopHookActive)
 			},
 		},
 	}
@@ -273,6 +285,30 @@ func TestHandleEncodesAgyControl(t *testing.T) {
 			assert.JSONEq(t, test.output, output.String())
 		})
 	}
+}
+
+// continueOnce asks agy to keep going unless it already did.
+type continueOnce struct{ NoopHandler }
+
+func (continueOnce) Stop(_ context.Context, input StopInput) (StopOutput, error) {
+	if input.StopHookActive {
+		return StopOutput{}, nil
+	}
+	return StopOutput{Decision: DecisionBlock, Reason: "run the tests"}, nil
+}
+
+func TestAgyStopHandlerContinuesOnlyOnce(t *testing.T) {
+	stop := func(active string) string {
+		var output bytes.Buffer
+		err := Handle(t.Context(), AgentAgy, strings.NewReader(
+			`{"conversationId":"c-1","hookEventName":"Stop","fullyIdle":true,"continuationActive":`+active+`}`,
+		), &output, continueOnce{})
+		require.NoError(t, err)
+		return output.String()
+	}
+
+	assert.JSONEq(t, `{"decision":"continue","reason":"run the tests"}`, stop("false"))
+	assert.JSONEq(t, `{"decision":"allow"}`, stop("true"))
 }
 
 func TestHandleRejectsUnsupportedAgyControl(t *testing.T) {

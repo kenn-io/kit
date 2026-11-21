@@ -106,6 +106,9 @@ func promoteAgyFields(payload map[string]json.RawMessage) error {
 	promoteFirst(payload, "session_id", payload, "conversationId")
 	promoteFirst(payload, "model", payload, "modelName")
 	promoteFirst(payload, "prompt", payload, "lastUserInput")
+	// agy 1.5 sends continuationActive on Stop once a Stop hook has asked it
+	// to continue. The hooks reference does not list it yet.
+	promoteFirst(payload, "stop_hook_active", payload, "continuationActive")
 	raw, ok := payload["toolCall"]
 	if !ok {
 		return nil
