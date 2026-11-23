@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -61,9 +60,6 @@ func stringNode(s string) *yaml.Node {
 
 func profileProblems(b *okf.Document) []string {
 	p := b.ConceptProblems()
-	if b.Field("last_edited") != nil {
-		p = append(p, "last_edited is replaced by generated.at; remove it")
-	}
 	for _, k := range []string{"title", "description"} {
 		if !okf.NonEmptyString(b.Field(k)) {
 			p = append(p, k+" must be a non-empty string")
@@ -168,8 +164,5 @@ func fixOKF(b *okf.Document, file string, rules frontmatterRules, by, descriptio
 	g.Style |= yaml.FlowStyle
 	appendField(g, "by", stringNode(by))
 	appendField(g, "at", stringNode(time.Now().UTC().Format(time.RFC3339)))
-	if i := slices.Index(root.Content, b.Field("last_edited")); i > 0 {
-		root.Content = slices.Delete(root.Content, i-1, i+1)
-	}
 	return true, notes
 }

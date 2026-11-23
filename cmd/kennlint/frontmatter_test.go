@@ -2,27 +2,17 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	gittest "go.kenn.io/kit/git/test"
-	"go.kenn.io/kit/okf"
 )
-
-func runLegacyFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
-	return runFrontmatter(ctx, append([]string{"-legacy"}, args...), stdout, stderr)
-}
-
-const goodFrontmatter = "---\ntitle: A page\ndescription: A useful page.\nlast_edited: 2026-11-01\n---\n\n# Body\n"
 
 func isolateFrontmatterGit(t *testing.T) {
 	t.Helper()
@@ -32,44 +22,6 @@ func isolateFrontmatterGit(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", home)
-}
-
-func TestFrontmatterValidation(t *testing.T) {
-	tests := []struct {
-		name    string
-		src     string
-		problem string
-	}{
-		{"valid", goodFrontmatter, ""},
-		{"CRLF", strings.ReplaceAll(goodFrontmatter, "\n", "\r\n"), ""},
-		{"leap day", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2024-02-29"), ""},
-		{"single quoted", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "'2026-11-01'"), "bare YYYY-MM-DD"},
-		{"double quoted", strings.ReplaceAll(goodFrontmatter, "2026-11-01", `"2026-11-01"`), "bare YYYY-MM-DD"},
-		{"datetime", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2026-11-01T00:00:00Z"), "bare YYYY-MM-DD"},
-		{"impossible date", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2026-02-29"), "bare YYYY-MM-DD"},
-		{"short date", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2026-1-1"), "bare YYYY-MM-DD"},
-		{"year zero", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "0000-01-01"), "bare YYYY-MM-DD"},
-		{"missing date", strings.ReplaceAll(goodFrontmatter, "last_edited: 2026-11-01\n", ""), "bare YYYY-MM-DD"},
-		{"null date", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "null"), "bare YYYY-MM-DD"},
-		{"block date", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "|-\n  2026-11-01"), "bare YYYY-MM-DD"},
-		{"tagged date", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "!!timestamp 2026-11-01"), "bare YYYY-MM-DD"},
-		{"string tagged date", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "!!str 2026-11-01"), "bare YYYY-MM-DD"},
-		{"empty title", strings.ReplaceAll(goodFrontmatter, "title: A page", "title: '  '"), "title must be a non-empty string"},
-		{"numeric title", strings.ReplaceAll(goodFrontmatter, "title: A page", "title: 123"), "title must be a non-empty string"},
-		{"missing title", strings.ReplaceAll(goodFrontmatter, "title: A page\n", ""), "title must be a non-empty string"},
-		{"missing description", strings.ReplaceAll(goodFrontmatter, "description: A useful page.\n", ""), "description must be a non-empty string"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			b, err := okf.Parse([]byte(tt.src))
-			require.NoError(t, err)
-			if tt.problem == "" {
-				assert.Empty(t, legacyProblems(b))
-				return
-			}
-			assert.Contains(t, strings.Join(legacyProblems(b), "\n"), tt.problem)
-		})
-	}
 }
 
 func TestFrontmatterSelection(t *testing.T) {
@@ -93,10 +45,6 @@ func TestFrontmatterSelection(t *testing.T) {
 	assert.Equal(t, 1, n)
 	assert.Empty(t, stdout.String())
 	assert.Equal(t, "docs/page with spaces.md: missing opening --- frontmatter delimiter\n", stderr.String())
-	stderr.Reset()
-	n, err = runLegacyFrontmatter(t.Context(), []string{"-exclude", "generated/**"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Equal(t, 1, n, "legacy selects the same files")
 
 	stderr.Reset()
 	n, err = runFrontmatter(t.Context(), []string{"docs/README.md"}, &stdout, &stderr)
@@ -146,9 +94,6 @@ func TestFrontmatterSkipsSkillBundles(t *testing.T) {
 	assert.Equal(t, "docs/skill.md: missing opening --- frontmatter delimiter\n"+
 		"page.md: missing opening --- frontmatter delimiter\n"+
 		"skills/unrelated/page.md: missing opening --- frontmatter delimiter\n", stderr.String())
-	n, err = runLegacyFrontmatter(t.Context(), nil, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Equal(t, 3, n, "legacy skips the same skill bundles")
 }
 
 func TestFrontmatterGlob(t *testing.T) {
@@ -187,7 +132,7 @@ func TestFrontmatterSkipsInstructionFilesAtEveryDepth(t *testing.T) {
 	for _, name := range names {
 		repo.WriteFile(name, "# No metadata\n")
 	}
-	repo.WriteFile("pkg/notes.md", "# No metadata\n")
+	repo.WriteFile("pkg/notes.md", strings.Replace(goodOKF, "description: Useful\n", "", 1))
 	repo.Run("add", ".")
 	repo.Run("commit", "-m", "add files")
 	repo.Run("branch", "base")
@@ -195,10 +140,10 @@ func TestFrontmatterSkipsInstructionFilesAtEveryDepth(t *testing.T) {
 		repo.WriteFile(name, "# Edited without metadata\n")
 	}
 	var stdout, stderr bytes.Buffer
-	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix", "-changed", "base"}, &stdout, &stderr)
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-changed", "base", "-type-rule", "**=Guide"}, &stdout, &stderr)
 	require.NoError(t, err)
-	assert.Equal(t, 2, n, "only the ordinary nested document is checked")
-	assert.Equal(t, "pkg/notes.md: title must be a non-empty string\npkg/notes.md: description must be a non-empty string\n", stderr.String())
+	assert.Equal(t, 1, n, "only the ordinary nested document is checked")
+	assert.Equal(t, "pkg/notes.md: supply -description TEXT\n", stderr.String())
 	for _, name := range names {
 		data, err := os.ReadFile(name)
 		require.NoError(t, err)
@@ -210,181 +155,63 @@ func TestFrontmatterChanged(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
-	repo.CommitFile("page.md", goodFrontmatter, "add page")
+	repo.CommitFile("page.md", goodOKF, "add page")
 	repo.Run("branch", "base")
 	repo.Checkout("-b", "topic")
-	repo.CommitFile("page.md", goodFrontmatter+"More content.\n", "edit page")
+	repo.CommitFile("page.md", goodOKF+"More content.\n", "edit page")
 	// The base branch advances independently. Compare with its merge base,
 	// rather than the base tip, which now has a different date.
 	repo.Checkout("base")
-	repo.CommitFile("page.md", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2026-11-02"), "advance base")
+	repo.CommitFile("page.md", strings.ReplaceAll(goodOKF, "2026-11-17", "2026-11-18"), "advance base")
 	repo.Checkout("topic")
 	var stdout, stderr bytes.Buffer
-	n, err := runLegacyFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
+	n, err := runFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
-	assert.Equal(t, "page.md: content changed without changing last_edited\n", stderr.String())
+	assert.Contains(t, stderr.String(), "page.md: content changed without a later generated.at")
 
-	repo.WriteFile("page.md", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2026-11-02")+"More content.\n")
-	repo.WriteFile("new.md", goodFrontmatter)
+	repo.WriteFile("page.md", strings.ReplaceAll(goodOKF, "2026-11-17", "2026-11-18")+"More content.\n")
+	repo.WriteFile("new.md", goodOKF)
 	repo.Run("add", "new.md")
 	stderr.Reset()
-	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
+	n, err = runFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 	assert.Empty(t, stderr.String())
 	assert.Contains(t, stdout.String(), "checked 2 Markdown files")
 
 	// Uncommitted and metadata-only edits count, too.
-	repo.WriteFile("page.md", strings.ReplaceAll(goodFrontmatter, "A page", "New title"))
-	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	repo.WriteFile("page.md", strings.ReplaceAll(goodOKF, "A page", "New title"))
+	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
-	repo.WriteFile("page.md", goodFrontmatter)
-	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	repo.WriteFile("page.md", goodOKF)
+	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 
 	// Unix reads the executable bit from the file; Windows reads it from the index.
 	require.NoError(t, os.Chmod("page.md", 0o755))
 	repo.Run("update-index", "--chmod=+x", "page.md")
-	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n, "a mode-only change is not a content edit")
 	require.NoError(t, os.Chmod("page.md", 0o644))
 	repo.Run("update-index", "--chmod=-x", "page.md")
 
-	_, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "missing-ref"}, &stdout, &stderr)
+	_, err = runFrontmatter(t.Context(), []string{"-changed", "missing-ref"}, &stdout, &stderr)
 	require.ErrorContains(t, err, "merge-base")
 
 	repo.Config("core.autocrlf", "true")
-	repo.WriteFile("page.md", strings.ReplaceAll(goodFrontmatter, "\n", "\r\n"))
-	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	repo.WriteFile("page.md", strings.ReplaceAll(goodOKF, "\n", "\r\n"))
+	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n, "checkout line endings must not count as content changes")
 
 	require.NoError(t, os.Remove("page.md"))
-	n, err = runLegacyFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n, "deleted files need no metadata")
-}
-
-func TestFrontmatterFixBeforeFirstCommit(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepo(t, gittest.Options{ResolvePath: true})
-	t.Chdir(repo.Root)
-	repo.WriteFile("page.md", "---\ntitle: A page\ndescription: A useful page.\n---\nBody\n")
-	repo.Run("add", "page.md")
-	var stdout, stderr bytes.Buffer
-	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Zero(t, n)
-	src, err := os.ReadFile("page.md")
-	require.NoError(t, err)
-	assert.Contains(t, string(src), "last_edited: "+time.Now().UTC().Format(time.DateOnly))
-}
-
-func TestFrontmatterFix(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	withoutDate := strings.ReplaceAll(goodFrontmatter, "last_edited: 2026-11-01\n", "")
-	repo.WriteFile("committed.md", withoutDate)
-	repo.Run("add", "committed.md")
-	cmd := repo.Runner.Command(t.Context(), repo.Root, "commit", "-m", "add missing date")
-	cmd.Env = append(cmd.Env, "GIT_AUTHOR_DATE=2024-06-15T12:00:00Z", "GIT_COMMITTER_DATE=2024-06-15T12:00:00Z")
-	_, err := cmd.CombinedOutput()
-	require.NoError(t, err)
-	commitDate := repo.Run("log", "-1", "--format=%cs", "--", "committed.md")
-	require.Equal(t, "2024-06-15", commitDate)
-	for name, src := range map[string]string{
-		"new.md":       withoutDate,
-		"quoted.md":    strings.ReplaceAll(goodFrontmatter, "2026-11-01", "'2026-11-01' # keep comment"),
-		"crlf.md":      strings.ReplaceAll(strings.ReplaceAll(goodFrontmatter, "2026-11-01", `"2026-11-01"`), "\n", "\r\n"),
-		"missing.md":   "# Body only\n",
-		"invalid.md":   strings.ReplaceAll(goodFrontmatter, "2026-11-01", "'2026-02-30'"),
-		"timestamp.md": strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2026-11-01T10:00:00Z"),
-	} {
-		repo.WriteFile(name, src)
-		repo.Run("add", "--", name)
-	}
-	var stdout, stderr bytes.Buffer
-	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Equal(t, 4, n) // Two text fields, an invalid date, and a timestamp.
-	assert.Contains(t, stderr.String(), "missing.md: title must be a non-empty string")
-	assert.Contains(t, stderr.String(), "missing.md: description must be a non-empty string")
-	for _, tt := range []struct{ name, date, body string }{
-		{"committed.md", commitDate, "\n# Body\n"},
-		{"new.md", time.Now().UTC().Format(time.DateOnly), "\n# Body\n"},
-		{"quoted.md", "2026-11-01", "\n# Body\n"},
-		{"crlf.md", "2026-11-01", "\r\n# Body\r\n"},
-		{"missing.md", time.Now().UTC().Format(time.DateOnly), "# Body only\n"},
-	} {
-		src, err := os.ReadFile(tt.name)
-		require.NoError(t, err)
-		b, err := okf.Parse(src)
-		require.NoError(t, err)
-		assert.Equal(t, tt.date, b.Field("last_edited").Value)
-		assert.Zero(t, b.Field("last_edited").Style)
-		assert.Equal(t, tt.body, string(b.Body))
-		// A second fix must leave the entire file byte-for-byte unchanged.
-		_, err = runLegacyFrontmatter(t.Context(), []string{"-fix", tt.name}, &stdout, &stderr)
-		require.NoError(t, err)
-		again, err := os.ReadFile(tt.name)
-		require.NoError(t, err)
-		assert.Equal(t, src, again)
-	}
-	quoted, err := os.ReadFile("quoted.md")
-	require.NoError(t, err)
-	assert.Contains(t, string(quoted), "last_edited: 2026-11-01 # keep comment")
-}
-
-func TestFrontmatterFixWritesThroughSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks require privileges on Windows")
-	}
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	withoutDate := strings.ReplaceAll(goodFrontmatter, "last_edited: 2026-11-01\n", "")
-	repo.WriteFile("target.md", withoutDate)
-	require.NoError(t, os.Symlink("target.md", "alias.md"))
-	repo.Run("add", "target.md", "alias.md")
-
-	var stdout, stderr bytes.Buffer
-	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Zero(t, n)
-	assert.Empty(t, stderr.String())
-	info, err := os.Lstat("alias.md")
-	require.NoError(t, err)
-	assert.NotZero(t, info.Mode()&os.ModeSymlink, "the link stays a link")
-	data, err := os.ReadFile("target.md")
-	require.NoError(t, err)
-	assert.Contains(t, string(data), "last_edited: ")
-}
-
-func TestFrontmatterFixChangedComparesFinalGitContent(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	repo.WriteFile(".gitattributes", "*.md text eol=lf\n")
-	repo.WriteFile("document.md", goodFrontmatter)
-	repo.Run("add", ".gitattributes", "document.md")
-	repo.Run("commit", "-m", "add document with canonical date")
-	repo.Run("branch", "base")
-
-	quoted := strings.ReplaceAll(goodFrontmatter, "2026-11-01", `"2026-11-01"`)
-	repo.WriteFile("document.md", strings.ReplaceAll(quoted, "\n", "\r\n"))
-
-	var stdout, stderr bytes.Buffer
-	n, err := runLegacyFrontmatter(t.Context(), []string{"-fix", "-changed", "base", "document.md"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Zero(t, n)
-	assert.Empty(t, stderr.String())
-	assert.Contains(t, stdout.String(), "1 fixed")
-	repo.Run("diff", "--quiet", "base", "--", "document.md")
 }
 
 func TestOKFReservedDocumentAliases(t *testing.T) {

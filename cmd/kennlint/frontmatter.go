@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/consolewindow"
@@ -117,7 +116,6 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	flags := flag.NewFlagSet("kennlint frontmatter", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	changed := flags.String("changed", "", "require metadata to change for meaningful edits since this ref")
-	legacy := flags.Bool("legacy", false, "use the temporary last_edited profile")
 	var by, description trimmedText
 	flags.Var(&by, "by", "actor for missing generated.by (producer/version, human:id, or process:id)")
 	flags.Var(&description, "description", "description for one selected file")
@@ -149,17 +147,6 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return 0, err
 	}
-	// Only the legacy fixer falls back to the last commit date. An unborn
-	// branch has no history, even for a file already in the index.
-	hasHead := false
-	if *legacy && *fix {
-		head, err := frontmatterGit(ctx, root, "rev-parse", "--revs-only", "HEAD")
-		if err != nil {
-			return 0, err
-		}
-		hasHead = len(bytes.TrimSpace(head)) != 0
-	}
-
 	var targets []string
 	for _, file := range files {
 		if frontmatterSelected(file, selected, excludes) && !frontmatterInSkillDirectory(file, skillDirs) {
@@ -172,7 +159,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 				return 0, err
 			}
 			target := filepath.Base(resolved)
-			if !*legacy && target != path.Base(file) && (target == "log.md" || target == "index.md") {
+			if target != path.Base(file) && (target == "log.md" || target == "index.md") {
 				continue // Reserved documents are only handled under their own names.
 			}
 			targets = append(targets, file)
@@ -190,7 +177,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	var checked []string
 	for _, file := range targets {
-		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, hasHead, *legacy, rules, by.value, description.value)
+		problems, didFix, err := checkFrontmatterFile(root, file, *fix, rules, by.value, description.value)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // A tracked file deleted in the working tree needs no metadata.
 		}
@@ -204,15 +191,12 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		report(file, problems)
 	}
 	if *changed != "" {
-		stale, err := frontmatterStaleDates(ctx, root, *changed, checked, *legacy)
+		stale, err := frontmatterStaleDates(ctx, root, *changed, checked)
 		if err != nil {
 			return total, err
 		}
 		for _, file := range stale {
 			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to the actual editor"
-			if *legacy {
-				message = "content changed without changing last_edited"
-			}
 			report(file, []string{message})
 		}
 	}
@@ -247,28 +231,26 @@ func frontmatterSelected(file string, selected []string, excludes []string) bool
 	})
 }
 
-func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, legacy bool, rules frontmatterRules, by, description string) ([]string, bool, error) {
+func checkFrontmatterFile(root, file string, fix bool, rules frontmatterRules, by, description string) ([]string, bool, error) {
 	full := filepath.Join(root, filepath.FromSlash(file))
 	src, err := os.ReadFile(full)
 	if err != nil {
 		return nil, false, err
 	}
-	if !legacy {
-		switch path.Base(file) {
-		case "log.md":
-			if bytes.HasPrefix(src, []byte("---\n")) || bytes.HasPrefix(src, []byte("---\r\n")) {
-				return []string{"log.md must not have frontmatter"}, false, nil
-			}
-			return nil, false, nil
-		case "index.md":
-			// Reserved indexes are not concepts. A bundle root may carry metadata;
-			// validation and index regeneration leave it untouched.
-			_, err := okf.Parse(src)
-			if err != nil && !errors.Is(err, okf.ErrNoFrontmatter) {
-				return []string{err.Error()}, false, nil
-			}
-			return nil, false, nil
+	switch path.Base(file) {
+	case "log.md":
+		if bytes.HasPrefix(src, []byte("---\n")) || bytes.HasPrefix(src, []byte("---\r\n")) {
+			return []string{"log.md must not have frontmatter"}, false, nil
 		}
+		return nil, false, nil
+	case "index.md":
+		// Reserved indexes are not concepts. A bundle root may carry metadata;
+		// validation and index regeneration leave it untouched.
+		_, err := okf.Parse(src)
+		if err != nil && !errors.Is(err, okf.ErrNoFrontmatter) {
+			return []string{err.Error()}, false, nil
+		}
+		return nil, false, nil
 	}
 	b, err := okf.Parse(src)
 	if fix && errors.Is(err, okf.ErrNoFrontmatter) {
@@ -277,30 +259,12 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, 
 	if err != nil {
 		return []string{err.Error()}, false, nil //nolint:nilerr // Count invalid metadata as a finding so scanning continues.
 	}
-	var problems []string
 	var changed bool
-	if legacy {
-		if fix {
-			date := time.Now().UTC().Format(time.DateOnly)
-			if b.Field("last_edited") == nil && hasHead {
-				committed, err := frontmatterGit(ctx, root, "log", "-1", "--format=%cs", "--", file)
-				if err != nil {
-					return nil, false, err
-				}
-				if value := strings.TrimSpace(string(committed)); value != "" {
-					date = value
-				}
-			}
-			changed = fixLegacyDate(b, date)
-		}
-		problems = legacyProblems(b)
-	} else {
-		var notes map[string]string
-		if fix {
-			changed, notes = fixOKF(b, file, rules, by, description)
-		}
-		problems = frontmatterFixProblems(profileProblems(b), notes)
+	var notes map[string]string
+	if fix {
+		changed, notes = fixOKF(b, file, rules, by, description)
 	}
+	problems := frontmatterFixProblems(profileProblems(b), notes)
 	if !changed {
 		return problems, false, nil
 	}
@@ -330,7 +294,7 @@ func frontmatterFixProblems(problems []string, notes map[string]string) []string
 // base with ref while the profile timestamp still matches. It runs after -fix so a fix
 // that restores the base content does not count as an edit, and it lets Git
 // apply attributes and line-ending rules so CRLF checkouts are not edits.
-func frontmatterStaleDates(ctx context.Context, root, ref string, files []string, legacy bool) ([]string, error) {
+func frontmatterStaleDates(ctx context.Context, root, ref string, files []string) ([]string, error) {
 	baseBytes, err := frontmatterGit(ctx, root, "merge-base", "HEAD", ref)
 	if err != nil {
 		return nil, err
@@ -352,7 +316,7 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 	}
 	var stale []string
 	for _, file := range files {
-		if !legacy && (path.Base(file) == "index.md" || path.Base(file) == "log.md") {
+		if path.Base(file) == "index.md" || path.Base(file) == "log.md" {
 			continue // Reserved files are never concepts, even with extension metadata.
 		}
 		if !modified[file] {
@@ -370,13 +334,6 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 		after, errAfter := okf.Parse(current)
 		if errBefore != nil || errAfter != nil {
 			continue // Missing or invalid metadata is reported, or was adopted in this change.
-		}
-		if legacy {
-			b, a := before.Field("last_edited"), after.Field("last_edited")
-			if b != nil && a != nil && b.Value == a.Value {
-				stale = append(stale, file)
-			}
-			continue
 		}
 		beforeTime, validBefore := okf.Timestamp(before.Field("generated", "at"))
 		afterTime, validAfter := okf.Timestamp(after.Field("generated", "at"))

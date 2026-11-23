@@ -164,7 +164,7 @@ func TestOKFChangedMatrix(t *testing.T) {
 	t.Chdir(repo.Root)
 	src := strings.Replace(goodOKF, "Text here.", `Text here. <span style="white-space:pre">**a b**</span>`, 1)
 	repo.WriteFile("page.md", src)
-	repo.WriteFile("old.md", goodFrontmatter)
+	repo.WriteFile("old.md", "# Page without metadata\n")
 	repo.Run("add", "page.md", "old.md")
 	repo.Run("commit", "-m", "base pages")
 	repo.Run("branch", "base")
@@ -276,20 +276,4 @@ func TestOKFFixReportsEachGapOnce(t *testing.T) {
 		}
 		assert.Equal(t, 1, count, "%s: %s", field, errout.String())
 	}
-}
-
-func TestOKFFixLegacyDateOnCompletion(t *testing.T) {
-	src := "---\ntitle: Title\nlast_edited: 2025-01-01\n---\n# Title\n"
-	b, err := okf.Parse([]byte(src))
-	require.NoError(t, err)
-	changed, _ := fixOKF(b, "page.md", nil, "human:first", "")
-	assert.False(t, changed)
-	assert.NotNil(t, b.Field("last_edited"))
-	changed, _ = fixOKF(b, "page.md", frontmatterRules{{"**", "Guide"}}, "human:second", "Details")
-	require.True(t, changed)
-	assert.Nil(t, b.Field("last_edited"))
-	assert.Empty(t, profileProblems(b))
-	data, err := b.Marshal()
-	require.NoError(t, err)
-	assert.NotContains(t, string(data), "last_edited")
 }

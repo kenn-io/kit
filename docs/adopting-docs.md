@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6, at: "2026-11-19T21:54:58Z" }
+generated: { by: codex/gpt-6, at: "2026-11-23T18:13:35Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -66,9 +66,7 @@ edit time. Git retains earlier history. The fixer takes an H1 title only when it
 missing description with
 `-description 'Text'` for a single selected file. It preserves valid values
 and the Markdown body and reports metadata it cannot determine. Track new
-files before checking them. When it completes a conversion and adds generated
-provenance, the fixer removes `last_edited`. Correct malformed or invalid
-metadata manually.
+files before checking them. Correct malformed or invalid metadata manually.
 
 Run the read-only check in CI with `-changed` set to the pull request base SHA
 and a full Git history. A meaningful content or metadata edit must change
@@ -82,10 +80,6 @@ timestamp. Kit runs the read-only `make lint-frontmatter` or
 `fix locally: make fix-frontmatter`; that target runs the fixer with Kit’s
 rules, and `BY=<actor>` supplies the actor. Other repositories can use
 the same check and fix target pattern. CI does not write files.
-
-Repositories migrating after Kit can temporarily pass `-legacy` to retain the
-`last_edited` profile. Remove this bridge as each repository adopts the Kenn
-OKF profile; it is not an alternative standard.
 
 ## Sources and links
 

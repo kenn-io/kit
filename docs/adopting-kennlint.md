@@ -2,7 +2,7 @@
 type: Guide
 title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
-generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
+generated: { by: codex/gpt-6, at: "2026-11-23T18:13:35Z" }
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -121,9 +121,7 @@ it after adding rule labels and reasons to their suppressions.
    go run go.kenn.io/kit/cmd/kennlint@<kit version> frontmatter
    ```
 
-   Follow the [docs profile and autofix guide](adopting-docs.md) for metadata and migration.
-
-   Repositories that have not migrated can temporarily use `-legacy` as a bridge.
+   Follow the [docs profile and autofix guide](adopting-docs.md) for metadata requirements.
 
    Add `frontmatter` to the lint target and a Markdown pre-commit hook.
    On pull requests, also run:
