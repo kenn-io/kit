@@ -131,10 +131,18 @@ func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
 	// Freeze alias uses as independent values before any fixer can mutate an
 	// anchor or remove its defining field. Unknown extensions retain their values.
 	materializeYAMLAliases(&b.doc)
-	b.fields = make(map[string]*yaml.Node)
-	content := b.doc.Content[0].Content
-	for i := 0; i < len(content); i += 2 {
-		b.fields[content[i].Value] = resolveYAML(content[i+1])
+	b.fields = make(map[string]*yaml.Node, len(fields))
+	root := b.doc.Content[0]
+	for i := 0; i < len(root.Content); i += 2 {
+		if key := root.Content[i]; key.ShortTag() != "!!merge" {
+			b.fields[key.Value] = resolveYAML(root.Content[i+1])
+		}
+	}
+	// Decode includes inherited keys; retain their effective syntax nodes too.
+	for key := range fields {
+		if b.fields[key] == nil {
+			b.fields[key] = mappingField(root, key)
+		}
 	}
 	return b, nil
 }
