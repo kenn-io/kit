@@ -22,8 +22,9 @@ func frontmatterMeaningful(a, b *frontmatterBlock, skill bool) bool {
 	for _, header := range []map[string]any{x, y} {
 		if skill {
 			header, _ = header["metadata"].(map[string]any)
-		} else if status, ok := header["status"].(string); ok && status == "stable" {
-			delete(header, "status") // Stable is the default concept status.
+		}
+		if status, ok := header["status"].(string); ok && status == "stable" {
+			delete(header, "status") // Stable is the default for concepts and managed skills.
 		}
 		canonicalMetadata(header)
 	}
