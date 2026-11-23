@@ -34,6 +34,7 @@ func TestSkillProfileShapes(t *testing.T) {
 		{"flow generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1), ""},
 		{"scalar generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: x", 1), "metadata.generated must be a mapping"},
 		{"bare at", strings.ReplaceAll(skillHeader, "\"", ""), ""},
+		{"status whitespace", strings.Replace(skillHeader, "---\nBody", "  status: '  '\n---\nBody", 1), "metadata.status must be a non-empty string"},
 		{"status unknown", strings.Replace(skillHeader, "---\nBody", "  status: retired\n---\nBody", 1), ""},
 	}
 	for _, tc := range cases {
@@ -190,6 +191,45 @@ func TestSkillChangedAndImports(t *testing.T) {
 	n, err := runFrontmatter(t.Context(), []string{"-managed-skill", "skills/**/SKILL.md", "-changed", "base", "skills/b/SKILL.md"}, &out, &errs)
 	require.NoError(t, err)
 	assert.Zero(t, n, errs.String())
+}
+
+func TestSkillChangedStatus(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	const path = "skills/a/SKILL.md"
+	withStatus := func(status string) string {
+		if status == "" {
+			return skillHeader
+		}
+		return strings.Replace(skillHeader, "  type: Skill", "  status: "+status+"\n  type: Skill", 1)
+	}
+	for _, tc := range []struct {
+		before, after string
+		stale         bool
+	}{
+		{"", "stable", false},
+		{"stable", "", false},
+		{"stable", "draft", true},
+		{"deprecated", "", true},
+		{"", "experimental", true},
+	} {
+		t.Run(tc.before+"-to-"+tc.after, func(t *testing.T) {
+			repo.WriteFile(path, withStatus(tc.before))
+			repo.Run("add", path)
+			repo.Run("commit", "--allow-empty", "-m", "base skill status")
+			repo.WriteFile(path, withStatus(tc.after))
+			var out, errs bytes.Buffer
+			n, err := runFrontmatter(t.Context(), []string{"-changed", "HEAD", "-managed-skill", path, path}, &out, &errs)
+			require.NoError(t, err)
+			if tc.stale {
+				assert.Equal(t, 1, n)
+				assert.Contains(t, errs.String(), "metadata.generated.at")
+			} else {
+				assert.Zero(t, n, errs.String())
+			}
+		})
+	}
 }
 
 func TestSkillFixFlowAndSymlinkedSkills(t *testing.T) {
