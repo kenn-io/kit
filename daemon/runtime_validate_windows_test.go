@@ -200,11 +200,16 @@ func TestRuntimeStoreValidateFilesUnreadableRecords(t *testing.T) {
 			handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, 0, 0)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, windows.CloseHandle(handle)) })
+			defaultStore := store
+			defaultStore.ValidateFiles = false
+			records, err := defaultStore.List()
+			require.NoError(t, err)
+			require.Empty(t, records)
 			child := filepath.Join(store.Dir, "clone")
 			require.NoError(t, os.WriteFile(child, nil, 0o600))
 			setBroadACL(t, child)
 			before := fileDACL(t, child)
-			records, err := store.List()
+			records, err = store.List()
 			if pid == os.Getpid() {
 				require.Error(t, err)
 			} else {

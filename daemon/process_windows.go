@@ -13,14 +13,23 @@ var openProcessForLiveness = syscall.OpenProcess
 
 // ProcessAlive reports whether pid appears to name a live process.
 func ProcessAlive(pid int) bool {
+	alive, err := queryProcessAlive(pid)
+	return alive || errors.Is(err, syscall.ERROR_ACCESS_DENIED)
+}
+
+func processConfirmedDead(pid int) bool {
+	alive, err := queryProcessAlive(pid)
+	return !alive && (err == nil || errors.Is(err, windows.ERROR_INVALID_PARAMETER))
+}
+
+func queryProcessAlive(pid int) (bool, error) {
 	if pid <= 0 {
-		return false
+		return false, nil
 	}
 	const processQueryLimitedInformation = 0x1000
 	handle, err := openProcessForLiveness(processQueryLimitedInformation, false, uint32(pid))
 	if err != nil {
-		// Only an invalid PID proves absence when the process cannot be opened.
-		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER)
+		return false, err
 	}
 	defer func() { _ = syscall.CloseHandle(handle) }()
 
@@ -29,7 +38,7 @@ func ProcessAlive(pid int) bool {
 	const stillActive = 259
 	var exitCode uint32
 	if err := syscall.GetExitCodeProcess(handle, &exitCode); err != nil {
-		return true
+		return true, nil
 	}
-	return exitCode == stillActive
+	return exitCode == stillActive, nil
 }

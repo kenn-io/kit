@@ -70,6 +70,8 @@ type RuntimeStore struct {
 	Prefix string
 	// ValidateFiles opts only List and LockPath into validation before deep repair
 	// on Windows. Other methods and platforms keep deep repair.
+	// List fails if a record remains unreadable or unsafe after repair and its
+	// filename PID is live or uncertain. Default List skips unreadable records.
 	ValidateFiles bool
 }
 
@@ -321,14 +323,14 @@ func (s RuntimeStore) listValidated(prefix string, repaired bool) ([]RuntimeReco
 		}
 		file, err := openRuntimeFile(filepath.Join(s.Dir, entry.Name()))
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) || repaired && !ProcessAlive(pid) {
+			if errors.Is(err, os.ErrNotExist) || repaired && processConfirmedDead(pid) {
 				continue
 			}
 			return nil, err
 		}
 		if err := safefileio.ValidateTrustedFile(file); err != nil {
 			err = errors.Join(err, file.Close())
-			if repaired && !ProcessAlive(pid) {
+			if repaired && processConfirmedDead(pid) {
 				continue
 			}
 			return nil, err
