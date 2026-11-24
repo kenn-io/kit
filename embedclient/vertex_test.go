@@ -79,6 +79,24 @@ func TestVertexRejectsPredictionCountMismatch(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestVertexRejectsTruncatedPrediction(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]any{"predictions": []any{
+			map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}}},
+			map[string]any{"embeddings": map[string]any{"values": []float64{0, 1}, "statistics": map[string]any{"truncated": true}}},
+		}})
+	}))
+	t.Cleanup(server.Close)
+	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
+	require.NoError(t, err)
+	vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"first", "second"})
+	var vectorErr *embedclient.VectorError
+	require.ErrorAs(t, err, &vectorErr)
+	assert.Equal(t, 1, vectorErr.Index)
+	assert.ErrorContains(t, err, "truncated")
+	assert.Nil(t, vectors)
+}
+
 func TestVertexRejectsInvalidModelNames(t *testing.T) {
 	for _, name := range []string{"a/b", "a:b", "a?b", "a#b"} {
 		model := unitModel()
