@@ -1,18 +1,13 @@
 // Package embedclient calls OpenAI-compatible and Vertex text embedding endpoints.
 //
-// Vertex requests always use task type RETRIEVAL_DOCUMENT for document and
-// query roles, always request Model.Dimensions as outputDimensionality, and
-// always return float vectors. InputTypeMode, RequestDimensions, and
-// EncodingFormat do not change a Vertex request.
-//
-// Client.BatchItems reports the largest request the client sends: one input
-// for gemini-embedding-001, and at most five for other Vertex models, further
-// capped by Batch.Items. Pass it to vector.WithBatchSize to split inputs into
-// requests, and pass vector.WithBatchConcurrency(n) to bound how many of those
-// requests run at once. The caller chooses n; this package adds no
-// concurrency of its own. A failed request fails the whole Embed call.
-// GoogleHTTPClient supplies Application Default Credentials; pass it as
-// Options.HTTP.
+// Vertex sends one input per request and Google truncates over-length input.
+// It requests Model.Dimensions and returns float vectors. InputTypeMode,
+// RequestDimensions, and EncodingFormat do not change a Vertex request.
+// gemini-embedding-2 uses embedContent; set its task prompts in the role
+// prefixes. Other models use predict with task type RETRIEVAL_DOCUMENT.
+// With nil Options.HTTP, New uses Google Application Default Credentials and
+// Transport.Timeout. Callers can use vector.WithBatchConcurrency to choose
+// how many requests run at once.
 //
 // The caller owns the HTTP client when it supplies one. This package clones
 // that client, pins requests to the configured origin, and can attach a bearer

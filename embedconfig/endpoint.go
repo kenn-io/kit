@@ -18,6 +18,8 @@ func VertexBaseURL(project, location string) (string, error) {
 	host := location + "-aiplatform.googleapis.com"
 	if location == "global" {
 		host = "aiplatform.googleapis.com"
+	} else if location == "us" || location == "eu" {
+		host = "aiplatform." + location + ".rep.googleapis.com"
 	}
 	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/publishers/google/models", host, project, location), nil
 }

@@ -27,7 +27,7 @@ type Options struct {
 	APIKey string
 	// HTTP is an optional caller-owned client. New clones it and leaves the
 	// original unchanged. Nil builds a client from Transport.Timeout.
-	// For Vertex, a client with no timeout also uses Transport.Timeout.
+	// For Vertex, nil also uses Google Application Default Credentials.
 	HTTP *http.Client
 	// OllamaMetalRecovery recovers a response that contains an unusable
 	// vector when the endpoint is an Ollama /v1 URL. Valid vectors are kept.
@@ -94,24 +94,18 @@ func New(opts Options) (*Client, error) {
 		return nil, err
 	}
 	if opts.OllamaMetalRecovery {
-		if deployment.API == embedconfig.APIVertex {
-			return nil, errors.New("embed Vertex does not support Ollama recovery")
-		}
 		if err := validateOllamaService(canonical); err != nil {
 			return nil, err
 		}
 	}
 	endpoint := embeddingsURL(canonical)
 	if deployment.API == embedconfig.APIVertex {
-		if strings.ContainsAny(model.Name, "/:?#") {
-			return nil, errors.New("embed Vertex model name is invalid")
+		method := ":predict"
+		if strings.HasPrefix(model.Name, "gemini-embedding-2") {
+			method = ":embedContent"
 		}
-		endpoint = canonical + "/" + url.PathEscape(model.Name) + ":predict"
-		limit := 5
-		if model.Name == "gemini-embedding-001" {
-			limit = 1
-		}
-		items = min(items, limit)
+		endpoint = canonical + "/" + url.PathEscape(model.Name) + method
+		items = 1
 	}
 	parsed, err := url.Parse(canonical)
 	if err != nil {
@@ -121,10 +115,15 @@ func New(opts Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	pinned := pinClient(opts.HTTP, origin, opts.APIKey, transport.Timeout)
-	if deployment.API == embedconfig.APIVertex && pinned.Timeout == 0 {
-		pinned.Timeout = transport.Timeout
+	httpClient := opts.HTTP
+	if deployment.API == embedconfig.APIVertex && httpClient == nil {
+		googleTransport, err := googleTransport()
+		if err != nil {
+			return nil, err
+		}
+		httpClient = &http.Client{Timeout: transport.Timeout, Transport: googleTransport}
 	}
+	pinned := pinClient(httpClient, origin, opts.APIKey, transport.Timeout)
 	// A CPU re-encode or a model reload can take minutes, far past a
 	// per-request timeout, so recovery has its own, much longer bound.
 	recovery := *pinned
@@ -144,9 +143,6 @@ func New(opts Options) (*Client, error) {
 	}, nil
 }
 
-// BatchItems returns the effective maximum number of inputs per request.
-func (c *Client) BatchItems() int { return c.batchItems }
-
 // Embed encodes inputs in request order. An empty list returns nil.
 // OpenAI-compatible inputs that do not share a role are sent in separate
 // requests because input_type is one field per request.
@@ -165,7 +161,7 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 	out := make([][]float32, len(prepared))
 	for start := 0; start < len(prepared); {
 		end := start + 1
-		for end < len(prepared) && (c.api == embedconfig.APIVertex || prepared[end].role == prepared[start].role) && end-start < c.batchItems {
+		for end < len(prepared) && prepared[end].role == prepared[start].role && end-start < c.batchItems {
 			end++
 		}
 		texts := make([]string, end-start)

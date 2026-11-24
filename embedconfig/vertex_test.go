@@ -16,6 +16,11 @@ func TestVertexBaseURL(t *testing.T) {
 	got, err = embedconfig.VertexBaseURL("project-a", "global")
 	require.NoError(t, err)
 	assert.Equal(t, "https://aiplatform.googleapis.com/v1/projects/project-a/locations/global/publishers/google/models", got)
+	for _, location := range []string{"us", "eu"} {
+		got, err = embedconfig.VertexBaseURL("project-a", location)
+		require.NoError(t, err)
+		assert.Equal(t, "https://aiplatform."+location+".rep.googleapis.com/v1/projects/project-a/locations/"+location+"/publishers/google/models", got)
+	}
 	for _, v := range []string{"", "../x", "A", "a/b", "a.b", "-abc", "abc-"} {
 		_, err := embedconfig.VertexBaseURL(v, "us-central1")
 		assert.Error(t, err)

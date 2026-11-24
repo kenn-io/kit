@@ -7,11 +7,10 @@
 //
 // VertexBaseURL constructs a Vertex endpoint for a location. Set Deployment.API to
 // APIVertex to select its request protocol. Embedder.API carries the same
-// choice through Parts. The default is APIOpenAI. Vertex always sends
-// VertexTaskType, requests Model.Dimensions, and returns float vectors, so
-// InputTypeMode, RequestDimensions, and EncodingFormat have no effect there.
-// The client may send fewer than Batch.Items inputs per Vertex request; see
-// embedclient.Client.BatchItems.
+// choice through Parts. The default is APIOpenAI. Vertex requests
+// Model.Dimensions and returns float vectors, so InputTypeMode,
+// RequestDimensions, and EncodingFormat have no effect there.
+// Vertex sends one input per request and Google truncates over-length input.
 //
 // The types stay separate on purpose. Model, role, and input settings can
 // change vectors or force a rebuild. Batch size and timeouts do not.

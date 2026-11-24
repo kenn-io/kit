@@ -3,31 +3,24 @@ package embedclient
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	json "encoding/json/v2"
-
-	"go.kenn.io/kit/embedconfig"
 )
 
-type vertexInstance struct {
-	Content  string `json:"content"`
-	TaskType string `json:"task_type"`
-}
-
 func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
-	instances := make([]vertexInstance, len(texts))
-	for i, text := range texts {
-		instances[i] = vertexInstance{Content: text, TaskType: embedconfig.VertexTaskType}
+	var request any
+	if strings.HasPrefix(c.model.Name, "gemini-embedding-2") {
+		request = map[string]any{
+			"content":            map[string]any{"parts": []any{map[string]any{"text": texts[0]}}},
+			"embedContentConfig": map[string]any{"outputDimensionality": c.model.Dimensions},
+		}
+	} else {
+		request = map[string]any{
+			"instances":  []any{map[string]any{"content": texts[0], "task_type": "RETRIEVAL_DOCUMENT"}},
+			"parameters": map[string]any{"outputDimensionality": c.model.Dimensions},
+		}
 	}
-	var request struct {
-		Instances  []vertexInstance `json:"instances"`
-		Parameters struct {
-			OutputDimensionality int  `json:"outputDimensionality"`
-			AutoTruncate         bool `json:"autoTruncate"`
-		} `json:"parameters"`
-	}
-	request.Instances = instances
-	request.Parameters.OutputDimensionality = c.model.Dimensions
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("embed request encoding failed: %w", err)
@@ -36,6 +29,18 @@ func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
 }
 
 func (c *Client) classifyVertex(payload []byte, count int) ([][]float32, []error, error) {
+	if strings.HasPrefix(c.model.Name, "gemini-embedding-2") {
+		var response struct {
+			Embedding struct {
+				Values wireEmbedding `json:"values"`
+			} `json:"embedding"`
+		}
+		if err := json.Unmarshal(payload, &response); err != nil {
+			return nil, nil, errors.New("embed response is invalid")
+		}
+		out, problems := c.decodeVectors([]wireEmbedding{response.Embedding.Values})
+		return out, problems, nil
+	}
 	var response struct {
 		Predictions []struct {
 			Embeddings struct {
