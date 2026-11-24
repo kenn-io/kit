@@ -1,10 +1,12 @@
 package embedmodel_test
 
 import (
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/kit/embedconfig"
-	"testing"
 )
 
 func TestVertexIdentity(t *testing.T) {

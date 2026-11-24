@@ -1,11 +1,13 @@
 package embedconfig_test
 
 import (
+	"testing"
+
 	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"go.kenn.io/kit/embedconfig"
-	"testing"
 )
 
 func TestVertexBaseURL(t *testing.T) {

@@ -148,8 +148,8 @@ func New(opts Options) (*Client, error) {
 func (c *Client) BatchItems() int { return c.batchItems }
 
 // Embed encodes inputs in request order. An empty list returns nil.
-// Inputs that do not share a role are sent in separate requests because
-// input_type is one field per request.
+// OpenAI-compatible inputs that do not share a role are sent in separate
+// requests because input_type is one field per request.
 func (c *Client) Embed(ctx context.Context, inputs []embedmodel.Content) ([][]float32, error) {
 	if len(inputs) == 0 {
 		return nil, nil
@@ -165,7 +165,7 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 	out := make([][]float32, len(prepared))
 	for start := 0; start < len(prepared); {
 		end := start + 1
-		for end < len(prepared) && prepared[end].role == prepared[start].role && end-start < c.batchItems {
+		for end < len(prepared) && (c.api == embedconfig.APIVertex || prepared[end].role == prepared[start].role) && end-start < c.batchItems {
 			end++
 		}
 		texts := make([]string, end-start)

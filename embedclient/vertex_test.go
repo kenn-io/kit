@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/embedclient"
 	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/embedmodel"
 )
 
 func TestVertexPredict(t *testing.T) {
@@ -81,14 +82,12 @@ func TestGoogleHTTPClientRefreshesCredentials(t *testing.T) {
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tokens++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"access_token":"token-%d","token_type":"Bearer","expires_in":1}`, tokens)
+		_, _ = fmt.Fprintf(w, `{"access_token":"token-%d","token_type":"Bearer","expires_in":0}`, tokens)
 	}))
 	t.Cleanup(tokenServer.Close)
 	path := filepath.Join(t.TempDir(), "credentials.json")
-	subject := filepath.Join(t.TempDir(), "subject")
-	require.NoError(t, os.WriteFile(subject, []byte("subject-token"), 0600))
-	credentials := fmt.Sprintf(`{"type":"external_account","audience":"//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/test/providers/test","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":%q,"credential_source":{"file":%q}}`, tokenServer.URL, subject)
-	require.NoError(t, os.WriteFile(path, []byte(credentials), 0600))
+	credentials := fmt.Sprintf(`{"type":"external_account_authorized_user","client_id":"test","client_secret":"test","refresh_token":"test","token_url":%q}`, tokenServer.URL)
+	require.NoError(t, os.WriteFile(path, []byte(credentials), 0o600))
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 	var headers []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +101,6 @@ func TestGoogleHTTPClientRefreshesCredentials(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"a"})
 	require.NoError(t, err)
-	time.Sleep(1100 * time.Millisecond)
 	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"b"})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Bearer token-1", "Bearer token-2"}, headers)
@@ -240,10 +238,10 @@ func TestGoogleHTTPClientUsesVertexTransportTimeout(t *testing.T) {
 	}))
 	t.Cleanup(tokenServer.Close)
 	subject := filepath.Join(t.TempDir(), "subject")
-	require.NoError(t, os.WriteFile(subject, []byte("subject-token"), 0600))
+	require.NoError(t, os.WriteFile(subject, []byte("subject-token"), 0o600))
 	path := filepath.Join(t.TempDir(), "credentials.json")
 	credentials := fmt.Sprintf(`{"type":"external_account","audience":"//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/test/providers/test","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":%q,"credential_source":{"file":%q}}`, tokenServer.URL, subject)
-	require.NoError(t, os.WriteFile(path, []byte(credentials), 0600))
+	require.NoError(t, os.WriteFile(path, []byte(credentials), 0o600))
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -280,4 +278,27 @@ func TestGoogleHTTPClientUsesVertexTransportTimeout(t *testing.T) {
 			assert.Equal(t, tc.httpTimeout, httpClient.Timeout)
 		})
 	}
+}
+
+func TestVertexBatchesMixedRoles(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		body := readBody(t, r)
+		assert.Equal(t, []any{
+			map[string]any{"content": "doc: alpha!", "task_type": "RETRIEVAL_DOCUMENT"},
+			map[string]any{"content": "query: beta?", "task_type": "RETRIEVAL_DOCUMENT"},
+		}, body["instances"])
+		writeJSON(t, w, map[string]any{"predictions": []any{
+			map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}}},
+			map[string]any{"embeddings": map[string]any{"values": []float64{0, 1}}},
+		}})
+	}))
+	t.Cleanup(server.Close)
+	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}, Roles: embedconfig.Roles{DocumentPrefix: "doc: ", DocumentSuffix: "!", QueryPrefix: "query: ", QuerySuffix: "?"}})
+	require.NoError(t, err)
+	vectors, err := client.Embed(t.Context(), []embedmodel.Content{{Role: embedconfig.RoleDocument, Text: "alpha"}, {Role: embedconfig.RoleQuery, Text: "beta"}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, requests)
+	assert.Equal(t, [][]float32{{1, 0}, {0, 1}}, vectors)
 }

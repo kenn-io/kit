@@ -105,7 +105,8 @@ func TestEmbedderPreservesDefaultIdentities(t *testing.T) {
 model = "embed-text"
 dims = 768
 `
-	for _, settings := range []string{"", `document_prefix = ""
+	for _, settings := range []string{"", `api = "openai"
+`, `document_prefix = ""
 document_suffix = ""
 query_prefix = ""
 query_suffix = ""
