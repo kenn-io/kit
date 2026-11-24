@@ -75,12 +75,6 @@ func Listen(ctx context.Context, ep Endpoint, options ...ListenOption) (net.List
 	if err != nil {
 		return nil, err
 	}
-	if !filepath.IsAbs(lockPath) {
-		return nil, fmt.Errorf("acquire daemon listen lock: daemon lock path %q must be absolute", lockPath)
-	}
-	if err := ensurePrivateRuntimeDir(filepath.Dir(lockPath)); err != nil {
-		return nil, fmt.Errorf("prepare daemon lock dir: %w", err)
-	}
 	unlock, err := acquireDaemonLock(ctx, lockPath, "acquire daemon listen lock")
 	if err != nil {
 		return nil, err

@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,6 +53,28 @@ func TestStartLockHeld(t *testing.T) {
 	require.Error(t, err)
 	_, err = (daemon.RuntimeStore{Dir: store.Dir + "\x00"}).StartLockHeld(t.Context())
 	require.Error(t, err)
+}
+
+func TestStartLocksCreateMissingRuntimeDir(t *testing.T) {
+	for _, nonblocking := range []bool{false, true} {
+		t.Run(fmt.Sprint(nonblocking), func(t *testing.T) {
+			store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "missing")}
+			if nonblocking {
+				release, acquired, err := store.TryAcquireStartLock(t.Context())
+				require.NoError(t, err)
+				require.True(t, acquired)
+				t.Cleanup(release)
+			} else {
+				release, err := store.AcquireStartLock(t.Context())
+				require.NoError(t, err)
+				t.Cleanup(release)
+			}
+			require.DirExists(t, store.Dir)
+			held, err := store.StartLockHeld(t.Context())
+			require.NoError(t, err)
+			require.True(t, held)
+		})
+	}
 }
 
 func TestTryAcquireStartLockCoordinatesWithManager(t *testing.T) {

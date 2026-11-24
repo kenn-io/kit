@@ -68,9 +68,13 @@ func (r RuntimeRecord) Endpoint() Endpoint {
 type RuntimeStore struct {
 	Dir    string
 	Prefix string
-	// ValidateFiles opts List and LockPath into validation before deep repair.
-	// Children outside the runtime records and lock are repaired only on fallback.
+	// ValidateFiles opts only List and LockPath into validation before deep repair
+	// on Windows. Other methods and platforms keep deep repair.
 	ValidateFiles bool
+}
+
+func (s RuntimeStore) validateFiles() bool {
+	return s.ValidateFiles && runtime.GOOS == "windows"
 }
 
 const (
@@ -168,37 +172,29 @@ func (s RuntimeStore) LockPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if s.ValidateFiles && runtime.GOOS == "windows" && validatePrivateRuntimeDir(s.Dir) == nil {
-		file, openErr := openRuntimeFile(path)
-		if errors.Is(openErr, os.ErrNotExist) {
-			return path, nil
-		}
-		if openErr == nil {
-			validateErr := safefileio.ValidateTrustedFile(file)
-			closeErr := file.Close()
-			if validateErr == nil && closeErr == nil {
-				return path, nil
-			}
-		}
+	if s.validateFiles() && validatePrivateRuntimeDir(s.Dir) == nil && validateLockFile(path) == nil {
+		return path, nil
 	}
 	if err := s.prepareDir(); err != nil {
 		return "", err
 	}
-	if s.ValidateFiles && runtime.GOOS == "windows" {
-		file, err := openRuntimeFile(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return path, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		validateErr := safefileio.ValidateTrustedFile(file)
-		closeErr := file.Close()
-		if err := errors.Join(validateErr, closeErr); err != nil {
+	if s.validateFiles() {
+		if err := validateLockFile(path); err != nil {
 			return "", err
 		}
 	}
 	return path, nil
+}
+
+func validateLockFile(path string) error {
+	file, err := openRuntimeFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.Join(safefileio.ValidateTrustedFile(file), file.Close())
 }
 
 func (s RuntimeStore) startLockPath() (string, error) {
@@ -267,20 +263,16 @@ func (s RuntimeStore) Read(path string) (RuntimeRecord, error) {
 }
 
 func (s RuntimeStore) readPrepared(path string) (RuntimeRecord, error) {
-	return s.readRuntime(path, false)
-}
-
-func (s RuntimeStore) readRuntime(path string, validate bool) (RuntimeRecord, error) {
 	file, err := openRuntimeFile(path)
 	if err != nil {
 		return RuntimeRecord{}, err
 	}
 	defer func() { _ = file.Close() }()
-	if validate {
-		if err := safefileio.ValidateTrustedFile(file); err != nil {
-			return RuntimeRecord{}, err
-		}
-	}
+	return readRuntimeFile(file)
+}
+
+func readRuntimeFile(file *os.File) (RuntimeRecord, error) {
+	path := file.Name()
 	body, err := io.ReadAll(file)
 	if err != nil {
 		return RuntimeRecord{}, fmt.Errorf("read runtime file %s: %w", path, err)
@@ -300,9 +292,9 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	validate := s.ValidateFiles && runtime.GOOS == "windows"
+	validate := s.validateFiles()
 	if validate && s.validateDir() == nil && validatePrivateRuntimeDir(s.Dir) == nil {
-		records, err := s.listPrepared(prefix, true, true)
+		records, err := s.listValidated(prefix)
 		if err == nil {
 			return records, nil
 		}
@@ -310,13 +302,44 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 	if err := s.prepareDir(); err != nil {
 		return nil, err
 	}
-	return s.listPrepared(prefix, validate, false)
+	if validate {
+		return s.listValidated(prefix)
+	}
+	return s.listPrepared(prefix)
 }
 
-func (s RuntimeStore) listPrepared(prefix string, validate, failFast bool) ([]RuntimeRecord, error) {
+func (s RuntimeStore) listValidated(prefix string) ([]RuntimeRecord, error) {
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
-		if os.IsNotExist(err) && !failFast {
+		return nil, fmt.Errorf("read runtime dir: %w", err)
+	}
+	var records []RuntimeRecord
+	for _, entry := range entries {
+		pid, ok := pidFromName(prefix, entry.Name())
+		if entry.IsDir() || !ok {
+			continue
+		}
+		file, err := openRuntimeFile(filepath.Join(s.Dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		if err := safefileio.ValidateTrustedFile(file); err != nil {
+			return nil, errors.Join(err, file.Close())
+		}
+		rec, err := readRuntimeFile(file)
+		_ = file.Close()
+		if err == nil && rec.PID == pid && rec.Address != "" {
+			records = append(records, rec)
+		}
+	}
+	sortRuntimeRecords(records)
+	return records, nil
+}
+
+func (s RuntimeStore) listPrepared(prefix string) ([]RuntimeRecord, error) {
+	entries, err := os.ReadDir(s.Dir)
+	if err != nil {
+		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read runtime dir: %w", err)
@@ -332,22 +355,23 @@ func (s RuntimeStore) listPrepared(prefix string, validate, failFast bool) ([]Ru
 			continue
 		}
 		path := filepath.Join(s.Dir, name)
-		rec, err := s.readRuntime(path, validate)
-		if err != nil && failFast {
-			return nil, err
-		}
+		rec, err := s.readPrepared(path)
 		if err != nil || rec.PID != filenamePID || rec.Address == "" {
 			continue
 		}
 		records = append(records, rec)
 	}
+	sortRuntimeRecords(records)
+	return records, nil
+}
+
+func sortRuntimeRecords(records []RuntimeRecord) {
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].StartedAt.Equal(records[j].StartedAt) {
 			return records[i].PID < records[j].PID
 		}
 		return records[i].StartedAt.Before(records[j].StartedAt)
 	})
-	return records, nil
 }
 
 // CleanupDead removes runtime files whose filename PID matches the record PID

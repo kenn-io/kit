@@ -40,6 +40,9 @@ func TestRuntimeStoreValidateFiles(t *testing.T) {
 	require.Len(records, 1)
 	_, err = store.LockPath()
 	require.NoError(err)
+	release, err := store.AcquireStartLock(t.Context())
+	require.NoError(err)
+	release()
 	require.Equal(before, fileDACL(t, file))
 
 	store.ValidateFiles = false
@@ -87,6 +90,46 @@ func TestRuntimeStoreValidateFilesRejectsJunction(t *testing.T) {
 	require.Error(err)
 	_, err = store.LockPath()
 	require.Error(err)
+}
+
+func TestRuntimeStoreValidateFilesSkipsMalformedRecordsWithoutRepair(t *testing.T) {
+	for _, body := range []string{"{", `{"pid":998,"address":"127.0.0.1:999"}`, `{"pid":999}`} {
+		t.Run(body, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "runtime")
+			store := daemon.RuntimeStore{Dir: dir, ValidateFiles: true}
+			_, err := store.Write(daemon.RuntimeRecord{PID: 123, Address: "127.0.0.1:123"})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "daemon.999.json"), []byte(body), 0o600))
+			child := filepath.Join(dir, "clone")
+			require.NoError(t, os.WriteFile(child, nil, 0o600))
+			setBroadACL(t, child)
+			before := fileDACL(t, child)
+
+			records, err := store.List()
+			require.NoError(t, err)
+			require.Len(t, records, 1)
+			require.Equal(t, 123, records[0].PID)
+			require.Equal(t, before, fileDACL(t, child))
+		})
+	}
+}
+
+func TestRuntimeStoreValidateFilesRejectsUnrepairableLiveRecord(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
+	path, err := store.Write(daemon.RuntimeRecord{PID: os.Getpid(), Address: "127.0.0.1:123"})
+	require.NoError(t, err)
+	setBroadACL(t, path)
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	require.NoError(t, err)
+	acl, _, err := sd.DACL()
+	require.NoError(t, err)
+	require.NoError(t, windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil))
+
+	_, err = store.List()
+	require.Error(t, err)
+	_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{RequirePIDAlive: true})
+	require.Error(t, err)
+	require.False(t, found)
 }
 
 func setBroadACL(t *testing.T, path string) {
