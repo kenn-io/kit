@@ -31,8 +31,8 @@
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling keeps a marked hook whose executable moved when its
 // active command arguments and other settings match and the installed executable
-// resolves, and otherwise writes the requested executable. Uninstalling removes
-// only marked commands.
+// resolves, and otherwise writes the requested executable. ReplaceMoved always
+// writes the requested executable. Uninstalling removes only marked commands.
 // Nested JSON reinstalls retain the group and handler positions of existing
 // event/matcher registrations. Changed matchers reuse single-handler groups
 // in the same event, and new registrations append after existing groups.

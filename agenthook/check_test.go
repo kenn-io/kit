@@ -673,6 +673,32 @@ func TestTransientCodexError(t *testing.T) {
 	}
 }
 
+// A caller that names where its hooks should run moves them there, even while
+// the old executable still exists.
+func TestReplaceMovedRewritesAHookThatStillResolves(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	old, err := os.Executable()
+	require.NoError(t, err)
+	moved := filepath.Join(t.TempDir(), "moved-hook")
+	for _, agent := range []Agent{AgentClaude, AgentCodex} {
+		opts := InstallOptions{Executable: old, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+		_, err = Install(agent, opts)
+		require.NoError(t, err)
+		opts.Executable, opts.ReplaceMoved = moved, true
+
+		result, err := Install(agent, opts)
+		require.NoError(t, err)
+		assert.True(t, result.Changed, agent)
+		assert.Contains(t, string(result.Data), "moved-hook", agent)
+		assert.NotContains(t, string(result.Data), old, agent)
+		again, err := PlanInstall(agent, opts)
+		require.NoError(t, err)
+		assert.False(t, again.Changed, agent)
+	}
+}
+
 func TestMovedHookCommandArguments(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())

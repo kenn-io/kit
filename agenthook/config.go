@@ -47,6 +47,11 @@ type InstallOptions struct {
 	CommandPowerShell string
 	Marker            string
 	Hooks             []Hook
+	// ReplaceMoved rewrites Claude Code and Codex hooks that run the same
+	// command from another executable that still exists. By default those
+	// hooks are kept, so an update that moves the application does not make
+	// Codex ask the person to trust its hooks again.
+	ReplaceMoved bool
 }
 
 // Result reports the planned or completed config mutation. Data contains the
@@ -67,7 +72,7 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 		return Result{}, err
 	}
 	data, changed, err := planConfig(
-		spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false, opts.WorkspaceDir,
+		spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false, opts.WorkspaceDir, opts.ReplaceMoved,
 	)
 	if err != nil {
 		return Result{}, err
@@ -165,7 +170,7 @@ func PlanUninstall(agent Agent, configPath, marker string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	data, changed, err := planConfig(spec, path, marker, "", "", nil, nil, true, "")
+	data, changed, err := planConfig(spec, path, marker, "", "", nil, nil, true, "", false)
 	if err != nil {
 		return Result{}, err
 	}
@@ -281,11 +286,11 @@ func planConfig(
 	path, marker, command, commandWindows string,
 	argv []string,
 	hooks []nativeHook,
-	uninstall bool, dir string,
+	uninstall bool, dir string, replaceMoved bool,
 ) ([]byte, bool, error) {
 	switch spec.format {
 	case formatNestedJSON:
-		return planNestedJSONConfig(spec, path, marker, command, commandWindows, argv, hooks, uninstall, dir)
+		return planNestedJSONConfig(spec, path, marker, command, commandWindows, argv, hooks, uninstall, dir, replaceMoved)
 	case formatDirectJSON:
 		return planDirectJSONConfig(
 			spec, path, marker, command, commandWindows, hooks, uninstall,

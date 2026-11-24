@@ -20,7 +20,7 @@ func planNestedJSONConfig(
 	path, marker, command, commandWindows string,
 	argv []string,
 	hooks []nativeHook,
-	uninstall bool, dir string,
+	uninstall bool, dir string, replaceMoved bool,
 ) ([]byte, bool, error) {
 	root, exists, err := readJSONConfig(path)
 	if err != nil {
@@ -34,7 +34,7 @@ func planNestedJSONConfig(
 		maps.Copy(root, spec.newConfigFields)
 	}
 	if err := applyNestedJSONHooks(
-		root, path, marker, command, commandWindows, argv, hooks, uninstall, dir, spec.profile.Agent == AgentClaude || spec.profile.Agent == AgentCodex,
+		root, path, marker, command, commandWindows, argv, hooks, uninstall, dir, !replaceMoved && (spec.profile.Agent == AgentClaude || spec.profile.Agent == AgentCodex),
 	); err != nil {
 		return nil, false, err
 	}
