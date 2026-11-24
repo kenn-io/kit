@@ -120,6 +120,9 @@ const (
 	APIVertex API = "vertex"
 )
 
+// VertexTaskType is used for both indexed text and queries.
+const VertexTaskType = "RETRIEVAL_DOCUMENT"
+
 // Batch limits one provider request. Items is a count. MaxTokens is an
 // aggregate input-token cap, and InputTokenUpperBound is the caller's
 // conservative per-input ceiling. Both token fields stay zero for count-only

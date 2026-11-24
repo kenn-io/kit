@@ -67,6 +67,9 @@ type FaceResponse struct {
 // EmbedFaces returns one unit vector or nil per box, in request order.
 func (c *Client) EmbedFaces(ctx context.Context, preview []byte, boxes []FaceBox) (FaceResponse, error) {
 	var result FaceResponse
+	if c.api == embedconfig.APIVertex {
+		return result, errors.New("embed Vertex does not support faces")
+	}
 	if len(boxes) == 0 {
 		return result, nil
 	}

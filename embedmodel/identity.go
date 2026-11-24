@@ -68,6 +68,9 @@ func vectorFields(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 	}
 	if d.API == embedconfig.APIVertex {
 		fields["api"] = string(d.API)
+		if !strings.HasPrefix(m.Name, "gemini-embedding-2") {
+			fields["vertex_task_type"] = embedconfig.VertexTaskType
+		}
 	} else {
 		fields["input_type"] = string(r.InputType)
 	}
@@ -128,6 +131,8 @@ func prepareSpace(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 		if d, err = d.Prepared(); err != nil {
 			return m, r, d, err
 		}
+	} else if err := d.API.Validate(); err != nil {
+		return m, r, d, err
 	}
 	return m, r, d, nil
 }
