@@ -50,7 +50,7 @@ type daemonLock struct {
 // runtime store. The caller must invoke the returned release function.
 func (s RuntimeStore) AcquireStartLock(ctx context.Context) (func(), error) {
 	const action = "acquire daemon start lock"
-	lock, err := s.startDaemonLock(action)
+	lock, err := s.startDaemonLock()
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func (s RuntimeStore) TryAcquireStartLock(ctx context.Context) (release func(), 
 	if err := ctx.Err(); err != nil {
 		return nil, false, fmt.Errorf("%s: %w", action, err)
 	}
-	lock, err := s.startDaemonLock(action)
+	lock, err := s.startDaemonLock()
 	if err != nil {
 		return nil, false, err
 	}
@@ -125,17 +125,13 @@ func getDaemonLock(lockPath, action string) (*daemonLock, error) {
 	return loadDaemonLock(lockPath), nil
 }
 
-// startDaemonLock reuses the directory preparation LockPath completed when
-// ValidateFiles is active, instead of repairing the directory again.
-func (s RuntimeStore) startDaemonLock(action string) (*daemonLock, error) {
+// startDaemonLock uses the directory LockPath has already prepared.
+func (s RuntimeStore) startDaemonLock() (*daemonLock, error) {
 	path, err := s.LockPath()
 	if err != nil {
 		return nil, err
 	}
-	if s.validateFiles() {
-		return loadDaemonLock(path), nil
-	}
-	return getDaemonLock(path, action)
+	return loadDaemonLock(path), nil
 }
 
 func loadDaemonLock(lockPath string) *daemonLock {
