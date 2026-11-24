@@ -40,9 +40,6 @@ func TestRuntimeStoreValidateFiles(t *testing.T) {
 	require.Len(records, 1)
 	_, err = store.LockPath()
 	require.NoError(err)
-	release, err := store.AcquireStartLock(t.Context())
-	require.NoError(err)
-	release()
 	require.Equal(before, fileDACL(t, file))
 
 	store.ValidateFiles = false

@@ -122,11 +122,8 @@ func getDaemonLock(lockPath, action string) (*daemonLock, error) {
 	if !filepath.IsAbs(lockPath) {
 		return nil, fmt.Errorf("%s: daemon lock path %q must be absolute", action, lockPath)
 	}
-	dir := filepath.Dir(lockPath)
-	if err := validatePrivateRuntimeDir(dir); err != nil {
-		if err := ensurePrivateRuntimeDir(dir); err != nil {
-			return nil, fmt.Errorf("prepare daemon lock dir: %w", err)
-		}
+	if err := ensurePrivateRuntimeDir(filepath.Dir(lockPath)); err != nil {
+		return nil, fmt.Errorf("prepare daemon lock dir: %w", err)
 	}
 	value, _ := daemonLocks.LoadOrStore(lockPath, &daemonLock{
 		local: semaphore.NewWeighted(1),
