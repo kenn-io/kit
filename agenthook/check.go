@@ -89,7 +89,7 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 			return set(state, reason, step)
 		}
 	}
-	_, changed, err := planConfig(spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false, cwd)
+	_, changed, err := planConfig(spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false, cwd, opts.ReplaceMoved)
 	if err != nil {
 		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
 	}
