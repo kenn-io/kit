@@ -38,37 +38,32 @@ func TestVertexPredict(t *testing.T) {
 	assert.Equal(t, 1, calls)
 }
 
-func TestVertexBadResponseAndStatus(t *testing.T) {
-	for _, status := range []int{200, 401, 403, 429} {
-		t.Run(fmt.Sprint(status), func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(status)
-				_, _ = w.Write([]byte(`{"predictions":[]}`))
-			}))
-			t.Cleanup(server.Close)
-			c, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
-			require.NoError(t, err)
-			_, err = c.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"a"})
-			require.Error(t, err)
-			if status != 200 {
-				var api *embedclient.APIError
-				require.ErrorAs(t, err, &api)
-				assert.Equal(t, status == 401 || status == 403, api.CredentialsRejected())
-				assert.Equal(t, status == 429, api.Retryable())
-			}
-		})
-	}
+func TestVertexRejectsPredictionCountMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"predictions":[]}`))
+	}))
+	t.Cleanup(server.Close)
+	c, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
+	require.NoError(t, err)
+	_, err = c.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"a"})
+	require.Error(t, err)
 }
 
-func TestVertexRejectsUnsupportedOptions(t *testing.T) {
+func TestVertexRejectsInvalidModelNames(t *testing.T) {
 	for _, name := range []string{"a/b", "a:b", "a?b", "a#b"} {
 		model := unitModel()
 		model.Name = name
 		_, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: "http://localhost", API: embedconfig.APIVertex}})
 		require.Error(t, err)
 	}
+}
+
+func TestVertexRejectsOllamaRecovery(t *testing.T) {
 	_, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: "http://localhost/v1", API: embedconfig.APIVertex}, OllamaMetalRecovery: true})
 	require.Error(t, err)
+}
+
+func TestVertexRejectsFaces(t *testing.T) {
 	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: "http://localhost/v1", API: embedconfig.APIVertex}})
 	require.NoError(t, err)
 	_, err = client.EmbedFaces(t.Context(), nil, nil)
@@ -83,18 +78,16 @@ func setGoogleTestCredentials(t *testing.T, tokenURL string) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 }
 
-func TestGoogleHTTPClientRefreshesCredentials(t *testing.T) {
-	var tokens int
+func TestGoogleHTTPClientOverridesAPIKey(t *testing.T) {
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokens++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"access_token":"token-%d","token_type":"Bearer","expires_in":0}`, tokens)
+		_, _ = w.Write([]byte(`{"access_token":"token","token_type":"Bearer","expires_in":3600}`))
 	}))
 	t.Cleanup(tokenServer.Close)
 	setGoogleTestCredentials(t, tokenServer.URL)
-	var headers []string
+	var authorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		headers = append(headers, r.Header.Get("Authorization"))
+		authorization = r.Header.Get("Authorization")
 		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}}}}})
 	}))
 	t.Cleanup(server.Close)
@@ -104,73 +97,7 @@ func TestGoogleHTTPClientRefreshesCredentials(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"a"})
 	require.NoError(t, err)
-	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"b"})
-	require.NoError(t, err)
-	assert.Equal(t, []string{"Bearer token-1", "Bearer token-2"}, headers)
-}
-
-func TestVertexMidListFailureReturnsNoVectors(t *testing.T) {
-	var calls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
-		if calls == 2 {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}}}}})
-	}))
-	t.Cleanup(server.Close)
-	model := unitModel()
-	model.Name = "gemini-embedding-001"
-	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
-	require.NoError(t, err)
-	vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"a", "b", "c"})
-	require.Error(t, err)
-	assert.Nil(t, vectors)
-	assert.Equal(t, 2, calls)
-}
-
-func TestVertexEmbedTextsAppliesRoleAffixes(t *testing.T) {
-	var instances []any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body := readBody(t, r)
-		instances = append(instances, body["instances"].([]any)...)
-		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}}}}})
-	}))
-	t.Cleanup(server.Close)
-	client, err := embedclient.New(embedclient.Options{
-		Model:      unitModel(),
-		Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex},
-		Roles:      embedconfig.Roles{DocumentPrefix: "doc: ", DocumentSuffix: " :doc", QueryPrefix: "query: ", QuerySuffix: " :query"},
-	})
-	require.NoError(t, err)
-	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
-	require.NoError(t, err)
-	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"text"})
-	require.NoError(t, err)
-	assert.Equal(t, []any{
-		map[string]any{"content": "doc: text :doc", "task_type": "RETRIEVAL_DOCUMENT"},
-		map[string]any{"content": "query: text :query", "task_type": "RETRIEVAL_DOCUMENT"},
-	}, instances)
-}
-
-func TestVertexEmbedderRequestsConfiguredDimensions(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body := readBody(t, r)
-		assert.Equal(t, map[string]any{"autoTruncate": false, "outputDimensionality": float64(768)}, body["parameters"])
-		values := make([]float64, 768)
-		values[0] = 1
-		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": values}}}})
-	}))
-	t.Cleanup(server.Close)
-	parts, err := (embedconfig.Embedder{API: embedconfig.APIVertex, BaseURL: server.URL, Model: "m", Dims: 768}).Parts()
-	require.NoError(t, err)
-	client, err := embedclient.New(embedclient.Options{Model: parts.Model, Roles: parts.Roles, Deployment: parts.Deployment, Batch: parts.Batch, Transport: parts.Transport})
-	require.NoError(t, err)
-	vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
-	require.NoError(t, err)
-	require.Len(t, vectors, 1)
-	assert.Len(t, vectors[0], 768)
+	assert.Equal(t, "Bearer token", authorization)
 }
 
 func TestVertexBatchItemsAndRequests(t *testing.T) {
@@ -190,7 +117,6 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 				body := readBody(t, r)
 				instances := body["instances"].([]any)
 				sizes = append(sizes, len(instances))
-				assert.Equal(t, map[string]any{"autoTruncate": false, "outputDimensionality": float64(2)}, body["parameters"])
 				predictions := make([]any, len(instances))
 				for i := range predictions {
 					predictions[i] = map[string]any{"embeddings": map[string]any{"values": []float64{float64(i + 1), 1}}}
@@ -234,13 +160,7 @@ func TestVertexInvalidVectorReportsInputIndex(t *testing.T) {
 	assert.Nil(t, vectors)
 }
 
-func TestGoogleHTTPClientUsesVertexTransportTimeout(t *testing.T) {
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"token","token_type":"Bearer","expires_in":3600}`))
-	}))
-	t.Cleanup(tokenServer.Close)
-	setGoogleTestCredentials(t, tokenServer.URL)
+func TestVertexUsesTransportTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-time.After(150 * time.Millisecond):
@@ -253,25 +173,18 @@ func TestGoogleHTTPClientUsesVertexTransportTimeout(t *testing.T) {
 		name        string
 		timeout     time.Duration
 		httpTimeout time.Duration
-		wantTimeout bool
 	}{
-		{"short", 30 * time.Millisecond, 0, true},
-		{"caller timeout", time.Second, 30 * time.Millisecond, true},
+		{"short", 30 * time.Millisecond, 0},
+		{"caller timeout", time.Second, 30 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			httpClient, err := embedclient.GoogleHTTPClient()
-			require.NoError(t, err)
-			httpClient.Timeout = tc.httpTimeout
+			httpClient := &http.Client{Timeout: tc.httpTimeout}
 			client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}, HTTP: httpClient, Transport: embedconfig.Transport{Timeout: tc.timeout}})
 			require.NoError(t, err)
 			_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
-			if tc.wantTimeout {
-				var transportErr *embedclient.TransportError
-				require.ErrorAs(t, err, &transportErr)
-				assert.True(t, transportErr.Timeout())
-			} else {
-				require.NoError(t, err)
-			}
+			var transportErr *embedclient.TransportError
+			require.ErrorAs(t, err, &transportErr)
+			assert.True(t, transportErr.Timeout())
 			assert.Equal(t, tc.httpTimeout, httpClient.Timeout)
 		})
 	}

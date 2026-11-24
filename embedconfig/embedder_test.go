@@ -21,6 +21,7 @@ func TestEmbedderDecodesTheStandardKeys(t *testing.T) {
 	}
 	meta, err := toml.Decode(`
 [search.embeddings]
+api = "vertex"
 base_url = "https://api.example.test/v1"
 model = "embed-large"
 dims = 1024
@@ -47,7 +48,7 @@ trust_private_network = true
 	}, parts.Model)
 	assert.Equal(t, embedconfig.InputTypeRetrieval, parts.Roles.InputType)
 	assert.Equal(t, embedconfig.Deployment{
-		BaseURL: "https://api.example.test/v1", TrustPrivateNetwork: true,
+		BaseURL: "https://api.example.test/v1", API: embedconfig.APIVertex, TrustPrivateNetwork: true,
 	}, parts.Deployment)
 	assert.Equal(t, embedconfig.Batch{Items: 16, MaxTokens: 8192, InputTokenUpperBound: 512}, parts.Batch)
 	assert.Equal(t, 45*time.Second, parts.Transport.Timeout)
@@ -242,6 +243,7 @@ func TestEmbedderValidate(t *testing.T) {
 		{name: "two key sources", embedder: with(func(e *embedconfig.Embedder) {
 			e.APIKey = secretref.Ref{Env: "EMBED_KEY", File: "~/embed.key"}
 		})},
+		{name: "invalid API", embedder: with(func(e *embedconfig.Embedder) { e.API = "invalid" })},
 		{name: "unknown input type", embedder: with(func(e *embedconfig.Embedder) { e.InputTypeMode = "search" })},
 		{name: "negative batch", embedder: with(func(e *embedconfig.Embedder) { e.BatchSize = -1 })},
 		{name: "negative timeout", embedder: with(func(e *embedconfig.Embedder) { e.TimeoutSeconds = -1 })},

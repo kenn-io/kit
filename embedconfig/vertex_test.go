@@ -3,7 +3,6 @@ package embedconfig_test
 import (
 	"testing"
 
-	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -23,16 +22,4 @@ func TestVertexBaseURL(t *testing.T) {
 		_, err = embedconfig.VertexBaseURL("project-a", v)
 		assert.Error(t, err)
 	}
-}
-
-func TestVertexEmbedderAPI(t *testing.T) {
-	var e embedconfig.Embedder
-	_, err := toml.Decode("api = \"vertex\"\nbase_url = \"https://example.com/models\"\nmodel = \"model\"\ndims = 2\n", &e)
-	require.NoError(t, err)
-	require.NoError(t, e.Validate())
-	parts, err := e.Parts()
-	require.NoError(t, err)
-	assert.Equal(t, embedconfig.APIVertex, parts.Deployment.API)
-	e.API = "invalid"
-	assert.Error(t, e.Validate())
 }
