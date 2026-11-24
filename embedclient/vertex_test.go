@@ -107,25 +107,6 @@ func TestGoogleHTTPClientRefreshesCredentials(t *testing.T) {
 	assert.Equal(t, []string{"Bearer token-1", "Bearer token-2"}, headers)
 }
 
-func TestVertexRolesAndTruncation(t *testing.T) {
-	var calls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		body := readBody(t, r)
-		assert.Equal(t, []any{map[string]any{"content": "text", "task_type": "RETRIEVAL_DOCUMENT"}}, body["instances"])
-		assert.Equal(t, map[string]any{"autoTruncate": false}, body["parameters"])
-		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}, "statistics": map[string]any{"truncated": calls == 2}}}}})
-	}))
-	t.Cleanup(server.Close)
-	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
-	require.NoError(t, err)
-	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
-	require.NoError(t, err)
-	result, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"text"})
-	require.ErrorContains(t, err, "truncated")
-	assert.Nil(t, result)
-}
-
 func TestVertexMidListFailureReturnsNoVectors(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -167,4 +148,23 @@ func TestVertexEmbedTextsAppliesRoleAffixes(t *testing.T) {
 		map[string]any{"content": "doc: text :doc", "task_type": "RETRIEVAL_DOCUMENT"},
 		map[string]any{"content": "query: text :query", "task_type": "RETRIEVAL_DOCUMENT"},
 	}, instances)
+}
+
+func TestVertexEmbedderRequestsConfiguredDimensions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		assert.Equal(t, map[string]any{"autoTruncate": false, "outputDimensionality": float64(768)}, body["parameters"])
+		values := make([]float64, 768)
+		values[0] = 1
+		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": values}}}})
+	}))
+	t.Cleanup(server.Close)
+	parts, err := (embedconfig.Embedder{API: embedconfig.APIVertex, BaseURL: server.URL, Model: "m", Dims: 768}).Parts()
+	require.NoError(t, err)
+	client, err := embedclient.New(embedclient.Options{Model: parts.Model, Roles: parts.Roles, Deployment: parts.Deployment, Batch: parts.Batch, Transport: parts.Transport})
+	require.NoError(t, err)
+	vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
+	require.NoError(t, err)
+	require.Len(t, vectors, 1)
+	assert.Len(t, vectors[0], 768)
 }

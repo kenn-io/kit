@@ -126,13 +126,12 @@ func prepareSpace(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 		return m, r, d, err
 	}
 	d.BaseURL = strings.TrimSpace(d.BaseURL)
-	if err := d.API.Validate(); err != nil {
-		return m, r, d, err
-	}
 	if d.PinEndpoint || d.BaseURL != "" {
 		if d, err = d.Prepared(); err != nil {
 			return m, r, d, err
 		}
+	} else if err := d.API.Validate(); err != nil {
+		return m, r, d, err
 	}
 	return m, r, d, nil
 }

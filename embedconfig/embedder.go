@@ -26,6 +26,7 @@ type Embedder struct {
 	// Dims is the vector width the provider returns.
 	Dims int `toml:"dims"`
 	// RequestDimensions sends Dims as the dimensions field on each request.
+	// Vertex always sends Dims as outputDimensionality.
 	// Set it only when the endpoint supports requesting that width. False
 	// leaves the provider default; Dims still validates the returned width.
 	// The client never truncates vectors to fit Dims.
@@ -111,7 +112,7 @@ func (e Embedder) Parts() (Parts, error) {
 		Dimensions:        e.Dims,
 		Metric:            MetricCosine,
 		Normalization:     NormalizationL2,
-		RequestDimensions: e.RequestDimensions,
+		RequestDimensions: e.RequestDimensions || e.API == APIVertex,
 	}.Prepared()
 	if err != nil {
 		return Parts{}, err
