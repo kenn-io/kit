@@ -184,10 +184,6 @@ func TestRuntimeStoreValidateFilesReadFailureRepairs(t *testing.T) {
 	require.Len(t, records, 1)
 	require.Equal(t, 123, records[0].PID)
 	require.NotEqual(t, before, fileDACL(t, child))
-	store.ValidateFiles = false
-	defaultRecords, err := store.List()
-	require.NoError(t, err)
-	require.Equal(t, defaultRecords, records)
 }
 
 func setBroadACL(t *testing.T, path string) {

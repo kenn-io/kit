@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,13 +67,9 @@ func (r RuntimeRecord) Endpoint() Endpoint {
 type RuntimeStore struct {
 	Dir    string
 	Prefix string
-	// ValidateFiles opts only List and LockPath into validation before deep repair
-	// on Windows. Other methods and platforms keep deep repair.
+	// ValidateFiles opts only List and LockPath into validation before deep repair.
+	// Other methods keep deep repair.
 	ValidateFiles bool
-}
-
-func (s RuntimeStore) validateFiles() bool {
-	return s.ValidateFiles && runtime.GOOS == "windows"
 }
 
 const (
@@ -172,7 +167,7 @@ func (s RuntimeStore) LockPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if s.validateFiles() && validatePrivateRuntimeDir(s.Dir) == nil && validateLockFile(path) == nil {
+	if s.ValidateFiles && validatePrivateRuntimeDir(s.Dir) == nil && validateLockFile(path) == nil {
 		return path, nil
 	}
 	if err := s.prepareDir(); err != nil {
@@ -294,7 +289,7 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.validateFiles() && s.validateDir() == nil && validatePrivateRuntimeDir(s.Dir) == nil {
+	if s.ValidateFiles && s.validateDir() == nil && validatePrivateRuntimeDir(s.Dir) == nil {
 		records, err := s.listValidated(prefix)
 		if err == nil {
 			return records, nil
