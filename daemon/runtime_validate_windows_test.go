@@ -164,29 +164,25 @@ func TestRuntimeStoreValidateFilesRejectsUnrepairableLiveRecord(t *testing.T) {
 	require.False(t, found)
 }
 
-func TestRuntimeStoreValidateFilesSkipsLockedRecordAfterRepair(t *testing.T) {
-	store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime")}
-	_, err := store.Write(daemon.RuntimeRecord{PID: 123, Address: "127.0.0.1:123"})
+func TestRuntimeStoreValidateFilesRejectsUnreadableLiveRecord(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
+	path, err := store.Write(daemon.RuntimeRecord{PID: os.Getpid(), Address: "127.0.0.1:123"})
 	require.NoError(t, err)
-	path := filepath.Join(store.Dir, "daemon.999.json")
-	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
 	name, err := windows.UTF16PtrFromString(path)
 	require.NoError(t, err)
 	handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, 0, 0)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, windows.CloseHandle(handle)) })
-	want, err := store.List()
-	require.NoError(t, err)
-	require.Len(t, want, 1)
 	child := filepath.Join(store.Dir, "clone")
 	require.NoError(t, os.WriteFile(child, nil, 0o600))
 	setBroadACL(t, child)
 	before := fileDACL(t, child)
-	store.ValidateFiles = true
-	got, err := store.List()
-	require.NoError(t, err)
-	require.Equal(t, want, got)
+	_, err = store.List()
+	require.Error(t, err)
 	require.NotEqual(t, before, fileDACL(t, child))
+	_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{RequirePIDAlive: true})
+	require.Error(t, err)
+	require.False(t, found)
 }
 
 func TestRuntimeStoreValidateFilesSkipsRemovedRecords(t *testing.T) {

@@ -17,7 +17,6 @@ var reOpenFile = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile")
 // OpenCurrentUserFile opens path without following reparse points and verifies
 // the opened handle is a regular file owned by the current token user or token
 // owner.
-// OS open failures return *os.PathError; validation failures return directly.
 func OpenCurrentUserFile(path string) (*os.File, error) {
 	if path == "" {
 		return nil, errors.New("path is empty")
@@ -36,7 +35,7 @@ func OpenCurrentUserFile(path string) (*os.File, error) {
 		0,
 	)
 	if err != nil {
-		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+		return nil, err
 	}
 	success := false
 	defer func() {
