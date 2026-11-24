@@ -87,6 +87,9 @@ func (d Deployment) Prepared() (Deployment, error) {
 
 // Validate checks the endpoint and resolves its canonical form.
 func (d Deployment) Validate() error {
+	if d.API != "" && d.API != APIOpenAI && d.API != APIVertex {
+		return errors.New("embed API must be openai or vertex")
+	}
 	if strings.TrimSpace(d.BaseURL) == "" {
 		return errors.New("embed endpoint is required")
 	}

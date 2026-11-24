@@ -3,6 +3,7 @@ package embedmodel
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"maps"
 	"slices"
 	"strconv"
@@ -67,6 +68,9 @@ func vectorFields(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 		"normalization": string(m.Normalization),
 		"input_type":    string(r.InputType),
 	}
+	if d.API != "" && d.API != embedconfig.APIOpenAI {
+		fields["api"] = string(d.API)
+	}
 	add(fields, "revision", m.Revision)
 	add(fields, "pooling", m.Pooling)
 	if m.RequestDimensions {
@@ -120,6 +124,9 @@ func prepareSpace(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 		return m, r, d, err
 	}
 	d.BaseURL = strings.TrimSpace(d.BaseURL)
+	if d.API != "" && d.API != embedconfig.APIOpenAI && d.API != embedconfig.APIVertex {
+		return m, r, d, errors.New("embed API must be openai or vertex")
+	}
 	if d.PinEndpoint || d.BaseURL != "" {
 		if d, err = d.Prepared(); err != nil {
 			return m, r, d, err

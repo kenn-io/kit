@@ -44,6 +44,7 @@ type Options struct {
 
 // Client sends text embedding requests.
 type Client struct {
+	api            embedconfig.API
 	http           *http.Client
 	recoveryHTTP   *http.Client // ollamaRecoveryTimeout instead of Transport.Timeout
 	endpoint       string
@@ -92,9 +93,20 @@ func New(opts Options) (*Client, error) {
 		return nil, err
 	}
 	if opts.OllamaMetalRecovery {
+		if deployment.API == embedconfig.APIVertex {
+			return nil, errors.New("embed Vertex does not support Ollama recovery")
+		}
 		if err := validateOllamaService(canonical); err != nil {
 			return nil, err
 		}
+	}
+	endpoint := embeddingsURL(canonical)
+	if deployment.API == embedconfig.APIVertex {
+		if strings.ContainsAny(model.Name, "/:?#") {
+			return nil, errors.New("embed Vertex model name is invalid")
+		}
+		endpoint = canonical + "/" + url.PathEscape(model.Name) + ":predict"
+		items = 1
 	}
 	parsed, err := url.Parse(canonical)
 	if err != nil {
@@ -110,9 +122,10 @@ func New(opts Options) (*Client, error) {
 	recovery := *pinned
 	recovery.Timeout = ollamaRecoveryTimeout
 	return &Client{
+		api:            deployment.API,
 		http:           pinned,
 		recoveryHTTP:   &recovery,
-		endpoint:       embeddingsURL(canonical),
+		endpoint:       endpoint,
 		serviceURL:     canonical,
 		ollamaRecovery: opts.OllamaMetalRecovery,
 		retry:          opts.Retry,
@@ -266,7 +279,13 @@ func (c *Client) prepare(inputs []embedmodel.Content, format bool) ([]encoded, e
 }
 
 func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string) ([][]float32, error) {
-	body, err := c.requestBody(role, texts)
+	var body []byte
+	var err error
+	if c.api == embedconfig.APIVertex {
+		body, err = c.vertexRequestBody(texts)
+	} else {
+		body, err = c.requestBody(role, texts)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +293,13 @@ func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string
 	if err != nil {
 		return nil, err
 	}
-	vectors, problems, err := c.classify(payload, len(texts))
+	var vectors [][]float32
+	var problems []error
+	if c.api == embedconfig.APIVertex {
+		vectors, problems, err = c.classifyVertex(payload, len(texts))
+	} else {
+		vectors, problems, err = c.classify(payload, len(texts))
+	}
 	if err != nil {
 		return nil, err
 	}
