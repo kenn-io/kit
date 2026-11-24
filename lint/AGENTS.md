@@ -21,7 +21,9 @@
   or the temporary legacy profile. Fixes preserve bodies, never rewrite invalid
   values, never rewrite an unlisted `SKILL.md`, and never bump valid timestamps.
   Meaningful edits require a changed timestamp against the merge base;
-  formatting-only edits do not.
+  formatting-only edits do not. A managed skill's timestamp also covers every
+  tracked file in its bundle outside nested skills; bundle files carry no
+  frontmatter.
 
 See `docs/guides/adopting-kennlint.md` for the consumer workflow.
 

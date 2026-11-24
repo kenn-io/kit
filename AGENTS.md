@@ -50,6 +50,7 @@ provider workflows to this repo unless the package already owns that concern.
   surfaces before publishing.
 - When creating or meaningfully updating [Kenn docs](docs/guides/adopting-docs.md), set `generated: { by, at }` to the actual editor (coding tool/model for agent edits) and current UTC time; leave formatting-only edits alone.
 - The Kenn profile follows OKF v0.3: accept offset/date-only timestamps while producers write actual UTC edit times; preserve unknown extension values and bundle-root index metadata. Reserved indexes are not concepts, and logs have no frontmatter.
+- Files inside a skill bundle carry no frontmatter. A meaningful change to any of them updates the managed skill's `metadata.generated` in its `SKILL.md`.
 - Mark retained retired docs `status: deprecated` (skills use `metadata.status`) and link replacements when available.
 
 ## Go Conventions

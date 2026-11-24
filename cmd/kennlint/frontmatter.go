@@ -404,19 +404,21 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 	}
 	if *changed != "" {
-		stale, err := frontmatterStaleDates(ctx, root, *changed, checked, *legacy)
+		stale, err := frontmatterStaleDates(ctx, root, *changed, checked, skillDirs, *legacy)
 		if err != nil {
 			return total, err
 		}
-		for _, file := range stale {
+		for _, s := range stale {
 			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to the actual editor"
-			if isSkillFile(file) {
+			switch {
+			case *legacy:
+				message = "content changed without changing last_edited"
+			case s.resource != "":
+				message = "bundle file " + s.resource + " changed without a later metadata.generated.at; set metadata.generated.at to the edit time and metadata.generated.by to the actual editor"
+			case isSkillFile(s.file):
 				message = "content changed without a later metadata.generated.at; set metadata.generated.at to the edit time and metadata.generated.by to the actual editor"
 			}
-			if *legacy {
-				message = "content changed without changing last_edited"
-			}
-			report(file, []string{message})
+			report(s.file, []string{message})
 		}
 	}
 	if total == 0 {
@@ -556,37 +558,36 @@ func frontmatterFixProblems(problems []string, notes map[string]string) []string
 	return problems
 }
 
+// frontmatterStale names a file whose timestamp missed a meaningful edit. For
+// a managed skill, resource names the first changed bundle file when SKILL.md
+// itself changed only cosmetically.
+type frontmatterStale struct{ file, resource string }
+
 // frontmatterStaleDates returns the files whose content differs from the merge
-// base with ref while the profile timestamp still matches. It runs after -fix so a fix
-// that restores the base content does not count as an edit, and it lets Git
-// apply attributes and line-ending rules so CRLF checkouts are not edits.
-func frontmatterStaleDates(ctx context.Context, root, ref string, files []string, legacy bool) ([]string, error) {
+// base with ref while the profile timestamp still matches. A managed skill also
+// counts as changed when any tracked file in its bundle changed. It runs after
+// -fix so a fix that restores the base content does not count as an edit, and
+// it lets Git apply attributes and line-ending rules so CRLF checkouts are not
+// edits.
+func frontmatterStaleDates(ctx context.Context, root, ref string, files []string, skillDirs map[string]struct{}, legacy bool) ([]frontmatterStale, error) {
 	baseBytes, err := frontmatterGit(ctx, root, "merge-base", "HEAD", ref)
 	if err != nil {
 		return nil, err
 	}
 	base := strings.TrimSpace(string(baseBytes))
-	diff, err := frontmatterGit(ctx, root, "diff", "--numstat", "-z", "--no-renames", "--diff-filter=M", base, "--", "*.md")
+	changes, err := frontmatterChanges(ctx, root, base)
 	if err != nil {
 		return nil, err
 	}
-	modified := make(map[string]bool)
-	for record := range bytes.SplitSeq(diff, []byte{0}) {
-		// A mode-only change, such as setting the executable bit, is listed
-		// as modified with zero added and deleted lines.
-		added, rest, _ := strings.Cut(string(record), "\t")
-		deleted, name, _ := strings.Cut(rest, "\t")
-		if added != "0" || deleted != "0" {
-			modified[name] = true
-		}
-	}
-	var stale []string
+	var stale []frontmatterStale
 	for _, file := range files {
 		if !legacy && (path.Base(file) == "index.md" || path.Base(file) == "log.md") {
 			continue // Reserved files are never concepts, even with extension metadata.
 		}
-		if !modified[file] {
-			continue
+		skill := !legacy && isSkillFile(file)
+		status := changes[file]
+		if status == "A" || (status != "M" && !skill) {
+			continue // New files carry their first timestamp; untouched documents need none.
 		}
 		previous, err := frontmatterGit(ctx, root, "cat-file", "blob", base+":"+file)
 		if err != nil {
@@ -601,24 +602,113 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 		if errBefore != nil || errAfter != nil {
 			continue // Missing or invalid metadata is reported, or was adopted in this change.
 		}
-		if !legacy {
-			bg, ag := before.fields["generated"], after.fields["generated"]
-			skill := isSkillFile(file)
-			if skill {
-				bg, ag = mappingField(before.fields["metadata"], "generated"), mappingField(after.fields["metadata"], "generated")
-			}
-			beforeTime, validBefore := parseTimestamp(mappingField(bg, "at"))
-			afterTime, validAfter := parseTimestamp(mappingField(ag, "at"))
-			if validBefore && validAfter && !afterTime.After(beforeTime) && frontmatterMeaningful(before, after, skill) {
-				stale = append(stale, file)
+		if legacy {
+			if b, a := before.fields["last_edited"], after.fields["last_edited"]; status == "M" && b != nil && a != nil && b.Value == a.Value {
+				stale = append(stale, frontmatterStale{file: file})
 			}
 			continue
 		}
-		if b, a := before.fields["last_edited"], after.fields["last_edited"]; b != nil && a != nil && b.Value == a.Value {
-			stale = append(stale, file)
+		bg, ag := before.fields["generated"], after.fields["generated"]
+		if skill {
+			bg, ag = mappingField(before.fields["metadata"], "generated"), mappingField(after.fields["metadata"], "generated")
+		}
+		beforeTime, validBefore := parseTimestamp(mappingField(bg, "at"))
+		afterTime, validAfter := parseTimestamp(mappingField(ag, "at"))
+		if !validBefore || !validAfter || afterTime.After(beforeTime) {
+			continue
+		}
+		if status == "M" && frontmatterMeaningful(before, after, skill) {
+			stale = append(stale, frontmatterStale{file: file})
+			continue
+		}
+		if skill {
+			resource, err := frontmatterBundleChange(ctx, root, base, path.Dir(file), changes, skillDirs)
+			if err != nil {
+				return nil, err
+			}
+			if resource != "" {
+				stale = append(stale, frontmatterStale{file: file, resource: resource})
+			}
 		}
 	}
 	return stale, nil
+}
+
+// frontmatterChanges maps each tracked path that differs from base to its
+// one-letter status. A modification with no changed lines, such as setting
+// the executable bit, is omitted; binary changes stay listed.
+func frontmatterChanges(ctx context.Context, root, base string) (map[string]string, error) {
+	statuses, err := frontmatterGit(ctx, root, "diff", "--name-status", "-z", "--no-renames", base)
+	if err != nil {
+		return nil, err
+	}
+	numstat, err := frontmatterGit(ctx, root, "diff", "--numstat", "-z", "--no-renames", "--diff-filter=M", base)
+	if err != nil {
+		return nil, err
+	}
+	changes := make(map[string]string)
+	fields := strings.Split(strings.TrimSuffix(string(statuses), "\x00"), "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		changes[fields[i+1]] = fields[i][:1]
+	}
+	for record := range strings.SplitSeq(string(numstat), "\x00") {
+		added, rest, _ := strings.Cut(record, "\t")
+		deleted, name, _ := strings.Cut(rest, "\t")
+		if added == "0" && deleted == "0" {
+			delete(changes, name)
+		}
+	}
+	return changes, nil
+}
+
+// frontmatterBundleChange returns the first tracked file in the skill bundle
+// dir, other than its SKILL.md and outside nested skills, whose change is
+// meaningful: any addition, deletion, type change or byte change, except that
+// Markdown edits must change the rendered content.
+func frontmatterBundleChange(ctx context.Context, root, base, dir string, changes map[string]string, skillDirs map[string]struct{}) (string, error) {
+	var names []string
+	for name := range changes {
+		if dir != "." && !strings.HasPrefix(name, dir+"/") || name == path.Join(dir, "SKILL.md") {
+			continue
+		}
+		if frontmatterNestedSkill(name, dir, skillDirs) {
+			continue // A nested skill owns its subtree and its own provenance.
+		}
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if changes[name] != "M" || !strings.EqualFold(path.Ext(name), ".md") {
+			return name, nil
+		}
+		full := filepath.Join(root, filepath.FromSlash(name))
+		if info, err := os.Lstat(full); err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return name, nil //nolint:nilerr // A retargeted link or unreadable change still counts as an edit.
+		}
+		previous, err := frontmatterGit(ctx, root, "cat-file", "blob", base+":"+name)
+		if err != nil {
+			return "", err
+		}
+		current, err := os.ReadFile(full)
+		if err != nil {
+			return "", err
+		}
+		if canonicalHTML(previous) != canonicalHTML(current) {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+// frontmatterNestedSkill reports whether name lies in a skill directory
+// strictly below dir.
+func frontmatterNestedSkill(name, dir string, skillDirs map[string]struct{}) bool {
+	for d := path.Dir(name); d != dir && d != "."; d = path.Dir(d) {
+		if _, ok := skillDirs[d]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func frontmatterScaffold(src []byte) []byte {
