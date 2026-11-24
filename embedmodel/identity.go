@@ -66,14 +66,11 @@ func vectorFields(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 		"metric":        string(m.Metric),
 		"normalization": string(m.Normalization),
 	}
-	if d.API != embedconfig.APIVertex {
-		fields["input_type"] = string(r.InputType)
-	}
-	if d.API != "" && d.API != embedconfig.APIOpenAI {
-		fields["api"] = string(d.API)
-	}
 	if d.API == embedconfig.APIVertex {
+		fields["api"] = string(d.API)
 		fields["vertex_task_type"] = embedconfig.VertexTaskType
+	} else {
+		fields["input_type"] = string(r.InputType)
 	}
 	add(fields, "revision", m.Revision)
 	add(fields, "pooling", m.Pooling)

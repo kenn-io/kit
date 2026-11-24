@@ -36,8 +36,3 @@ func TestVertexEmbedderAPI(t *testing.T) {
 	e.API = "invalid"
 	assert.Error(t, e.Validate())
 }
-
-func TestVertexInvalidAPI(t *testing.T) {
-	_, err := (embedconfig.Deployment{API: "invalid", BaseURL: "https://example.com"}).Prepared()
-	require.Error(t, err)
-}

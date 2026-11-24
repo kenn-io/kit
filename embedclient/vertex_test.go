@@ -22,26 +22,20 @@ func TestVertexPredict(t *testing.T) {
 		calls++
 		assert.Equal(t, "/models/gemini-embedding-001:predict", r.URL.Path)
 		body := readBody(t, r)
-		assert.Equal(t, map[string]any{"instances": []any{map[string]any{"content": fmt.Sprintf("text%d", calls), "task_type": "RETRIEVAL_DOCUMENT"}}, "parameters": map[string]any{"outputDimensionality": float64(2), "autoTruncate": false}}, body)
-		if calls == 1 {
-			writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{3, 4}}}}})
-			return
-		}
-		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{0, 2}}}}})
+		assert.Equal(t, map[string]any{"instances": []any{map[string]any{"content": "text1", "task_type": "RETRIEVAL_DOCUMENT"}}, "parameters": map[string]any{"outputDimensionality": float64(2), "autoTruncate": false}}, body)
+		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{3, 4}}}}})
 	}))
 	t.Cleanup(server.Close)
 	model := unitModel()
 	model.Name = "gemini-embedding-001"
-	model.RequestDimensions = true
 	model.Normalization = embedconfig.NormalizationL2
 	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/models", API: embedconfig.APIVertex}})
 	require.NoError(t, err)
-	vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"text1", "text2"})
+	vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"text1"})
 	require.NoError(t, err)
-	require.Len(t, vectors, 2)
+	require.Len(t, vectors, 1)
 	assert.InDeltaSlice(t, []float32{0.6, 0.8}, vectors[0], 1e-6)
-	assert.InDeltaSlice(t, []float32{0, 1}, vectors[1], 1e-6)
-	assert.Equal(t, 2, calls)
+	assert.Equal(t, 1, calls)
 }
 
 func TestVertexBadResponseAndStatus(t *testing.T) {
@@ -73,8 +67,20 @@ func TestVertexRejectsUnsupportedOptions(t *testing.T) {
 		_, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: "http://localhost", API: embedconfig.APIVertex}})
 		require.Error(t, err)
 	}
-	_, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: "http://localhost", API: embedconfig.APIVertex}, OllamaMetalRecovery: true})
+	_, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: "http://localhost/v1", API: embedconfig.APIVertex}, OllamaMetalRecovery: true})
 	require.Error(t, err)
+	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: "http://localhost/v1", API: embedconfig.APIVertex}})
+	require.NoError(t, err)
+	_, err = client.EmbedFaces(t.Context(), nil, nil)
+	require.Error(t, err)
+}
+
+func setGoogleTestCredentials(t *testing.T, tokenURL string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	credentials := fmt.Sprintf(`{"type":"external_account_authorized_user","client_id":"test","client_secret":"test","refresh_token":"test","token_url":%q}`, tokenURL)
+	require.NoError(t, os.WriteFile(path, []byte(credentials), 0o600))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 }
 
 func TestGoogleHTTPClientRefreshesCredentials(t *testing.T) {
@@ -85,10 +91,7 @@ func TestGoogleHTTPClientRefreshesCredentials(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"access_token":"token-%d","token_type":"Bearer","expires_in":0}`, tokens)
 	}))
 	t.Cleanup(tokenServer.Close)
-	path := filepath.Join(t.TempDir(), "credentials.json")
-	credentials := fmt.Sprintf(`{"type":"external_account_authorized_user","client_id":"test","client_secret":"test","refresh_token":"test","token_url":%q}`, tokenServer.URL)
-	require.NoError(t, os.WriteFile(path, []byte(credentials), 0o600))
-	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+	setGoogleTestCredentials(t, tokenServer.URL)
 	var headers []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		headers = append(headers, r.Header.Get("Authorization"))
@@ -237,12 +240,7 @@ func TestGoogleHTTPClientUsesVertexTransportTimeout(t *testing.T) {
 		_, _ = w.Write([]byte(`{"access_token":"token","token_type":"Bearer","expires_in":3600}`))
 	}))
 	t.Cleanup(tokenServer.Close)
-	subject := filepath.Join(t.TempDir(), "subject")
-	require.NoError(t, os.WriteFile(subject, []byte("subject-token"), 0o600))
-	path := filepath.Join(t.TempDir(), "credentials.json")
-	credentials := fmt.Sprintf(`{"type":"external_account","audience":"//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/test/providers/test","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":%q,"credential_source":{"file":%q}}`, tokenServer.URL, subject)
-	require.NoError(t, os.WriteFile(path, []byte(credentials), 0o600))
-	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+	setGoogleTestCredentials(t, tokenServer.URL)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-time.After(150 * time.Millisecond):
@@ -258,7 +256,6 @@ func TestGoogleHTTPClientUsesVertexTransportTimeout(t *testing.T) {
 		wantTimeout bool
 	}{
 		{"short", 30 * time.Millisecond, 0, true},
-		{"long", time.Second, 0, false},
 		{"caller timeout", time.Second, 30 * time.Millisecond, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

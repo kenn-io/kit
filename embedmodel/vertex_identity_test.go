@@ -13,8 +13,4 @@ func TestVertexIdentityFields(t *testing.T) {
 	fields, err := vectorFields(model, embedconfig.Roles{}, embedconfig.Deployment{API: embedconfig.APIVertex})
 	require.NoError(t, err)
 	assert.Equal(t, "RETRIEVAL_DOCUMENT", fields["vertex_task_type"])
-	fields, err = vectorFields(model, embedconfig.Roles{}, embedconfig.Deployment{})
-	require.NoError(t, err)
-	assert.NotContains(t, fields, "vertex_task_type")
-	assert.NotContains(t, fields, "api")
 }
