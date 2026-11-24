@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:24:14Z" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-24T16:23:18Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -164,6 +164,16 @@ keys. The fixer leaves status and native fields alone.
 The `-fix` option re-encodes the header, preserving native values while their
 layout, such as indentation and folded scalars, may change.
 
+Files inside a skill bundle carry no YAML frontmatter: no OKF keys and no
+`title`. The Agent Skills format defines frontmatter only for `SKILL.md`, and
+agents read bundle resources whole, so a header there costs tokens and nothing
+reads it. The skill's `metadata.generated` covers the whole bundle.
+
 Under `-changed`, meaningful skill edits, including status changes, require
 updating `metadata.generated.at` to a later edit time and
-`metadata.generated.by` to the editor.
+`metadata.generated.by` to the editor. A change to any tracked file in a
+managed skill's bundle counts as a skill edit: adding, deleting, or changing
+the bytes of a resource, script, asset, or template. Markdown resources follow
+the document rule, so formatting-only edits do not count, and neither do
+mode-only changes. A nested `SKILL.md` owns its own subtree, so edits there do
+not touch the enclosing skill.
