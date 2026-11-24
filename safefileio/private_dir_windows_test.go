@@ -268,7 +268,7 @@ func TestOpenCurrentUserFileAcceptsCurrentTokenOwner(t *testing.T) {
 	require.NoError(t, file.Close())
 }
 
-func TestValidatePrivateCurrentUserFileRejectsBroadDACL(t *testing.T) {
+func TestValidateCurrentUserFileRejectsBroadDACL(t *testing.T) {
 	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(os.WriteFile(path, []byte("{}"), 0o600))
@@ -315,7 +315,7 @@ func TestValidatePrivateCurrentUserFileRejectsBroadDACL(t *testing.T) {
 	require.Error(verifyWindowsDirDACL(path, handle, userSID, ownerSID))
 }
 
-func TestValidatePrivateCurrentUserFileRejectsUnprotectedPrivateDACL(t *testing.T) {
+func TestValidateCurrentUserFileProtectionRequirements(t *testing.T) {
 	require := require.New(t)
 	dir := filepath.Join(t.TempDir(), "private")
 	require.NoError(EnsurePrivateDir(dir))
