@@ -22,14 +22,12 @@ func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
 	var request struct {
 		Instances  []vertexInstance `json:"instances"`
 		Parameters struct {
-			OutputDimensionality int  `json:"outputDimensionality,omitzero"`
+			OutputDimensionality int  `json:"outputDimensionality"`
 			AutoTruncate         bool `json:"autoTruncate"`
 		} `json:"parameters"`
 	}
 	request.Instances = instances
-	if c.model.RequestDimensions {
-		request.Parameters.OutputDimensionality = c.model.Dimensions
-	}
+	request.Parameters.OutputDimensionality = c.model.Dimensions
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("embed request encoding failed: %w", err)

@@ -1,8 +1,10 @@
 // Package embedclient calls OpenAI-compatible and Vertex text embedding endpoints.
-// Vertex uses one text per request and sends RETRIEVAL_DOCUMENT for both
-// document and query roles. A multi-input call returns no vectors if any
-// request fails. GoogleHTTPClient supplies Application Default Credentials;
-// pass it as Options.HTTP to authenticate Vertex requests.
+// Vertex sends RETRIEVAL_DOCUMENT for both document and query roles, regardless
+// of input_type_mode. The gemini-embedding-001 model accepts one text per
+// request; other Vertex models accept up to 250, limited by Batch.Items.
+// Use Client.BatchItems with vector.WithBatchConcurrency to run requests in
+// parallel. A failed request fails the whole Embed call. GoogleHTTPClient
+// supplies Application Default Credentials; pass it as Options.HTTP.
 //
 // The caller owns the HTTP client when it supplies one. This package clones
 // that client, pins requests to the configured origin, and can attach a bearer

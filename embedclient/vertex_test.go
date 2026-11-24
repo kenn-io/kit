@@ -19,7 +19,7 @@ func TestVertexPredict(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		assert.Equal(t, "/models/m:predict", r.URL.Path)
+		assert.Equal(t, "/models/gemini-embedding-001:predict", r.URL.Path)
 		body := readBody(t, r)
 		assert.Equal(t, map[string]any{"instances": []any{map[string]any{"content": fmt.Sprintf("text%d", calls), "task_type": "RETRIEVAL_DOCUMENT"}}, "parameters": map[string]any{"outputDimensionality": float64(2), "autoTruncate": false}}, body)
 		if calls == 1 {
@@ -30,6 +30,7 @@ func TestVertexPredict(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	model := unitModel()
+	model.Name = "gemini-embedding-001"
 	model.RequestDimensions = true
 	model.Normalization = embedconfig.NormalizationL2
 	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/models", API: embedconfig.APIVertex}})
@@ -118,7 +119,9 @@ func TestVertexMidListFailureReturnsNoVectors(t *testing.T) {
 		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}}}}})
 	}))
 	t.Cleanup(server.Close)
-	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
+	model := unitModel()
+	model.Name = "gemini-embedding-001"
+	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
 	require.NoError(t, err)
 	vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"a", "b", "c"})
 	require.Error(t, err)
@@ -167,4 +170,48 @@ func TestVertexEmbedderRequestsConfiguredDimensions(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vectors, 1)
 	assert.Len(t, vectors[0], 768)
+}
+
+func TestVertexBatchItemsAndRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model string
+		items int
+		want  int
+	}{
+		{"gemini", "gemini-embedding-001", 300, 1},
+		{"other capped", "text-embedding-005", 300, 250},
+		{"caller cap", "text-embedding-005", 3, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sizes []int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body := readBody(t, r)
+				instances := body["instances"].([]any)
+				sizes = append(sizes, len(instances))
+				assert.Equal(t, map[string]any{"autoTruncate": false, "outputDimensionality": float64(2)}, body["parameters"])
+				predictions := make([]any, len(instances))
+				for i := range predictions {
+					predictions[i] = map[string]any{"embeddings": map[string]any{"values": []float64{float64(i + 1), 1}}}
+				}
+				writeJSON(t, w, map[string]any{"predictions": predictions})
+			}))
+			t.Cleanup(server.Close)
+			model := unitModel()
+			model.Name = tc.model
+			model.Normalization = embedconfig.NormalizationNone
+			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}, Batch: embedconfig.Batch{Items: tc.items}})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, client.BatchItems())
+			texts := make([]string, tc.want+1)
+			for i := range texts {
+				texts[i] = "text"
+			}
+			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, texts)
+			require.NoError(t, err)
+			require.Len(t, vectors, len(texts))
+			assert.Equal(t, []int{tc.want, 1}, sizes)
+			assert.Equal(t, float32(tc.want), vectors[tc.want-1][0])
+		})
+	}
 }

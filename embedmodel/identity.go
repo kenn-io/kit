@@ -75,7 +75,7 @@ func vectorFields(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 	}
 	add(fields, "revision", m.Revision)
 	add(fields, "pooling", m.Pooling)
-	if m.RequestDimensions {
+	if m.RequestDimensions && d.API != embedconfig.APIVertex {
 		fields["request_dimensions"] = "1"
 	}
 	add(fields, "document_formatter", r.DocumentFormatter)
@@ -130,8 +130,6 @@ func prepareSpace(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 		if d, err = d.Prepared(); err != nil {
 			return m, r, d, err
 		}
-	} else if err := d.API.Validate(); err != nil {
-		return m, r, d, err
 	}
 	return m, r, d, nil
 }

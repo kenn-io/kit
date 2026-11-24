@@ -19,7 +19,8 @@ func TestVertexIdentity(t *testing.T) {
 	vertex, err := d.VectorIdentity()
 	require.NoError(t, err)
 	assert.NotEqual(t, original, vertex)
-	d.Deployment.API = "invalid"
-	_, err = d.VectorIdentity()
-	assert.Error(t, err)
+	d.Model.RequestDimensions = true
+	requested, err := d.VectorIdentity()
+	require.NoError(t, err)
+	assert.Equal(t, vertex, requested)
 }

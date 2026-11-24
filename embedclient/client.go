@@ -106,7 +106,11 @@ func New(opts Options) (*Client, error) {
 			return nil, errors.New("embed Vertex model name is invalid")
 		}
 		endpoint = canonical + "/" + url.PathEscape(model.Name) + ":predict"
-		items = 1
+		limit := 250
+		if model.Name == "gemini-embedding-001" {
+			limit = 1
+		}
+		items = min(items, limit)
 	}
 	parsed, err := url.Parse(canonical)
 	if err != nil {
@@ -135,6 +139,9 @@ func New(opts Options) (*Client, error) {
 		maxResponse:    int64(transport.MaxResponseBytes),
 	}, nil
 }
+
+// BatchItems returns the effective maximum number of inputs per request.
+func (c *Client) BatchItems() int { return c.batchItems }
 
 // Embed encodes inputs in request order. An empty list returns nil.
 // Inputs that do not share a role are sent in separate requests because

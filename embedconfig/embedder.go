@@ -27,8 +27,8 @@ type Embedder struct {
 	Dims int `toml:"dims"`
 	// RequestDimensions sends Dims as the dimensions field on each request.
 	// Vertex always sends Dims as outputDimensionality.
-	// Set it only when the endpoint supports requesting that width. False
-	// leaves the provider default; Dims still validates the returned width.
+	// Set it only when an OpenAI-compatible endpoint supports that width.
+	// False leaves its default; Dims still validates the returned width.
 	// The client never truncates vectors to fit Dims.
 	RequestDimensions bool `toml:"request_dimensions"`
 	// APIKey is the bearer token: the token itself as a string, or a table
@@ -112,7 +112,7 @@ func (e Embedder) Parts() (Parts, error) {
 		Dimensions:        e.Dims,
 		Metric:            MetricCosine,
 		Normalization:     NormalizationL2,
-		RequestDimensions: e.RequestDimensions || e.API == APIVertex,
+		RequestDimensions: e.RequestDimensions,
 	}.Prepared()
 	if err != nil {
 		return Parts{}, err
