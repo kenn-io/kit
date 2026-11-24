@@ -316,7 +316,7 @@ func (s RuntimeStore) listValidated(prefix string, repaired bool) ([]RuntimeReco
 	var records []RuntimeRecord
 	for _, entry := range entries {
 		pid, ok := pidFromName(prefix, entry.Name())
-		if entry.IsDir() || !ok {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !ok {
 			continue
 		}
 		file, err := openRuntimeFile(filepath.Join(s.Dir, entry.Name()))

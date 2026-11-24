@@ -3,6 +3,7 @@
 package daemon_test
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,6 +89,39 @@ func TestRuntimeStoreValidateFilesRejectsJunction(t *testing.T) {
 	require.Error(err)
 	_, err = store.LockPath()
 	require.Error(err)
+}
+
+func TestRuntimeStoreValidateFilesSkipsLinkedRecords(t *testing.T) {
+	for _, kind := range []string{"symlink", "junction"} {
+		t.Run(kind, func(t *testing.T) {
+			base := t.TempDir()
+			store := daemon.RuntimeStore{Dir: filepath.Join(base, "runtime"), ValidateFiles: true}
+			_, err := store.Write(daemon.RuntimeRecord{PID: 123, Address: "127.0.0.1:123"})
+			require.NoError(t, err)
+			target := filepath.Join(base, "target")
+			require.NoError(t, os.Mkdir(target, 0o700))
+			file := filepath.Join(target, "record.json")
+			require.NoError(t, os.WriteFile(file, []byte(`{"pid":999,"address":"127.0.0.1:999"}`), 0o600))
+			setBroadACL(t, file)
+			before := fileDACL(t, file)
+			link := filepath.Join(store.Dir, "daemon.999.json")
+			if kind == "junction" {
+				require.NoError(t, fslink.CreateJunction(target, link))
+			} else {
+				err := os.Symlink(file, link)
+				if errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD) {
+					t.Skip("symlink privilege unavailable")
+				}
+				require.NoError(t, err)
+			}
+
+			records, err := store.List()
+			require.NoError(t, err)
+			require.Len(t, records, 1)
+			require.Equal(t, 123, records[0].PID)
+			require.Equal(t, before, fileDACL(t, file))
+		})
+	}
 }
 
 func TestRuntimeStoreValidateFilesSkipsMalformedRecordsWithoutRepair(t *testing.T) {
