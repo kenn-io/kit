@@ -77,6 +77,36 @@ func TestRuntimeStoreValidateFiles(t *testing.T) {
 	require.NotEqual(before, fileDACL(t, file))
 }
 
+func TestRuntimeStoreValidateFilesStartLocksLeaveChildrenUnchanged(t *testing.T) {
+	for _, nonblocking := range []bool{false, true} {
+		t.Run(fmt.Sprint(nonblocking), func(t *testing.T) {
+			store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
+			lock, err := store.LockPath()
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(lock, nil, 0o600))
+			child := filepath.Join(store.Dir, "clone")
+			require.NoError(t, os.WriteFile(child, nil, 0o600))
+			setBroadACL(t, child)
+			before := fileDACL(t, child)
+			_, err = store.LockPath()
+			require.NoError(t, err)
+			require.Equal(t, before, fileDACL(t, child))
+
+			if nonblocking {
+				release, acquired, err := store.TryAcquireStartLock(t.Context())
+				require.NoError(t, err)
+				require.True(t, acquired)
+				t.Cleanup(release)
+			} else {
+				release, err := store.AcquireStartLock(t.Context())
+				require.NoError(t, err)
+				t.Cleanup(release)
+			}
+			require.Equal(t, before, fileDACL(t, child))
+		})
+	}
+}
+
 func TestRuntimeStoreValidateFilesRejectsJunction(t *testing.T) {
 	require := require.New(t)
 	parent := t.TempDir()
