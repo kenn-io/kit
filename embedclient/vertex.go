@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	json "encoding/json/v2"
+
+	"go.kenn.io/kit/embedconfig"
 )
 
 type vertexInstance struct {
@@ -15,7 +17,7 @@ type vertexInstance struct {
 func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
 	instances := make([]vertexInstance, len(texts))
 	for i, text := range texts {
-		instances[i] = vertexInstance{Content: text, TaskType: "RETRIEVAL_DOCUMENT"}
+		instances[i] = vertexInstance{Content: text, TaskType: embedconfig.VertexTaskType}
 	}
 	var request struct {
 		Instances  []vertexInstance `json:"instances"`

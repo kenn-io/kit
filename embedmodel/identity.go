@@ -71,6 +71,9 @@ func vectorFields(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 	if d.API != "" && d.API != embedconfig.APIOpenAI {
 		fields["api"] = string(d.API)
 	}
+	if d.API == embedconfig.APIVertex {
+		fields["vertex_task_type"] = embedconfig.VertexTaskType
+	}
 	add(fields, "revision", m.Revision)
 	add(fields, "pooling", m.Pooling)
 	if m.RequestDimensions {
