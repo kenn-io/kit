@@ -65,7 +65,9 @@ func vectorFields(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 		"dimensions":    strconv.Itoa(m.Dimensions),
 		"metric":        string(m.Metric),
 		"normalization": string(m.Normalization),
-		"input_type":    string(r.InputType),
+	}
+	if d.API != embedconfig.APIVertex {
+		fields["input_type"] = string(r.InputType)
 	}
 	if d.API != "" && d.API != embedconfig.APIOpenAI {
 		fields["api"] = string(d.API)

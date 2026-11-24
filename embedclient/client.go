@@ -106,7 +106,7 @@ func New(opts Options) (*Client, error) {
 			return nil, errors.New("embed Vertex model name is invalid")
 		}
 		endpoint = canonical + "/" + url.PathEscape(model.Name) + ":predict"
-		limit := 250
+		limit := 5
 		if model.Name == "gemini-embedding-001" {
 			limit = 1
 		}

@@ -49,15 +49,10 @@ func (c *Client) classifyVertex(payload []byte, count int) ([][]float32, []error
 	if len(response.Predictions) != count {
 		return nil, nil, fmt.Errorf("embed response contained %d vectors for %d inputs", len(response.Predictions), count)
 	}
-	out := make([][]float32, count)
-	var problems []error
+	raw := make([]wireEmbedding, count)
 	for i, item := range response.Predictions {
-		v, err := decodeVector(item.Embeddings.Values, c.model.Dimensions, c.model.Normalization)
-		if err != nil {
-			problems = append(problems, &VectorError{Index: i, Err: err})
-			continue
-		}
-		out[i] = v
+		raw[i] = item.Embeddings.Values
 	}
+	out, problems := c.decodeVectors(raw)
 	return out, problems, nil
 }

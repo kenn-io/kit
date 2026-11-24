@@ -110,6 +110,11 @@ func (c *Client) classify(payload []byte, count int) ([][]float32, []error, erro
 	if err != nil {
 		return nil, nil, err
 	}
+	out, problems := c.decodeVectors(raw)
+	return out, problems, nil
+}
+
+func (c *Client) decodeVectors(raw []wireEmbedding) ([][]float32, []error) {
 	out := make([][]float32, len(raw))
 	var problems []error
 	for i, item := range raw {
@@ -120,7 +125,7 @@ func (c *Client) classify(payload []byte, count int) ([][]float32, []error, erro
 		}
 		out[i] = vector
 	}
-	return out, problems, nil
+	return out, problems
 }
 
 func orderItems(items []wireItem, count int) ([]wireEmbedding, error) {
