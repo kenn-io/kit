@@ -311,6 +311,7 @@ func TestValidatePrivateCurrentUserFileRejectsBroadDACL(t *testing.T) {
 	require.Error(verifyWindowsDirDACL(path, handle, userSID, ownerSID))
 
 	require.Error(ValidatePrivateCurrentUserFile(file))
+	require.Error(ValidateTrustedFile(file))
 	require.Error(verifyWindowsDirDACL(path, handle, userSID, ownerSID))
 }
 
@@ -353,6 +354,7 @@ func TestValidatePrivateCurrentUserFileRejectsUnprotectedPrivateDACL(t *testing.
 	))
 
 	require.Error(ValidatePrivateCurrentUserFile(file))
+	require.NoError(ValidateTrustedFile(file))
 }
 
 func TestValidatePrivateCurrentUserFileAcceptsProtectedPrivateDACL(t *testing.T) {
