@@ -67,8 +67,8 @@ func (r RuntimeRecord) Endpoint() Endpoint {
 type RuntimeStore struct {
 	Dir    string
 	Prefix string
-	// ValidateFiles opts only List and LockPath into validation before deep repair.
-	// Other methods keep deep repair.
+	// ValidateFiles opts List, LockPath and start locks into validation before
+	// deep repair. Other methods keep deep repair.
 	ValidateFiles bool
 }
 

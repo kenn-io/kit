@@ -75,7 +75,7 @@ func Listen(ctx context.Context, ep Endpoint, options ...ListenOption) (net.List
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := acquireDaemonLock(ctx, lockPath, "acquire daemon listen lock")
+	unlock, err := acquireDaemonLock(ctx, lockPath, "acquire daemon listen lock", false)
 	if err != nil {
 		return nil, err
 	}

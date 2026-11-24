@@ -49,12 +49,11 @@ type daemonLock struct {
 // AcquireStartLock serializes discovery, replacement, and daemon launch for a
 // runtime store. The caller must invoke the returned release function.
 func (s RuntimeStore) AcquireStartLock(ctx context.Context) (func(), error) {
-	const action = "acquire daemon start lock"
-	lock, err := s.startDaemonLock(action)
+	path, err := s.LockPath()
 	if err != nil {
 		return nil, err
 	}
-	return lock.acquire(ctx, action)
+	return acquireDaemonLock(ctx, path, "acquire daemon start lock", s.ValidateFiles)
 }
 
 // TryAcquireStartLock attempts to acquire the same lock as AcquireStartLock
@@ -76,7 +75,11 @@ func (s RuntimeStore) TryAcquireStartLock(ctx context.Context) (release func(), 
 	if err := ctx.Err(); err != nil {
 		return nil, false, fmt.Errorf("%s: %w", action, err)
 	}
-	lock, err := s.startDaemonLock(action)
+	path, err := s.LockPath()
+	if err != nil {
+		return nil, false, err
+	}
+	lock, err := getDaemonLock(path, action, s.ValidateFiles)
 	if err != nil {
 		return nil, false, err
 	}
@@ -109,52 +112,35 @@ func (s RuntimeStore) AcquireOwnerLock(ctx context.Context) (func(), error) {
 		return nil, err
 	}
 	path := filepath.Join(s.Dir, prefix+".lock.owner")
-	return acquireDaemonLock(ctx, path, "acquire daemon owner lock")
+	return acquireDaemonLock(ctx, path, "acquire daemon owner lock", false)
 }
 
-func getDaemonLock(lockPath, action string) (*daemonLock, error) {
+// getDaemonLock skips directory repair when validated reports that a
+// ValidateFiles store's LockPath already checked or repaired the directory.
+func getDaemonLock(lockPath, action string, validated bool) (*daemonLock, error) {
 	if lockPath == "" {
 		return nil, fmt.Errorf("%s: empty daemon lock path", action)
 	}
 	if !filepath.IsAbs(lockPath) {
 		return nil, fmt.Errorf("%s: daemon lock path %q must be absolute", action, lockPath)
 	}
-	if err := ensurePrivateRuntimeDir(filepath.Dir(lockPath)); err != nil {
-		return nil, fmt.Errorf("prepare daemon lock dir: %w", err)
+	if !validated {
+		if err := ensurePrivateRuntimeDir(filepath.Dir(lockPath)); err != nil {
+			return nil, fmt.Errorf("prepare daemon lock dir: %w", err)
+		}
 	}
-	return loadDaemonLock(lockPath), nil
-}
-
-// startDaemonLock reuses the directory preparation LockPath completed when
-// ValidateFiles is active, instead of repairing the directory again.
-func (s RuntimeStore) startDaemonLock(action string) (*daemonLock, error) {
-	path, err := s.LockPath()
-	if err != nil {
-		return nil, err
-	}
-	if s.ValidateFiles {
-		return loadDaemonLock(path), nil
-	}
-	return getDaemonLock(path, action)
-}
-
-func loadDaemonLock(lockPath string) *daemonLock {
 	value, _ := daemonLocks.LoadOrStore(lockPath, &daemonLock{
 		local: semaphore.NewWeighted(1),
 		file:  flock.New(lockPath),
 	})
-	return value.(*daemonLock)
+	return value.(*daemonLock), nil
 }
 
-func acquireDaemonLock(ctx context.Context, lockPath, action string) (func(), error) {
-	lock, err := getDaemonLock(lockPath, action)
+func acquireDaemonLock(ctx context.Context, lockPath, action string, validated bool) (func(), error) {
+	lock, err := getDaemonLock(lockPath, action, validated)
 	if err != nil {
 		return nil, err
 	}
-	return lock.acquire(ctx, action)
-}
-
-func (lock *daemonLock) acquire(ctx context.Context, action string) (func(), error) {
 	if err := lock.local.Acquire(ctx, 1); err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
