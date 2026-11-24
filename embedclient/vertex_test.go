@@ -144,3 +144,27 @@ func TestVertexMidListFailureReturnsNoVectors(t *testing.T) {
 	assert.Nil(t, vectors)
 	assert.Equal(t, 2, calls)
 }
+
+func TestVertexEmbedTextsAppliesRoleAffixes(t *testing.T) {
+	var instances []any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		instances = append(instances, body["instances"].([]any)...)
+		writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}}}}})
+	}))
+	t.Cleanup(server.Close)
+	client, err := embedclient.New(embedclient.Options{
+		Model:      unitModel(),
+		Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex},
+		Roles:      embedconfig.Roles{DocumentPrefix: "doc: ", DocumentSuffix: " :doc", QueryPrefix: "query: ", QuerySuffix: " :query"},
+	})
+	require.NoError(t, err)
+	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
+	require.NoError(t, err)
+	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"text"})
+	require.NoError(t, err)
+	assert.Equal(t, []any{
+		map[string]any{"content": "doc: text :doc", "task_type": "RETRIEVAL_DOCUMENT"},
+		map[string]any{"content": "query: text :query", "task_type": "RETRIEVAL_DOCUMENT"},
+	}, instances)
+}
