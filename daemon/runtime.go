@@ -294,7 +294,7 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 	}
 	validate := s.validateFiles()
 	if validate && s.validateDir() == nil && validatePrivateRuntimeDir(s.Dir) == nil {
-		records, err := s.listValidated(prefix)
+		records, err := s.listValidated(prefix, false)
 		if err == nil {
 			return records, nil
 		}
@@ -303,12 +303,12 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 		return nil, err
 	}
 	if validate {
-		return s.listValidated(prefix)
+		return s.listValidated(prefix, true)
 	}
 	return s.listPrepared(prefix)
 }
 
-func (s RuntimeStore) listValidated(prefix string) ([]RuntimeRecord, error) {
+func (s RuntimeStore) listValidated(prefix string, repaired bool) ([]RuntimeRecord, error) {
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("read runtime dir: %w", err)
@@ -321,6 +321,10 @@ func (s RuntimeStore) listValidated(prefix string) ([]RuntimeRecord, error) {
 		}
 		file, err := openRuntimeFile(filepath.Join(s.Dir, entry.Name()))
 		if err != nil {
+			var openErr *os.PathError
+			if errors.Is(err, os.ErrNotExist) || repaired && errors.As(err, &openErr) {
+				continue
+			}
 			return nil, err
 		}
 		if err := safefileio.ValidateTrustedFile(file); err != nil {

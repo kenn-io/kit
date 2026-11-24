@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
@@ -127,6 +128,72 @@ func TestRuntimeStoreValidateFilesRejectsUnrepairableLiveRecord(t *testing.T) {
 	_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{RequirePIDAlive: true})
 	require.Error(t, err)
 	require.False(t, found)
+}
+
+func TestRuntimeStoreValidateFilesSkipsLockedRecordAfterRepair(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime")}
+	_, err := store.Write(daemon.RuntimeRecord{PID: 123, Address: "127.0.0.1:123"})
+	require.NoError(t, err)
+	path := filepath.Join(store.Dir, "daemon.999.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	name, err := windows.UTF16PtrFromString(path)
+	require.NoError(t, err)
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, 0, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, windows.CloseHandle(handle)) })
+	want, err := store.List()
+	require.NoError(t, err)
+	require.Len(t, want, 1)
+	child := filepath.Join(store.Dir, "clone")
+	require.NoError(t, os.WriteFile(child, nil, 0o600))
+	setBroadACL(t, child)
+	before := fileDACL(t, child)
+	store.ValidateFiles = true
+	got, err := store.List()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	require.NotEqual(t, before, fileDACL(t, child))
+}
+
+func TestRuntimeStoreValidateFilesSkipsRemovedRecords(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
+	_, err := store.Write(daemon.RuntimeRecord{PID: 123, Address: "127.0.0.1:123"})
+	require.NoError(t, err)
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	path := filepath.Join(store.Dir, "daemon.999.json")
+	go func() {
+		for {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+				done <- err
+				return
+			}
+			if err := os.Remove(path); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(5 * time.Second):
+			require.Fail(t, "record writer did not stop")
+		}
+	})
+	for range 300 {
+		records, err := store.List()
+		require.NoError(t, err)
+		require.Len(t, records, 1)
+	}
 }
 
 func setBroadACL(t *testing.T, path string) {
