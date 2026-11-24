@@ -24,3 +24,11 @@ func TestVertexIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, vertex, requested)
 }
+
+func TestDescriptorRejectsInvalidAPIWithoutEndpoint(t *testing.T) {
+	d := sampleDescriptor()
+	d.Deployment = embedconfig.Deployment{API: "invalid"}
+	assert.Error(t, d.Validate())
+	_, err := d.VectorIdentity()
+	assert.Error(t, err)
+}
