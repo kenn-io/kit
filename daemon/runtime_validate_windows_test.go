@@ -78,33 +78,6 @@ func TestRuntimeStoreValidateFiles(t *testing.T) {
 	require.NotEqual(before, fileDACL(t, file))
 }
 
-func TestRuntimeStoreValidateFilesStartLocksLeaveChildrenUnchanged(t *testing.T) {
-	for _, nonblocking := range []bool{false, true} {
-		t.Run(fmt.Sprint(nonblocking), func(t *testing.T) {
-			store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
-			lock, err := store.LockPath()
-			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(lock, nil, 0o600))
-			child := filepath.Join(store.Dir, "clone")
-			require.NoError(t, os.WriteFile(child, nil, 0o600))
-			setBroadACL(t, child)
-			before := fileDACL(t, child)
-
-			if nonblocking {
-				release, acquired, err := store.TryAcquireStartLock(t.Context())
-				require.NoError(t, err)
-				require.True(t, acquired)
-				t.Cleanup(release)
-			} else {
-				release, err := store.AcquireStartLock(t.Context())
-				require.NoError(t, err)
-				t.Cleanup(release)
-			}
-			require.Equal(t, before, fileDACL(t, child))
-		})
-	}
-}
-
 func TestRuntimeStoreValidateFilesRejectsJunction(t *testing.T) {
 	require := require.New(t)
 	parent := t.TempDir()
@@ -183,58 +156,38 @@ func TestRuntimeStoreValidateFilesSkipsMalformedRecordsWithoutRepair(t *testing.
 	}
 }
 
-func TestRuntimeStoreValidateFilesUnrepairableRecords(t *testing.T) {
-	for _, cause := range []string{"unsafe-acl", "unreadable"} {
-		t.Run(cause, func(t *testing.T) {
-			for _, live := range []bool{false, true} {
-				t.Run(fmt.Sprint(live), func(t *testing.T) {
-					pid := os.Getpid()
-					if !live {
-						pid = deadPID(t)
-					}
-					store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
-					_, err := store.Write(daemon.RuntimeRecord{PID: 123, Address: "127.0.0.1:123"})
-					require.NoError(t, err)
-					path, err := store.Write(daemon.RuntimeRecord{PID: pid, Address: "127.0.0.1:123"})
-					require.NoError(t, err)
-					if cause == "unsafe-acl" {
-						setBroadACL(t, path)
-						sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-						require.NoError(t, err)
-						acl, _, err := sd.DACL()
-						require.NoError(t, err)
-						require.NoError(t, windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil))
-					} else {
-						name, err := windows.UTF16PtrFromString(path)
-						require.NoError(t, err)
-						handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, 0, 0)
-						require.NoError(t, err)
-						t.Cleanup(func() { require.NoError(t, windows.CloseHandle(handle)) })
-					}
-					child := filepath.Join(store.Dir, "clone")
-					require.NoError(t, os.WriteFile(child, nil, 0o600))
-					setBroadACL(t, child)
-					before := fileDACL(t, child)
+func TestRuntimeStoreValidateFilesReadFailureRepairs(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
+	_, err := store.Write(daemon.RuntimeRecord{PID: 123, Address: "127.0.0.1:123"})
+	require.NoError(t, err)
+	path, err := store.Write(daemon.RuntimeRecord{PID: os.Getpid(), Address: "127.0.0.1:456"})
+	require.NoError(t, err)
+	locked, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, locked.Close()) })
+	var overlapped windows.Overlapped
+	require.NoError(t, windows.LockFileEx(windows.Handle(locked.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped))
+	t.Cleanup(func() { require.NoError(t, windows.UnlockFileEx(windows.Handle(locked.Fd()), 0, 1, 0, &overlapped)) })
+	file, err := safefileio.OpenCurrentUserFile(path)
+	require.NoError(t, err)
+	require.NoError(t, safefileio.ValidateTrustedFile(file))
+	_, err = file.Read(make([]byte, 1))
+	require.ErrorIs(t, err, windows.ERROR_LOCK_VIOLATION)
+	require.NoError(t, file.Close())
+	child := filepath.Join(store.Dir, "clone")
+	require.NoError(t, os.WriteFile(child, nil, 0o600))
+	setBroadACL(t, child)
+	before := fileDACL(t, child)
 
-					records, err := store.List()
-					if live {
-						require.Error(t, err)
-					} else {
-						require.NoError(t, err)
-						require.Len(t, records, 1)
-						require.Equal(t, 123, records[0].PID)
-					}
-					require.NotEqual(t, before, fileDACL(t, child))
-					require.FileExists(t, path)
-					if live && cause == "unreadable" {
-						_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{RequirePIDAlive: true})
-						require.Error(t, err)
-						require.False(t, found)
-					}
-				})
-			}
-		})
-	}
+	records, err := store.List()
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, 123, records[0].PID)
+	require.NotEqual(t, before, fileDACL(t, child))
+	store.ValidateFiles = false
+	defaultRecords, err := store.List()
+	require.NoError(t, err)
+	require.Equal(t, defaultRecords, records)
 }
 
 func setBroadACL(t *testing.T, path string) {

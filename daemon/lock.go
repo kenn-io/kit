@@ -49,12 +49,11 @@ type daemonLock struct {
 // AcquireStartLock serializes discovery, replacement, and daemon launch for a
 // runtime store. The caller must invoke the returned release function.
 func (s RuntimeStore) AcquireStartLock(ctx context.Context) (func(), error) {
-	const action = "acquire daemon start lock"
-	lock, err := s.startDaemonLock()
+	path, err := s.LockPath()
 	if err != nil {
 		return nil, err
 	}
-	return lock.acquire(ctx, action)
+	return acquireDaemonLock(ctx, path, "acquire daemon start lock")
 }
 
 // TryAcquireStartLock attempts to acquire the same lock as AcquireStartLock
@@ -76,7 +75,11 @@ func (s RuntimeStore) TryAcquireStartLock(ctx context.Context) (release func(), 
 	if err := ctx.Err(); err != nil {
 		return nil, false, fmt.Errorf("%s: %w", action, err)
 	}
-	lock, err := s.startDaemonLock()
+	path, err := s.LockPath()
+	if err != nil {
+		return nil, false, err
+	}
+	lock, err := getDaemonLock(path, action)
 	if err != nil {
 		return nil, false, err
 	}
@@ -122,24 +125,11 @@ func getDaemonLock(lockPath, action string) (*daemonLock, error) {
 	if err := ensurePrivateRuntimeDir(filepath.Dir(lockPath)); err != nil {
 		return nil, fmt.Errorf("prepare daemon lock dir: %w", err)
 	}
-	return loadDaemonLock(lockPath), nil
-}
-
-// startDaemonLock uses the directory LockPath has already prepared.
-func (s RuntimeStore) startDaemonLock() (*daemonLock, error) {
-	path, err := s.LockPath()
-	if err != nil {
-		return nil, err
-	}
-	return loadDaemonLock(path), nil
-}
-
-func loadDaemonLock(lockPath string) *daemonLock {
 	value, _ := daemonLocks.LoadOrStore(lockPath, &daemonLock{
 		local: semaphore.NewWeighted(1),
 		file:  flock.New(lockPath),
 	})
-	return value.(*daemonLock)
+	return value.(*daemonLock), nil
 }
 
 func acquireDaemonLock(ctx context.Context, lockPath, action string) (func(), error) {
@@ -147,10 +137,6 @@ func acquireDaemonLock(ctx context.Context, lockPath, action string) (func(), er
 	if err != nil {
 		return nil, err
 	}
-	return lock.acquire(ctx, action)
-}
-
-func (lock *daemonLock) acquire(ctx context.Context, action string) (func(), error) {
 	if err := lock.local.Acquire(ctx, 1); err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
