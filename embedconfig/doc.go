@@ -5,7 +5,7 @@
 // Embedder, the standard configuration-file shape for one embedding endpoint,
 // so every application reads the same keys.
 //
-// VertexBaseURL constructs a regional Vertex endpoint. Set Deployment.API to
+// VertexBaseURL constructs a Vertex endpoint for a location. Set Deployment.API to
 // APIVertex to select its request protocol. Embedder.API carries the same
 // choice through Parts. The default is APIOpenAI.
 //

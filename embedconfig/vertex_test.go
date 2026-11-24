@@ -12,6 +12,9 @@ func TestVertexBaseURL(t *testing.T) {
 	got, err := embedconfig.VertexBaseURL("project-a", "us-central1")
 	require.NoError(t, err)
 	assert.Equal(t, "https://us-central1-aiplatform.googleapis.com/v1/projects/project-a/locations/us-central1/publishers/google/models", got)
+	got, err = embedconfig.VertexBaseURL("project-a", "global")
+	require.NoError(t, err)
+	assert.Equal(t, "https://aiplatform.googleapis.com/v1/projects/project-a/locations/global/publishers/google/models", got)
 	for _, v := range []string{"", "../x", "A", "a/b", "a.b", "-abc", "abc-"} {
 		_, err := embedconfig.VertexBaseURL(v, "us-central1")
 		assert.Error(t, err)
