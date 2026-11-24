@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: claude-code/claude-opus-5-5, at: "2026-11-24T16:23:18Z" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-24T16:39:24Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -175,8 +175,10 @@ updating `metadata.generated.at` to a later edit time and
 managed skill's bundle counts as a skill edit: adding, deleting, or changing
 the bytes of a resource, script, asset, or template. Markdown resources follow
 the document rule, so formatting-only edits do not count, and neither do
-mode-only changes. A nested `SKILL.md` owns its own subtree, so edits there do
-not touch the enclosing skill.
+mode-only changes. Each tracked file belongs to the nearest enclosing managed
+skill. Only a managed nested skill owns its own subtree; an unmanaged nested
+`SKILL.md`, such as a template, and every file under it are resources of the
+skill that encloses it, so editing them requires restamping that skill.
 
 ## Layout and indexes
 

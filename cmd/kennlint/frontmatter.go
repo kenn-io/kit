@@ -404,7 +404,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 	}
 	if *changed != "" {
-		stale, err := frontmatterStaleDates(ctx, root, *changed, checked, skillDirs, *legacy)
+		stale, err := frontmatterStaleDates(ctx, root, *changed, checked, *legacy)
 		if err != nil {
 			return total, err
 		}
@@ -565,11 +565,11 @@ type frontmatterStale struct{ file, resource string }
 
 // frontmatterStaleDates returns the files whose content differs from the merge
 // base with ref while the profile timestamp still matches. A managed skill also
-// counts as changed when any tracked file in its bundle changed. It runs after
+// counts as changed when any tracked file it owns changed. It runs after
 // -fix so a fix that restores the base content does not count as an edit, and
 // it lets Git apply attributes and line-ending rules so CRLF checkouts are not
 // edits.
-func frontmatterStaleDates(ctx context.Context, root, ref string, files []string, skillDirs map[string]struct{}, legacy bool) ([]frontmatterStale, error) {
+func frontmatterStaleDates(ctx context.Context, root, ref string, files []string, legacy bool) ([]frontmatterStale, error) {
 	baseBytes, err := frontmatterGit(ctx, root, "merge-base", "HEAD", ref)
 	if err != nil {
 		return nil, err
@@ -578,6 +578,14 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 	changes, err := frontmatterChanges(ctx, root, base)
 	if err != nil {
 		return nil, err
+	}
+	// Only checked managed skills own bundle files; an unmanaged nested
+	// SKILL.md, such as a template, is a resource of the skill above it.
+	managed := make(map[string]struct{})
+	for _, file := range files {
+		if !legacy && isSkillFile(file) {
+			managed[path.Dir(file)] = struct{}{}
+		}
 	}
 	var stale []frontmatterStale
 	for _, file := range files {
@@ -622,7 +630,7 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 			continue
 		}
 		if skill {
-			resource, err := frontmatterBundleChange(ctx, root, base, path.Dir(file), changes, skillDirs)
+			resource, err := frontmatterBundleChange(ctx, root, base, path.Dir(file), changes, managed)
 			if err != nil {
 				return nil, err
 			}
@@ -661,18 +669,18 @@ func frontmatterChanges(ctx context.Context, root, base string) (map[string]stri
 	return changes, nil
 }
 
-// frontmatterBundleChange returns the first tracked file in the skill bundle
-// dir, other than its SKILL.md and outside nested skills, whose change is
+// frontmatterBundleChange returns the first tracked file owned by the managed
+// skill in dir, other than its SKILL.md, whose change is
 // meaningful: any addition, deletion, type change or byte change, except that
 // Markdown edits must change the rendered content.
-func frontmatterBundleChange(ctx context.Context, root, base, dir string, changes map[string]string, skillDirs map[string]struct{}) (string, error) {
+func frontmatterBundleChange(ctx context.Context, root, base, dir string, changes map[string]string, managed map[string]struct{}) (string, error) {
 	var names []string
 	for name := range changes {
 		if dir != "." && !strings.HasPrefix(name, dir+"/") || name == path.Join(dir, "SKILL.md") {
 			continue
 		}
-		if frontmatterNestedSkill(name, dir, skillDirs) {
-			continue // A nested skill owns its subtree and its own provenance.
+		if frontmatterNestedSkill(name, dir, managed) {
+			continue // A managed nested skill owns its subtree and its own provenance.
 		}
 		names = append(names, name)
 	}
@@ -700,11 +708,11 @@ func frontmatterBundleChange(ctx context.Context, root, base, dir string, change
 	return "", nil
 }
 
-// frontmatterNestedSkill reports whether name lies in a skill directory
-// strictly below dir.
-func frontmatterNestedSkill(name, dir string, skillDirs map[string]struct{}) bool {
+// frontmatterNestedSkill reports whether name lies in a managed skill
+// directory strictly below dir.
+func frontmatterNestedSkill(name, dir string, managed map[string]struct{}) bool {
 	for d := path.Dir(name); d != dir && d != "."; d = path.Dir(d) {
-		if _, ok := skillDirs[d]; ok {
+		if _, ok := managed[d]; ok {
 			return true
 		}
 	}
