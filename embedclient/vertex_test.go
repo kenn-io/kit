@@ -232,3 +232,52 @@ func TestVertexInvalidVectorReportsInputIndex(t *testing.T) {
 	assert.Equal(t, 1, vectorErr.Index)
 	assert.Nil(t, vectors)
 }
+
+func TestGoogleHTTPClientUsesVertexTransportTimeout(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+	subject := filepath.Join(t.TempDir(), "subject")
+	require.NoError(t, os.WriteFile(subject, []byte("subject-token"), 0600))
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	credentials := fmt.Sprintf(`{"type":"external_account","audience":"//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/test/providers/test","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":%q,"credential_source":{"file":%q}}`, tokenServer.URL, subject)
+	require.NoError(t, os.WriteFile(path, []byte(credentials), 0600))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(150 * time.Millisecond):
+			writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}}}}})
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(server.Close)
+	for _, tc := range []struct {
+		name        string
+		timeout     time.Duration
+		httpTimeout time.Duration
+		wantTimeout bool
+	}{
+		{"short", 30 * time.Millisecond, 0, true},
+		{"long", time.Second, 0, false},
+		{"caller timeout", time.Second, 30 * time.Millisecond, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			httpClient, err := embedclient.GoogleHTTPClient()
+			require.NoError(t, err)
+			httpClient.Timeout = tc.httpTimeout
+			client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}, HTTP: httpClient, Transport: embedconfig.Transport{Timeout: tc.timeout}})
+			require.NoError(t, err)
+			_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
+			if tc.wantTimeout {
+				var transportErr *embedclient.TransportError
+				require.ErrorAs(t, err, &transportErr)
+				assert.True(t, transportErr.Timeout())
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.httpTimeout, httpClient.Timeout)
+		})
+	}
+}

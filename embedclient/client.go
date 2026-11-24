@@ -27,6 +27,7 @@ type Options struct {
 	APIKey string
 	// HTTP is an optional caller-owned client. New clones it and leaves the
 	// original unchanged. Nil builds a client from Transport.Timeout.
+	// For Vertex, a client with no timeout also uses Transport.Timeout.
 	HTTP *http.Client
 	// OllamaMetalRecovery recovers a response that contains an unusable
 	// vector when the endpoint is an Ollama /v1 URL. Valid vectors are kept.
@@ -121,6 +122,9 @@ func New(opts Options) (*Client, error) {
 		return nil, err
 	}
 	pinned := pinClient(opts.HTTP, origin, opts.APIKey, transport.Timeout)
+	if deployment.API == embedconfig.APIVertex && pinned.Timeout == 0 {
+		pinned.Timeout = transport.Timeout
+	}
 	// A CPU re-encode or a model reload can take minutes, far past a
 	// per-request timeout, so recovery has its own, much longer bound.
 	recovery := *pinned
