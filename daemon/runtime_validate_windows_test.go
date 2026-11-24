@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 
@@ -122,6 +123,67 @@ func TestRuntimeStoreValidateFilesFallsBackToRepair(t *testing.T) {
 			}
 			require.NotEqual(t, before, fileDACL(t, child))
 		})
+	}
+}
+
+func TestRuntimeStoreStartLockPreparation(t *testing.T) {
+	for _, operation := range []string{"acquire", "try", "owner", "listen-explicit", "listen-derived"} {
+		for _, mode := range []string{"default", "validated", "unsafe-lock"} {
+			t.Run(operation+"/"+mode, func(t *testing.T) {
+				store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: mode != "default"}
+				var socket string
+				if operation == "listen-explicit" || operation == "listen-derived" {
+					socket = unixSocketPath(t)
+					store.Dir = filepath.Dir(socket)
+				}
+				path, err := store.LockPath()
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, nil, 0o600))
+				if mode == "unsafe-lock" {
+					setBroadACL(t, path)
+				}
+				child := filepath.Join(store.Dir, "clone")
+				require.NoError(t, os.WriteFile(child, nil, 0o600))
+				setBroadACL(t, child)
+				before := fileDACL(t, child)
+
+				switch operation {
+				case "acquire":
+					release, err := store.AcquireStartLock(t.Context())
+					require.NoError(t, err)
+					t.Cleanup(release)
+				case "try":
+					release, acquired, err := store.TryAcquireStartLock(t.Context())
+					require.NoError(t, err)
+					require.True(t, acquired)
+					t.Cleanup(release)
+				case "owner":
+					release, err := store.AcquireOwnerLock(t.Context())
+					require.NoError(t, err)
+					t.Cleanup(release)
+				default:
+					var options []daemon.ListenOption
+					if operation == "listen-explicit" {
+						options = append(options, daemon.WithListenLockPath(filepath.Join(store.Dir, "explicit.lock")))
+					}
+					listener, err := daemon.Listen(t.Context(), daemon.Endpoint{Network: daemon.NetworkUnix, Address: socket}, options...)
+					require.NoError(t, err)
+					t.Cleanup(func() { require.NoError(t, listener.Close()) })
+				}
+				if mode == "validated" && (operation == "acquire" || operation == "try") {
+					require.Equal(t, before, fileDACL(t, child))
+				} else {
+					require.NotEqual(t, before, fileDACL(t, child))
+				}
+				if operation == "acquire" || operation == "try" {
+					legacy := flock.New(path)
+					t.Cleanup(func() { require.NoError(t, legacy.Close()) })
+					acquired, err := legacy.TryLock()
+					require.NoError(t, err)
+					require.False(t, acquired)
+				}
+			})
+		}
 	}
 }
 
