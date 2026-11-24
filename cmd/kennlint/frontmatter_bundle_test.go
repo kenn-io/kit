@@ -31,6 +31,11 @@ func TestSkillChangedBundleResources(t *testing.T) {
 		repo.WriteFile("skills/c/SKILL.md", skillHeader)
 	}
 	repo.WriteFile("skills/c/references/r.md", guide)
+	if symlinks {
+		require.NoError(t, os.MkdirAll("skills/a/imported", 0o755))
+		require.NoError(t, os.Symlink("../../b/SKILL.md", "skills/a/imported/SKILL.md"))
+		repo.WriteFile("skills/a/imported/references/r.md", guide)
+	}
 	repo.Run("add", ".")
 	repo.Run("commit", "-m", "base bundles")
 	repo.Run("branch", "base")
@@ -54,14 +59,25 @@ func TestSkillChangedBundleResources(t *testing.T) {
 		}, "skills/a/assets/new.txt"},
 		{"untracked file", edit("skills/a/assets/scratch.txt", "x"), ""},
 		{"resource deleted", func() { require.NoError(t, os.Remove("skills/a/scripts/run.sh")) }, "skills/a/scripts/run.sh"},
-		{"nested skill", func() {
+		{"unmanaged nested skill resource", edit("skills/a/nested/references/n.md", "changed\n"), "skills/a/nested/references/n.md"},
+		{"unmanaged nested SKILL.md", edit("skills/a/nested/SKILL.md", strings.Replace(skillHeader, "Body", "New", 1)), "skills/a/nested/SKILL.md"},
+		{"unmanaged nested skill restamped", func() {
 			repo.WriteFile("skills/a/nested/references/n.md", "changed\n")
 			repo.WriteFile("skills/a/nested/SKILL.md", strings.Replace(skillHeader, "Body", "New", 1))
+			repo.WriteFile("skills/a/SKILL.md", restamped)
 		}, ""},
 		{"unlisted skill", edit("skills/b/references/x.md", "changed\n"), ""},
 		{"symlinked skill", edit("skills/c/references/r.md", "changed\n"), ""},
+		{"symlinked nested skill", func() {
+			if symlinks {
+				repo.WriteFile("skills/a/imported/references/r.md", "changed\n")
+			}
+		}, "skills/a/imported/references/r.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if !symlinks && tc.name == "symlinked nested skill" {
+				t.Skip("symlinks unavailable")
+			}
 			repo.Run("reset", "--hard", "-q", "base")
 			repo.Run("clean", "-fdq")
 			tc.change()
@@ -106,4 +122,43 @@ func TestRootSkillChangedBundle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Contains(t, errs.String(), "SKILL.md: bundle file references/guide.md changed")
+}
+
+func TestRootSkillChangedUnmanagedNestedSkill(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("SKILL.md", skillHeader)
+	repo.WriteFile("templates/t/SKILL.md", skillHeader)
+	repo.WriteFile("templates/t/references/guide.md", "# Guide\n")
+	repo.Run("add", ".")
+	repo.Run("commit", "-m", "base root skill")
+	repo.Run("branch", "base")
+	repo.WriteFile("templates/t/references/guide.md", "# Changed guide\n")
+	args := []string{"-managed-skill", "SKILL.md", "-changed", "base"}
+
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), args, &out, &errs)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Contains(t, errs.String(), "SKILL.md: bundle file templates/t/references/guide.md changed")
+
+	repo.WriteFile("SKILL.md", strings.Replace(skillHeader, "12:00:00Z", "12:01:00Z", 1))
+	errs.Reset()
+	n, err = runFrontmatter(t.Context(), args, &out, &errs)
+	require.NoError(t, err)
+	assert.Zero(t, n, errs.String())
+}
+
+// The command never lists a nested skill as managed, so ownership by a managed
+// nested skill is checked on the helper that applies it.
+func TestBundleChangeManagedNestedSkillOwnsItsFiles(t *testing.T) {
+	changes := map[string]string{"a/nested/references/n.md": "A"}
+	managed := map[string]struct{}{"a": {}, "a/nested": {}}
+	resource, err := frontmatterBundleChange(t.Context(), t.TempDir(), "", "a", changes, managed)
+	require.NoError(t, err)
+	assert.Empty(t, resource, "the parent must not see files a managed nested skill owns")
+	resource, err = frontmatterBundleChange(t.Context(), t.TempDir(), "", "a/nested", changes, managed)
+	require.NoError(t, err)
+	assert.Equal(t, "a/nested/references/n.md", resource)
 }
