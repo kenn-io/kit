@@ -6,7 +6,8 @@
 // so every application reads the same keys.
 //
 // VertexBaseURL constructs a regional Vertex endpoint. Set Deployment.API to
-// APIVertex to select its request protocol. The default is APIOpenAI.
+// APIVertex to select its request protocol. Embedder.API carries the same
+// choice through Parts. The default is APIOpenAI.
 //
 // The types stay separate on purpose. Model, role, and input settings can
 // change vectors or force a rebuild. Batch size and timeouts do not.

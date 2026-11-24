@@ -11,6 +11,7 @@ import (
 
 // GoogleHTTPClient returns a client using Google Application Default Credentials.
 // Pass it to Options.HTTP to retain origin pinning and automatic token refresh.
+// Its Google credentials take precedence over Options.APIKey.
 func GoogleHTTPClient() (*http.Client, error) {
 	creds, err := credentials.DetectDefault(&credentials.DetectOptions{Scopes: []string{"https://www.googleapis.com/auth/cloud-platform"}})
 	if err != nil {

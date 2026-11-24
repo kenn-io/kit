@@ -16,6 +16,8 @@ import (
 //
 // The zero value is disabled. BaseURL, Model, and Dims are set together.
 type Embedder struct {
+	// API selects the provider protocol. Empty uses OpenAI-compatible requests.
+	API API `toml:"api"`
 	// BaseURL is the OpenAI-compatible endpoint base. The client appends
 	// /embeddings unless the path already ends with it.
 	BaseURL string `toml:"base_url"`
@@ -124,7 +126,7 @@ func (e Embedder) Parts() (Parts, error) {
 	if err != nil {
 		return Parts{}, err
 	}
-	deployment, err := Deployment{BaseURL: e.BaseURL, TrustPrivateNetwork: e.TrustPrivateNetwork}.Prepared()
+	deployment, err := Deployment{API: e.API, BaseURL: e.BaseURL, TrustPrivateNetwork: e.TrustPrivateNetwork}.Prepared()
 	if err != nil {
 		return Parts{}, err
 	}

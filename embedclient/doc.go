@@ -1,6 +1,8 @@
 // Package embedclient calls OpenAI-compatible and Vertex text embedding endpoints.
-// Vertex uses one text per request. GoogleHTTPClient supplies Application Default
-// Credentials; pass it as Options.HTTP to authenticate Vertex requests.
+// Vertex uses one text per request and sends RETRIEVAL_DOCUMENT for both
+// document and query roles. A multi-input call returns no vectors if any
+// request fails. GoogleHTTPClient supplies Application Default Credentials;
+// pass it as Options.HTTP to authenticate Vertex requests.
 //
 // The caller owns the HTTP client when it supplies one. This package clones
 // that client, pins requests to the configured origin, and can attach a bearer

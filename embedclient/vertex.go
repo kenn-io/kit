@@ -22,7 +22,8 @@ func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
 	var request struct {
 		Instances  []vertexInstance `json:"instances"`
 		Parameters struct {
-			OutputDimensionality int `json:"outputDimensionality,omitzero"`
+			OutputDimensionality int  `json:"outputDimensionality,omitzero"`
+			AutoTruncate         bool `json:"autoTruncate"`
 		} `json:"parameters"`
 	}
 	request.Instances = instances
@@ -40,7 +41,10 @@ func (c *Client) classifyVertex(payload []byte, count int) ([][]float32, []error
 	var response struct {
 		Predictions []struct {
 			Embeddings struct {
-				Values wireEmbedding `json:"values"`
+				Values     wireEmbedding `json:"values"`
+				Statistics struct {
+					Truncated bool `json:"truncated"`
+				} `json:"statistics"`
 			} `json:"embeddings"`
 		} `json:"predictions"`
 	}
@@ -53,6 +57,10 @@ func (c *Client) classifyVertex(payload []byte, count int) ([][]float32, []error
 	out := make([][]float32, count)
 	var problems []error
 	for i, item := range response.Predictions {
+		if item.Embeddings.Statistics.Truncated {
+			problems = append(problems, &VectorError{Index: i, Err: errors.New("input was truncated")})
+			continue
+		}
 		v, err := decodeVector(item.Embeddings.Values, c.model.Dimensions, c.model.Normalization)
 		if err != nil {
 			problems = append(problems, &VectorError{Index: i, Err: err})
