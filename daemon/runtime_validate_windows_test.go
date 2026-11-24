@@ -146,43 +146,81 @@ func TestRuntimeStoreValidateFilesSkipsMalformedRecordsWithoutRepair(t *testing.
 	}
 }
 
-func TestRuntimeStoreValidateFilesRejectsUnrepairableLiveRecord(t *testing.T) {
-	store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
-	path, err := store.Write(daemon.RuntimeRecord{PID: os.Getpid(), Address: "127.0.0.1:123"})
-	require.NoError(t, err)
-	setBroadACL(t, path)
-	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	require.NoError(t, err)
-	acl, _, err := sd.DACL()
-	require.NoError(t, err)
-	require.NoError(t, windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil))
+func TestRuntimeStoreValidateFilesUnrepairableRecords(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pid  int
+		live bool
+	}{
+		{name: "dead", pid: deadPID(t)},
+		{name: "live", pid: os.Getpid(), live: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
+			_, err := store.Write(daemon.RuntimeRecord{PID: 123, Address: "127.0.0.1:123"})
+			require.NoError(t, err)
+			path, err := store.Write(daemon.RuntimeRecord{PID: tc.pid, Address: "127.0.0.1:123"})
+			require.NoError(t, err)
+			setBroadACL(t, path)
+			sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			require.NoError(t, err)
+			acl, _, err := sd.DACL()
+			require.NoError(t, err)
+			require.NoError(t, windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil))
+			child := filepath.Join(store.Dir, "clone")
+			require.NoError(t, os.WriteFile(child, nil, 0o600))
+			setBroadACL(t, child)
+			before := fileDACL(t, child)
 
-	_, err = store.List()
-	require.Error(t, err)
-	_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{RequirePIDAlive: true})
-	require.Error(t, err)
-	require.False(t, found)
+			records, err := store.List()
+			if tc.live {
+				require.Error(t, err)
+				_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{RequirePIDAlive: true})
+				require.Error(t, err)
+				require.False(t, found)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, records, 1)
+				require.Equal(t, 123, records[0].PID)
+			}
+			require.NotEqual(t, before, fileDACL(t, child))
+			require.FileExists(t, path)
+		})
+	}
 }
 
-func TestRuntimeStoreValidateFilesRejectsUnreadableLiveRecord(t *testing.T) {
-	store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
-	path, err := store.Write(daemon.RuntimeRecord{PID: os.Getpid(), Address: "127.0.0.1:123"})
-	require.NoError(t, err)
-	name, err := windows.UTF16PtrFromString(path)
-	require.NoError(t, err)
-	handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, 0, 0)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, windows.CloseHandle(handle)) })
-	child := filepath.Join(store.Dir, "clone")
-	require.NoError(t, os.WriteFile(child, nil, 0o600))
-	setBroadACL(t, child)
-	before := fileDACL(t, child)
-	_, err = store.List()
-	require.Error(t, err)
-	require.NotEqual(t, before, fileDACL(t, child))
-	_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{RequirePIDAlive: true})
-	require.Error(t, err)
-	require.False(t, found)
+func TestRuntimeStoreValidateFilesUnreadableRecords(t *testing.T) {
+	for _, pid := range []int{deadPID(t), os.Getpid()} {
+		t.Run(fmt.Sprint(pid), func(t *testing.T) {
+			store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: true}
+			path, err := store.Write(daemon.RuntimeRecord{PID: pid, Address: "127.0.0.1:123"})
+			require.NoError(t, err)
+			name, err := windows.UTF16PtrFromString(path)
+			require.NoError(t, err)
+			handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, 0, 0)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, windows.CloseHandle(handle)) })
+			child := filepath.Join(store.Dir, "clone")
+			require.NoError(t, os.WriteFile(child, nil, 0o600))
+			setBroadACL(t, child)
+			before := fileDACL(t, child)
+			records, err := store.List()
+			if pid == os.Getpid() {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Empty(t, records)
+			}
+			require.NotEqual(t, before, fileDACL(t, child))
+			_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{RequirePIDAlive: true})
+			if pid == os.Getpid() {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.False(t, found)
+		})
+	}
 }
 
 func TestRuntimeStoreValidateFilesSkipsRemovedRecords(t *testing.T) {

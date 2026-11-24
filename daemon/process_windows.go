@@ -5,7 +5,11 @@ package daemon
 import (
 	"errors"
 	"syscall"
+
+	"golang.org/x/sys/windows"
 )
+
+var openProcessForLiveness = syscall.OpenProcess
 
 // ProcessAlive reports whether pid appears to name a live process.
 func ProcessAlive(pid int) bool {
@@ -13,9 +17,10 @@ func ProcessAlive(pid int) bool {
 		return false
 	}
 	const processQueryLimitedInformation = 0x1000
-	handle, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	handle, err := openProcessForLiveness(processQueryLimitedInformation, false, uint32(pid))
 	if err != nil {
-		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
+		// Only an invalid PID proves absence when the process cannot be opened.
+		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER)
 	}
 	defer func() { _ = syscall.CloseHandle(handle) }()
 
