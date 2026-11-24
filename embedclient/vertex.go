@@ -15,6 +15,15 @@ type vertexInstance struct {
 	TaskType string `json:"task_type"`
 }
 
+type vertexPrediction struct {
+	Embeddings struct {
+		Values     wireEmbedding `json:"values"`
+		Statistics struct {
+			Truncated bool `json:"truncated"`
+		} `json:"statistics"`
+	} `json:"embeddings"`
+}
+
 func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
 	if strings.HasPrefix(c.model.Name, "gemini-embedding-2") {
 		body, err := json.Marshal(map[string]any{
@@ -64,11 +73,7 @@ func (c *Client) classifyVertex(payload []byte, count int) ([][]float32, []error
 		return out, problems, nil
 	}
 	var response struct {
-		Predictions []struct {
-			Embeddings struct {
-				Values wireEmbedding `json:"values"`
-			} `json:"embeddings"`
-		} `json:"predictions"`
+		Predictions []vertexPrediction `json:"predictions"`
 	}
 	if err := json.Unmarshal(payload, &response); err != nil {
 		return nil, nil, errors.New("embed response is invalid")
@@ -79,6 +84,9 @@ func (c *Client) classifyVertex(payload []byte, count int) ([][]float32, []error
 	raw := make([]wireEmbedding, count)
 	for i, item := range response.Predictions {
 		raw[i] = item.Embeddings.Values
+		if item.Embeddings.Statistics.Truncated {
+			raw[i].err = errors.New("input was truncated")
+		}
 	}
 	out, problems := c.decodeVectors(raw)
 	return out, problems, nil
