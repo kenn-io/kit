@@ -17,8 +17,7 @@
 // The caller owns the HTTP client when it supplies one. This package clones
 // that client, pins requests to the configured origin, and can attach a bearer
 // token. A multi-input request that times out is split into halves, recursively,
-// while the caller's context remains active. Gemini embedding 001 prediction
-// requests also split on a token rejection. Single-input timeouts and other
+// while the caller's context remains active. Single-input timeouts and other
 // eligible failures are retried only when the caller sets Options.Retry.
 // A non-2xx response, a short body, or a vector that fails validation fails
 // the whole call.

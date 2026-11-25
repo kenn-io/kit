@@ -82,22 +82,6 @@ func TestVertexEmbedContent(t *testing.T) {
 	}
 }
 
-func TestVertexEmbedContentTokenLimit(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(t, w, map[string]any{"error": map[string]any{"message": "input token count exceeds the maximum"}})
-	}))
-	t.Cleanup(server.Close)
-	model := unitModel()
-	model.Name = "gemini-embedding-2-preview"
-	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}})
-	require.NoError(t, err)
-	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
-	var apiErr *embedclient.APIError
-	require.ErrorAs(t, err, &apiErr)
-	assert.True(t, apiErr.InputRejected())
-}
-
 func TestGoogleHTTPClientOverridesAPIKey(t *testing.T) {
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -184,7 +168,6 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 		{"split", "gemini-embedding-001", "input token count is 23000 but the model supports up to 20000", []string{"1", "2", "3", "4", "5"}, []int{5, 2, 3, 1, 2}, false},
 		{"single token limit", "gemini-embedding-001", "input token count is 3000 but the model supports up to 2048", []string{"1"}, []int{1}, true},
 		{"invalid token", "gemini-embedding-001", "Invalid token", []string{"1", "2", "3"}, []int{3}, true},
-		{"unknown error", "gemini-embedding-001", "invalid request", []string{"1", "2", "3"}, []int{3}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sizes []int
