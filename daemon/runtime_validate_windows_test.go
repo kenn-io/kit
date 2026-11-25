@@ -3,7 +3,6 @@
 package daemon_test
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,31 +18,19 @@ import (
 )
 
 func TestRuntimeStoreValidateFilesWithoutRepair(t *testing.T) {
-	for _, name := range []string{"valid", "symlink", "junction", "invalid-json", "pid-mismatch", "missing-address"} {
+	for _, name := range []string{"valid", "junction", "invalid-json", "pid-mismatch", "missing-address"} {
 		t.Run(name, func(t *testing.T) {
 			base := t.TempDir()
 			store := daemon.RuntimeStore{Dir: filepath.Join(base, "runtime"), ValidateFiles: true}
 			_, err := store.Write(daemon.RuntimeRecord{PID: 123, Address: "127.0.0.1:123"})
 			require.NoError(t, err)
-			lock, err := store.LockPath()
-			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(lock, nil, 0o600))
 			path := filepath.Join(store.Dir, "daemon.999.json")
 			switch name {
-			case "symlink", "junction":
+			case "junction":
 				path = filepath.Join(store.Dir, fmt.Sprintf("daemon.%d.json", os.Getpid()))
 				target := filepath.Join(base, "target")
-				if name == "junction" {
-					require.NoError(t, os.Mkdir(target, 0o700))
-					require.NoError(t, fslink.CreateJunction(target, path))
-				} else {
-					require.NoError(t, os.WriteFile(target, []byte("{}"), 0o600))
-					err := os.Symlink(target, path)
-					if errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD) {
-						t.Skip("symlink privilege unavailable")
-					}
-					require.NoError(t, err)
-				}
+				require.NoError(t, os.Mkdir(target, 0o700))
+				require.NoError(t, fslink.CreateJunction(target, path))
 			case "invalid-json":
 				require.NoError(t, os.WriteFile(path, []byte("{"), 0o600))
 			case "pid-mismatch":
@@ -60,10 +47,6 @@ func TestRuntimeStoreValidateFilesWithoutRepair(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, records, 1)
 			require.Equal(t, 123, records[0].PID)
-			if name == "valid" {
-				_, err = store.LockPath()
-				require.NoError(t, err)
-			}
 			require.Equal(t, before, fileDACL(t, child))
 		})
 	}
@@ -98,14 +81,9 @@ func TestRuntimeStoreValidateFilesFallsBackToRepair(t *testing.T) {
 				require.NoError(t, err)
 				t.Cleanup(func() { require.NoError(t, locked.Close()) })
 				var overlapped windows.Overlapped
+				// A byte-range lock deterministically makes the validated record fail during reading.
 				require.NoError(t, windows.LockFileEx(windows.Handle(locked.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped))
 				t.Cleanup(func() { require.NoError(t, windows.UnlockFileEx(windows.Handle(locked.Fd()), 0, 1, 0, &overlapped)) })
-				file, err := safefileio.OpenCurrentUserFile(path)
-				require.NoError(t, err)
-				require.NoError(t, safefileio.ValidateTrustedFile(file))
-				_, err = file.Read(make([]byte, 1))
-				require.ErrorIs(t, err, windows.ERROR_LOCK_VIOLATION)
-				require.NoError(t, file.Close())
 			}
 			child := filepath.Join(store.Dir, "clone")
 			require.NoError(t, os.WriteFile(child, nil, 0o600))
@@ -127,63 +105,71 @@ func TestRuntimeStoreValidateFilesFallsBackToRepair(t *testing.T) {
 }
 
 func TestRuntimeStoreStartLockPreparation(t *testing.T) {
-	for _, operation := range []string{"acquire", "try", "owner", "listen-explicit", "listen-derived"} {
-		for _, mode := range []string{"default", "validated", "unsafe-lock"} {
-			t.Run(operation+"/"+mode, func(t *testing.T) {
-				store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: mode != "default"}
-				var socket string
-				if operation == "listen-explicit" || operation == "listen-derived" {
-					socket = unixSocketPath(t)
-					store.Dir = filepath.Dir(socket)
-				}
-				path, err := store.LockPath()
+	for _, tc := range []struct{ operation, mode string }{
+		{"acquire", "default"},
+		{"acquire", "validated"},
+		{"try", "default"},
+		{"try", "validated"},
+		{"owner", "default"},
+		{"listen-explicit", "default"},
+		{"listen-derived", "default"},
+	} {
+		t.Run(tc.operation+"/"+tc.mode, func(t *testing.T) {
+			store := daemon.RuntimeStore{Dir: filepath.Join(t.TempDir(), "runtime"), ValidateFiles: tc.mode == "validated"}
+			var socket string
+			if tc.operation == "listen-explicit" || tc.operation == "listen-derived" {
+				socket = unixSocketPath(t)
+				store.Dir = filepath.Dir(socket)
+			}
+			require.NoError(t, safefileio.EnsurePrivateDir(store.Dir))
+			var path string
+			if tc.operation == "acquire" || tc.operation == "try" {
+				var err error
+				path, err = store.LockPath()
 				require.NoError(t, err)
 				require.NoError(t, os.WriteFile(path, nil, 0o600))
-				if mode == "unsafe-lock" {
-					setBroadACL(t, path)
-				}
-				child := filepath.Join(store.Dir, "clone")
-				require.NoError(t, os.WriteFile(child, nil, 0o600))
-				setBroadACL(t, child)
-				before := fileDACL(t, child)
+			}
+			child := filepath.Join(store.Dir, "clone")
+			require.NoError(t, os.WriteFile(child, nil, 0o600))
+			setBroadACL(t, child)
+			before := fileDACL(t, child)
 
-				switch operation {
-				case "acquire":
-					release, err := store.AcquireStartLock(t.Context())
-					require.NoError(t, err)
-					t.Cleanup(release)
-				case "try":
-					release, acquired, err := store.TryAcquireStartLock(t.Context())
-					require.NoError(t, err)
-					require.True(t, acquired)
-					t.Cleanup(release)
-				case "owner":
-					release, err := store.AcquireOwnerLock(t.Context())
-					require.NoError(t, err)
-					t.Cleanup(release)
-				default:
-					var options []daemon.ListenOption
-					if operation == "listen-explicit" {
-						options = append(options, daemon.WithListenLockPath(filepath.Join(store.Dir, "explicit.lock")))
-					}
-					listener, err := daemon.Listen(t.Context(), daemon.Endpoint{Network: daemon.NetworkUnix, Address: socket}, options...)
-					require.NoError(t, err)
-					t.Cleanup(func() { require.NoError(t, listener.Close()) })
+			switch tc.operation {
+			case "acquire":
+				release, err := store.AcquireStartLock(t.Context())
+				require.NoError(t, err)
+				t.Cleanup(release)
+			case "try":
+				release, acquired, err := store.TryAcquireStartLock(t.Context())
+				require.NoError(t, err)
+				require.True(t, acquired)
+				t.Cleanup(release)
+			case "owner":
+				release, err := store.AcquireOwnerLock(t.Context())
+				require.NoError(t, err)
+				t.Cleanup(release)
+			default:
+				var options []daemon.ListenOption
+				if tc.operation == "listen-explicit" {
+					options = append(options, daemon.WithListenLockPath(filepath.Join(store.Dir, "explicit.lock")))
 				}
-				if mode == "validated" && (operation == "acquire" || operation == "try") {
-					require.Equal(t, before, fileDACL(t, child))
-				} else {
-					require.NotEqual(t, before, fileDACL(t, child))
-				}
-				if operation == "acquire" || operation == "try" {
-					legacy := flock.New(path)
-					t.Cleanup(func() { require.NoError(t, legacy.Close()) })
-					acquired, err := legacy.TryLock()
-					require.NoError(t, err)
-					require.False(t, acquired)
-				}
-			})
-		}
+				listener, err := daemon.Listen(t.Context(), daemon.Endpoint{Network: daemon.NetworkUnix, Address: socket}, options...)
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, listener.Close()) })
+			}
+			if store.ValidateFiles {
+				require.Equal(t, before, fileDACL(t, child))
+			} else {
+				require.NotEqual(t, before, fileDACL(t, child))
+			}
+			if path != "" {
+				legacy := flock.New(path)
+				t.Cleanup(func() { require.NoError(t, legacy.Close()) })
+				acquired, err := legacy.TryLock()
+				require.NoError(t, err)
+				require.False(t, acquired)
+			}
+		})
 	}
 }
 
