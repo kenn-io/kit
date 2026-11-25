@@ -66,14 +66,14 @@ func vectorFields(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 		"metric":        string(m.Metric),
 		"normalization": string(m.Normalization),
 	}
-	if d.API == embedconfig.APIVertex {
+	if d.API == embedconfig.APIVertex || d.API == embedconfig.APIKit {
 		fields["api"] = string(d.API)
 	} else {
 		fields["input_type"] = string(r.InputType)
 	}
 	add(fields, "revision", m.Revision)
 	add(fields, "pooling", m.Pooling)
-	if m.RequestDimensions && d.API != embedconfig.APIVertex {
+	if m.RequestDimensions && d.API != embedconfig.APIVertex && d.API != embedconfig.APIKit {
 		fields["request_dimensions"] = "1"
 	}
 	add(fields, "document_formatter", r.DocumentFormatter)

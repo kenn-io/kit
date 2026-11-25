@@ -47,7 +47,7 @@ lint-config-check:
 test-embedclient-vertex:
 	go test ./embedclient -run '^(TestVertex.*|TestKit.*|TestGoogleHTTPClientOverridesAPIKey|TestEmbedClassifiesFailedResponses)$$'
 	go test ./embedconfig -run '^(TestVertex.*|TestKit.*|TestEmbedderDecodesTheStandardKeys)$$'
-	go test ./embedmodel -run '^(TestVertexIdentity|TestVectorIdentityPinsTheEndpointOnlyOnRequest)$$'
+	go test ./embedmodel -run '^(TestVertexIdentity|TestKitIdentity|TestVectorIdentityPinsTheEndpointOnlyOnRequest)$$'
 	go test ./embedserver -run '^TestVertexLiveMedia$$'
 
 .PHONY: test-embedserver

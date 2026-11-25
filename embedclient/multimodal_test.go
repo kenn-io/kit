@@ -93,10 +93,23 @@ func TestKitRejectsInvalidInputs(t *testing.T) {
 	assert.Zero(t, calls)
 }
 
-func TestKitGeminiRequiresRoleFormatting(t *testing.T) {
+func TestKitGeminiAllowsPreformattedText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		assert.Equal(t, []any{map[string]any{"role": "query", "parts": []any{map[string]any{"text": "one"}, map[string]any{"text": "two"}}}}, body["inputs"])
+		writeJSON(t, w, map[string]any{"data": []any{map[string]any{"index": 0, "embedding": []float64{3, 4}}}})
+	}))
+	t.Cleanup(server.Close)
 	model := unitModel()
 	model.Name = "gemini-embedding-2"
-	_, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: "http://127.0.0.1/v1"}})
+	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+	require.NoError(t, err)
+	input := []embedclient.Input{{Role: embedconfig.RoleQuery, Parts: []embedclient.Part{{Text: "one"}, {Text: "two"}}}}
+	_, err = client.Encode(t.Context(), 0, input)
+	require.NoError(t, err)
+	_, err = client.EmbedInputs(t.Context(), input)
+	assert.ErrorContains(t, err, "needs its task")
+	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"hello"})
 	assert.ErrorContains(t, err, "needs its task")
 }
 func TestVertexOtherModelsRejectMedia(t *testing.T) {
@@ -110,4 +123,19 @@ func TestVertexOtherModelsRejectMedia(t *testing.T) {
 	_, err = client.EmbedInputs(t.Context(), []embedclient.Input{{Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{MediaType: "image/png", Data: []byte{1}}}}})
 	assert.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
 	assert.Zero(t, calls)
+}
+
+func TestKitGeminiMediaNeedsNoTextFormatting(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		assert.Equal(t, []any{map[string]any{"role": "document", "parts": []any{map[string]any{"media_type": "image/png", "data": "AQ=="}}}}, body["inputs"])
+		writeJSON(t, w, map[string]any{"data": []any{map[string]any{"index": 0, "embedding": []float64{3, 4}}}})
+	}))
+	t.Cleanup(server.Close)
+	model := unitModel()
+	model.Name = "gemini-embedding-2"
+	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+	require.NoError(t, err)
+	_, err = client.EmbedInputs(t.Context(), []embedclient.Input{{Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{MediaType: "image/png", Data: []byte{1}}}}})
+	require.NoError(t, err)
 }

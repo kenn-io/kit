@@ -7,10 +7,13 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"go.kenn.io/kit/embedclient"
 	"go.kenn.io/kit/embedmodel"
@@ -59,7 +62,7 @@ func (l *Local) Encode(ctx context.Context, dims int, inputs []embedclient.Input
 			}
 			texts = append(texts, p.Text)
 		}
-		v, _, err := l.h.embed(ctx, strings.Join(texts, "\n"))
+		v, _, err := l.h.embedWith(ctx, strings.Join(texts, "\n"), true)
 		if err != nil {
 			return nil, err
 		}
@@ -164,7 +167,7 @@ func Handler(backend embedclient.Backend, models []string) http.Handler {
 		}
 		vectors, err := backend.Encode(r.Context(), req.Dimensions, req.Inputs)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if r.Context().Err() != nil {
 				return
 			}
 			if errors.Is(err, embedclient.ErrInvalidDimensions) {
@@ -175,12 +178,38 @@ func Handler(backend embedclient.Backend, models []string) http.Handler {
 				fail(415, "unsupported_content", "content is unsupported")
 				return
 			}
-			var api *embedclient.APIError
-			if errors.As(err, &api) && api.Reason == embedclient.ReasonInputTooLong {
-				fail(413, "input_too_long", "input too long")
+			var load *modelLoadError
+			if errors.As(err, &load) {
+				if local, ok := backend.(*Local); ok {
+					_, _ = fmt.Fprintf(local.h.log, "inference failed: %v\n", err)
+				}
+				fail(424, "model_unavailable", "model could not be loaded")
 				return
 			}
-			fail(500, "internal_error", "embedding failed")
+			var api *embedclient.APIError
+			if errors.As(err, &api) {
+				switch {
+				case api.Reason == embedclient.ReasonInputTooLong:
+					fail(413, "input_too_long", "input too long")
+					return
+				case api.Reason == embedclient.ReasonContentPolicy:
+					fail(400, "content_policy_violation", "content refused by policy")
+					return
+				case api.CredentialsRejected():
+					fail(502, "upstream_credentials", "upstream credentials rejected")
+					return
+				case api.StatusCode == http.StatusTooManyRequests:
+					if api.RetryAfter > 0 {
+						w.Header().Set("Retry-After", strconv.FormatInt(int64((api.RetryAfter+time.Second-1)/time.Second), 10))
+					}
+					fail(429, "rate_limited", "upstream rate limited")
+					return
+				case api.Reason == embedclient.ReasonInvalidRequest:
+					fail(400, "invalid_request", "upstream request invalid")
+					return
+				}
+			}
+			fail(503, "unavailable", "embedding failed")
 			return
 		}
 		if len(vectors) != len(req.Inputs) {

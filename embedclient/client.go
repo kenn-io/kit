@@ -101,11 +101,6 @@ func New(opts Options) (*Client, error) {
 	endpoint := embeddingsURL(canonical)
 	if deployment.API == embedconfig.APIKit {
 		endpoint = canonical + "/embed"
-		if strings.HasPrefix(model.Name, "gemini-embedding-2") {
-			if err := validateGeminiEmbedding2Roles(roles); err != nil {
-				return nil, err
-			}
-		}
 	}
 	if deployment.API == embedconfig.APIVertex {
 		method := ":predict"
@@ -164,6 +159,11 @@ func (c *Client) Embed(ctx context.Context, inputs []embedmodel.Content) ([][]fl
 }
 
 func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format bool) ([][]float32, error) {
+	if format && c.api == embedconfig.APIKit && strings.HasPrefix(c.model.Name, "gemini-embedding-2") {
+		if err := validateGeminiEmbedding2Roles(c.roles); err != nil {
+			return nil, err
+		}
+	}
 	prepared, err := c.prepare(inputs, format)
 	if err != nil {
 		return nil, err

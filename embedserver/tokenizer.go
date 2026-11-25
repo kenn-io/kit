@@ -74,7 +74,7 @@ func (t *tokenizer) wordPieces(word string) []int {
 			if id, ok := t.vocab[word[:end]]; ok {
 				// Finish the word even after the cap: a later unmatched suffix must
 				// replace the entire word with UNK, rather than retaining its prefix.
-				if len(pieces) < 2046 {
+				if len(pieces) < 2047 {
 					pieces = append(pieces, id)
 				}
 				matched = end
@@ -89,11 +89,13 @@ func (t *tokenizer) wordPieces(word string) []int {
 	return pieces
 }
 
-func (t *tokenizer) encode(text string) []int {
+func (t *tokenizer) encode(text string) []int { return t.encodeLimit(text, 2048) }
+
+func (t *tokenizer) encodeLimit(text string, limit int) []int {
 	ids := []int{t.vocab["[CLS]"]}
 	add := func(word string) {
 		pieces := t.wordPieces(word)
-		ids = append(ids, pieces[:min(len(pieces), 2047-len(ids))]...)
+		ids = append(ids, pieces[:min(len(pieces), limit-1-len(ids))]...)
 	}
 	var word strings.Builder
 	flush := func() {
@@ -103,7 +105,7 @@ func (t *tokenizer) encode(text string) []int {
 		}
 	}
 next:
-	for len(text) > 0 && len(ids) < 2047 {
+	for len(text) > 0 && len(ids) < limit-1 {
 		for token := range t.specials {
 			if rest, ok := strings.CutPrefix(text, token); ok {
 				flush()

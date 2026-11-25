@@ -30,9 +30,9 @@ type CheckOptions struct {
 	OpenAI                 bool
 }
 
-// Check checks the HTTP contract. It cannot judge the quality of media vectors.
 func isUnsupported(err error) bool { return errors.Is(err, embedmodel.ErrUnsupportedContent) }
 
+// Check checks the HTTP contract. It cannot judge the quality of media vectors.
 func Check(ctx context.Context, opts CheckOptions) []error {
 	var failures []error
 	fail := func(rule string, err any) { failures = append(failures, fmt.Errorf("%s: %v", rule, err)) }
@@ -46,6 +46,11 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 	if err != nil {
 		fail("configuration", err)
 		return failures
+	}
+	for _, format := range []string{"float", "base64"} {
+		if err := checkWireEncoding(ctx, client, opts, format); err != nil {
+			fail(format+" encoding", err)
+		}
 	}
 	inputs := []Input{{Role: embedconfig.RoleQuery, Parts: []Part{{Text: "alpha"}}}, {Role: embedconfig.RoleDocument, Parts: []Part{{Text: "beta"}}}}
 	batch, err := client.Encode(ctx, opts.Dimensions, inputs)
@@ -139,4 +144,40 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 		}
 	}
 	return failures
+}
+
+func checkWireEncoding(ctx context.Context, c *Client, opts CheckOptions, format string) error {
+	body, err := json.Marshal(struct {
+		Model      string  `json:"model"`
+		Dimensions int     `json:"dimensions"`
+		Encoding   string  `json:"encoding_format"`
+		Inputs     []Input `json:"inputs"`
+	}{opts.Model, opts.Dimensions, format, []Input{{Role: embedconfig.RoleQuery, Parts: []Part{{Text: "alpha"}}}}})
+	if err != nil {
+		return err
+	}
+	payload, err := c.postJSON(ctx, c.endpoint, body)
+	if err != nil {
+		return err
+	}
+	var response struct {
+		Data []struct {
+			Embedding json.RawMessage `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return err
+	}
+	if len(response.Data) != 1 {
+		return errors.New("expected one embedding")
+	}
+	raw := bytes.TrimSpace(response.Data[0].Embedding)
+	want := byte('[')
+	if format == "base64" {
+		want = '"'
+	}
+	if len(raw) == 0 || raw[0] != want {
+		return fmt.Errorf("expected %s embedding", format)
+	}
+	return nil
 }

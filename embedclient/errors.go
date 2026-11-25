@@ -135,13 +135,13 @@ func (e *APIError) InputRejected() bool {
 // CredentialsRejected reports that the key or the permission was refused.
 // That is not a reason to skip one document.
 func (e *APIError) CredentialsRejected() bool {
-	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
+	return e.Reason == ReasonCredentials || e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
 }
 
 // Retryable reports a response that may succeed later: 408, 429, or a 5xx.
 // Check RetryAfter for the delay the provider asked for.
 func (e *APIError) Retryable() bool {
-	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
+	return !e.CredentialsRejected() && (e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500)
 }
 
 // maxErrorBody bounds how much of a failed response Kit reads to classify it.

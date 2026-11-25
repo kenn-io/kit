@@ -105,13 +105,20 @@ func (c *Client) encodeInputs(ctx context.Context, dims int, inputs []Input, for
 				return nil, fmt.Errorf("embed input %d: %w", i, vector.ErrEmptyEmbeddingInput)
 			}
 			if format {
+				if c.api == embedconfig.APIKit && strings.HasPrefix(c.model.Name, "gemini-embedding-2") {
+					if err := validateGeminiEmbedding2Roles(c.roles); err != nil {
+						return nil, err
+					}
+				}
 				var err error
 				text, err = embedmodel.Format(in.Role, text, c.roles)
 				if err != nil {
 					return nil, err
 				}
 			}
-			parts = []Part{{Text: text}}
+			if format || c.api != embedconfig.APIKit {
+				parts = []Part{{Text: text}}
+			}
 		}
 		prepared[i] = encoded{index: i, role: in.Role, text: text, parts: parts}
 	}

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -171,6 +174,24 @@ func TestKitCheckDetectsBrokenServices(t *testing.T) {
 		handler    http.Handler
 	}{
 		{"batch", "batch consistency", Handler(batchBackend{}, []string{"example"})},
+		{"wrong encoding", "base64 encoding", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var b bytes.Buffer
+			_, _ = b.ReadFrom(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(b.Bytes()))
+			if bytes.Contains(b.Bytes(), []byte(`"base64"`)) {
+				var req struct {
+					Inputs []embedclient.Input `json:"inputs"`
+				}
+				_ = json.Unmarshal(b.Bytes(), &req)
+				data := make([]map[string]any, len(req.Inputs))
+				for i := range data {
+					data[i] = map[string]any{"index": i, "embedding": []float32{0.6, 0.8}}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+				return
+			}
+			Handler(testBackend{}, []string{"example"}).ServeHTTP(w, r)
+		})},
 		{"model", "unknown model", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == "POST" {
 				var b bytes.Buffer
@@ -235,4 +256,88 @@ func TestKitHandlerLenientJSON(t *testing.T) {
 	Handler(backend, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", bytes.NewReader(body)))
 	require.Equal(t, 200, w.Code)
 	assert.Equal(t, "a\ufffdb", backend.inputs[0].Parts[0].Text)
+}
+
+type errorBackend struct{ err error }
+
+func (b errorBackend) Encode(context.Context, int, []embedclient.Input) ([][]float32, error) {
+	return nil, b.err
+}
+func TestKitBackendErrorClasses(t *testing.T) {
+	cases := []struct {
+		name                         string
+		err                          error
+		status                       int
+		reason                       embedclient.Reason
+		rejected, credentials, retry bool
+		delay                        time.Duration
+	}{
+		{"policy", &embedclient.APIError{StatusCode: 400, Reason: embedclient.ReasonContentPolicy}, 400, embedclient.ReasonContentPolicy, true, false, false, 0},
+		{"long", &embedclient.APIError{StatusCode: 413, Reason: embedclient.ReasonInputTooLong}, 413, embedclient.ReasonInputTooLong, true, false, false, 0},
+		{"credentials", &embedclient.APIError{StatusCode: 401, Reason: embedclient.ReasonCredentials}, 502, embedclient.ReasonCredentials, false, true, false, 0},
+		{"rate", &embedclient.APIError{StatusCode: 429, Reason: embedclient.ReasonRateLimited, RetryAfter: 3 * time.Second}, 429, embedclient.ReasonRateLimited, false, false, true, 3 * time.Second},
+		{"timeout", context.DeadlineExceeded, 503, embedclient.ReasonUnavailable, false, false, true, 0},
+		{"load", &modelLoadError{errors.New("missing model")}, 424, embedclient.ReasonInvalidRequest, false, false, false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(Handler(errorBackend{tc.err}, []string{"example"}))
+			t.Cleanup(server.Close)
+			client, err := embedclient.New(embedclient.Options{Model: embedconfig.Model{Name: "example", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+			require.NoError(t, err)
+			_, err = client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Parts: []embedclient.Part{{Text: "hello"}}}})
+			var got *embedclient.APIError
+			require.ErrorAs(t, err, &got)
+			assert.Equal(t, tc.status, got.StatusCode)
+			assert.Equal(t, tc.reason, got.Reason)
+			assert.Equal(t, tc.rejected, got.InputRejected())
+			assert.Equal(t, tc.credentials, got.CredentialsRejected())
+			assert.Equal(t, tc.retry, got.Retryable())
+			assert.Equal(t, tc.delay, got.RetryAfter)
+		})
+	}
+}
+func TestKitRejectsTruncatedLocalInput(t *testing.T) {
+	tok := &tokenizer{vocab: map[string]int{"[CLS]": 101, "[SEP]": 102, "[UNK]": 100, "▁a": 1}, specials: map[string]int{}, maxPiece: 4}
+	assert.Len(t, tok.encodeLimit(strings.Repeat("a ", 2046), 2049), 2048)
+	assert.Len(t, tok.encodeLimit(strings.Repeat("a ", 2047), 2049), 2049)
+	local := newLocal(&models{text: &model{tokenizer: tok}})
+	input := embedclient.Input{Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{Text: strings.Repeat("a ", 2047)}}}
+	_, err := local.Encode(t.Context(), 2, []embedclient.Input{input})
+	var api *embedclient.APIError
+	require.ErrorAs(t, err, &api)
+	assert.Equal(t, embedclient.ReasonInputTooLong, api.Reason)
+	body, err := json.Marshal(map[string]any{"model": "example", "inputs": []embedclient.Input{input}})
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	Handler(local, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", bytes.NewReader(body)))
+	assert.Equal(t, 413, w.Code)
+}
+
+func TestKitLocalLongNative(t *testing.T) {
+	dir, library := os.Getenv("KIT_EMBED_TEST_DIR"), os.Getenv("KIT_EMBED_TEST_LIBRARY")
+	if dir == "" || library == "" {
+		t.Skip("set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY")
+	}
+	local, err := NewLocal(t.Context(), dir, library)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, local.Close()) })
+	input := embedclient.Input{Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{Text: strings.Repeat("hello ", 2047)}}}
+	body, err := json.Marshal(map[string]any{"model": "example", "inputs": []embedclient.Input{input}})
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	Handler(local, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", bytes.NewReader(body)))
+	assert.Equal(t, 413, w.Code)
+}
+
+func TestKitLogsModelLoadFailure(t *testing.T) {
+	local := newLocal(&fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
+		return nil, 0, &modelLoadError{errors.New("missing model")}
+	}})
+	var log bytes.Buffer
+	local.h.log = &log
+	w := httptest.NewRecorder()
+	Handler(local, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", strings.NewReader(`{"model":"example","inputs":[{"role":"query","parts":[{"text":"hello"}]}]}`)))
+	assert.Equal(t, 424, w.Code)
+	assert.Contains(t, log.String(), "missing model")
 }
