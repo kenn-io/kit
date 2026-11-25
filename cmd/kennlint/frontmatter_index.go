@@ -132,7 +132,7 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 			continue
 		}
 		title, description := b.Field("title"), b.Field("description")
-		if !nonEmptyString(title) || !nonEmptyString(description) {
+		if title == nil || description == nil || !nonEmptyString(title) || !nonEmptyString(description) {
 			return nil, &indexPageError{file, errors.New("index page requires a valid title and description")}
 		}
 		pages = append(pages, indexPage{rel, title.Value, description.Value})
