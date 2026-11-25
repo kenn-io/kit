@@ -174,7 +174,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if err != nil {
 			return 0, fmt.Errorf("%s: inspect selected path: %w", file, err)
 		}
-		if skill && info.Mode()&os.ModeSymlink != 0 {
+		if info.Mode()&os.ModeSymlink != 0 && (skill || path.Base(file) == "index.md") {
 			continue
 		}
 		if skill {

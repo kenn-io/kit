@@ -16,8 +16,10 @@ import (
 	gittest "go.kenn.io/kit/git/test"
 )
 
-const indexPageHeader = "---\ntype: Guide\ntitle: A page\ndescription: A useful page.\ngenerated: {by: 'human:test', at: '2026-11-17'}\n---\n\n# Body\n"
-const indexSkillHeader = "---\nname: example\ndescription: Example\nmetadata:\n  type: Skill\n  generated:\n    by: human:test\n    at: '2026-11-17T12:00:00Z'\n---\nBody text.\n"
+const (
+	indexPageHeader  = "---\ntype: Guide\ntitle: A page\ndescription: A useful page.\ngenerated: {by: 'human:test', at: '2026-11-17'}\n---\n\n# Body\n"
+	indexSkillHeader = "---\nname: example\ndescription: Example\nmetadata:\n  type: Skill\n  generated:\n    by: human:test\n    at: '2026-11-17T12:00:00Z'\n---\nBody text.\n"
+)
 
 func TestRefreshIndex(t *testing.T) {
 	const metadata = "---\r\nexample: \"first\r\n" + indexBegin + "\r\nkeep me\r\n" + indexEnd + "\r\nlast\"\r\n---\r\n"
