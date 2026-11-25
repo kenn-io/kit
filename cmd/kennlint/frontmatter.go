@@ -18,6 +18,7 @@ import (
 	"go.kenn.io/kit/consolewindow"
 	gitenv "go.kenn.io/kit/git/env"
 	"go.kenn.io/kit/okf"
+	"go.kenn.io/kit/pathresolve"
 )
 
 type frontmatterExcludes []string
@@ -137,6 +138,18 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	var targets []string
 	for _, file := range files {
 		if frontmatterSelected(file, selected, excludes) && !frontmatterInSkillDirectory(file, skillDirs) {
+			full := filepath.Join(root, filepath.FromSlash(file))
+			resolved, err := pathresolve.EvalSymlinks(full)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return 0, err
+			}
+			target := filepath.Base(resolved)
+			if target != path.Base(file) && (target == "log.md" || target == "index.md") {
+				continue // Reserved documents are only handled under their own names.
+			}
 			targets = append(targets, file)
 		}
 	}

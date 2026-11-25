@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -130,6 +131,10 @@ func TestCanonicalFormatting(t *testing.T) {
 		{"link", "[x](a)\n", "[x](b)\n", false},
 		{"code indentation", "```\na\n```\n", "```\n a\n```\n", false},
 		{"code span", "`a b`\n", "`a  b`\n", false},
+		{"inline HTML spacing", `before <span style="white-space:pre">a b</span>`, `before <span style="white-space:pre">a  b</span>`, false},
+		{"inline HTML emphasis", `before <span style="white-space:pre">**a b**</span>`, `before <span style="white-space:pre">**a  b**</span>`, false},
+		{"spaces outside inline tags", `a  <b>same</b>  b`, `a <b>same</b> b`, true},
+		{"spaces after void tag", `a<br> b  c`, `a<br> b c`, true},
 		{"html", "<b>x</b>\n", "<i>x</i>\n", false},
 		{"hard break", "a\nb\n", "a  \nb\n", false},
 	} {
@@ -152,6 +157,7 @@ func TestMetadataMeaningful(t *testing.T) {
 		{"block to flow", strings.Replace(goodOKF, "generated:\n  by: human:test\n  at: 2026-11-17T12:00:00Z\n", "generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}\n", 1), false},
 		{"other generated field", strings.Replace(goodOKF, "  by: human:test\n", "  source: changed\n  by: human:test\n", 1), true},
 		{"title", strings.Replace(goodOKF, "title: A page", "title: Other", 1), true},
+		{"explicit default status", strings.Replace(goodOKF, "type: Guide\n", "type: Guide\nstatus: stable\n", 1), false},
 		{"status", strings.Replace(goodOKF, "type: Guide\n", "type: Guide\nstatus: deprecated\n", 1), true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -159,6 +165,9 @@ func TestMetadataMeaningful(t *testing.T) {
 			require.NoError(t, err)
 			meaningful, err := frontmatterMeaningful(base, b)
 			require.NoError(t, err)
+			encoded, err := b.Marshal()
+			require.NoError(t, err)
+			assert.Equal(t, tt.src, string(encoded), "comparison must not rewrite authored metadata")
 			assert.Equal(t, tt.meaningful, meaningful)
 		})
 	}
@@ -168,18 +177,21 @@ func TestChangedNeedsLaterTimestamp(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
-	repo.WriteFile("page.md", goodOKF)
+	src := strings.Replace(goodOKF, "Text here.", `Text here. <span style="white-space:pre">**a b**</span>`, 1)
+	repo.WriteFile("page.md", src)
 	repo.WriteFile("old.md", "# Page without metadata\n")
 	repo.WriteFile("index.md", "---\nokf_version: \"0.3\"\n---\n# Index\n")
 	repo.Run("add", ".")
 	repo.Run("commit", "-m", "base pages")
 	repo.Run("branch", "base")
-	edited := strings.Replace(goodOKF, "Text here.", "Changed text.", 1)
+	edited := strings.Replace(src, "Text here.", "Changed text.", 1)
 	for _, tt := range []struct {
 		name, content string
 		stale         bool
 	}{
-		{"rewrap", strings.Replace(goodOKF, "Text here.", "Text\nhere.", 1), false},
+		{"rewrap", strings.Replace(src, "Text here.", "Text\nhere.", 1), false},
+		{"default status", strings.Replace(src, "type: Guide", "status: stable\ntype: Guide", 1), false},
+		{"inline HTML spacing", strings.Replace(src, "a b**", "a  b**", 1), true},
 		{"body", edited, true},
 		{"earlier generated.at", strings.Replace(edited, "12:00:00Z", "11:59:59Z", 1), true},
 		{"same instant", strings.Replace(edited, "12:00:00Z", "12:00:00.000Z", 1), true},
@@ -199,7 +211,7 @@ func TestChangedNeedsLaterTimestamp(t *testing.T) {
 		})
 	}
 	// Adopting metadata and editing a reserved index need no timestamp.
-	repo.WriteFile("page.md", goodOKF)
+	repo.WriteFile("page.md", src)
 	repo.WriteFile("old.md", goodOKF)
 	repo.WriteFile("index.md", "---\nokf_version: \"0.3\"\n---\n# Index\n\n- [Old](old.md)\n")
 	var out, errout bytes.Buffer
@@ -248,4 +260,34 @@ func TestReleaseNotesKeepNativeFormat(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, src, string(data), file)
 	}
+}
+
+func TestReservedDocumentAliases(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	ordinary := strings.Replace(goodOKF, "type: Guide\n", "", 1)
+	for name, contents := range map[string]string{"log.md": "# Log\n", "index.md": ordinary, "page.md": ordinary} {
+		repo.WriteFile(name, contents)
+	}
+	for alias, target := range map[string]string{"journal.md": "log.md", "contents.md": "index.md", "document.md": "page.md"} {
+		require.NoError(t, os.Symlink(target, alias))
+	}
+	repo.Run("add", ".")
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-by", "human:test", "-type-rule", "**=Guide", "journal.md", "contents.md", "document.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n, stderr.String())
+	assert.Contains(t, stdout.String(), "checked 1 Markdown files (1 fixed)")
+	for name, want := range map[string]string{"log.md": "# Log\n", "index.md": ordinary} {
+		data, err := os.ReadFile(name)
+		require.NoError(t, err)
+		assert.Equal(t, want, string(data))
+	}
+	data, err := os.ReadFile("page.md")
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "type: Guide")
 }
