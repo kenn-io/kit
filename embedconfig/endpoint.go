@@ -1,6 +1,7 @@
 package embedconfig
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -13,12 +14,13 @@ var vertexName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 // VertexBaseURL constructs the Vertex publisher model endpoint for a location.
 func VertexBaseURL(project, location string) (string, error) {
 	if !vertexName.MatchString(project) || !vertexName.MatchString(location) {
-		return "", fmt.Errorf("embed Vertex project and location must be lowercase names")
+		return "", errors.New("embed Vertex project and location must be lowercase names")
 	}
 	host := location + "-aiplatform.googleapis.com"
-	if location == "global" {
+	switch location {
+	case "global":
 		host = "aiplatform.googleapis.com"
-	} else if location == "us" || location == "eu" {
+	case "us", "eu":
 		host = "aiplatform." + location + ".rep.googleapis.com"
 	}
 	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/publishers/google/models", host, project, location), nil

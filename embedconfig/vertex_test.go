@@ -23,8 +23,8 @@ func TestVertexBaseURL(t *testing.T) {
 	}
 	for _, v := range []string{"", "../x", "A", "a/b", "a.b", "-abc", "abc-"} {
 		_, err := embedconfig.VertexBaseURL(v, "us-central1")
-		assert.Error(t, err)
+		require.Error(t, err)
 		_, err = embedconfig.VertexBaseURL("project-a", v)
-		assert.Error(t, err)
+		require.Error(t, err)
 	}
 }

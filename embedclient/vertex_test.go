@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -49,7 +50,7 @@ func TestVertexPredict(t *testing.T) {
 
 func TestVertexEmbedContent(t *testing.T) {
 	for _, truncated := range []bool{false, true} {
-		t.Run(fmt.Sprint(truncated), func(t *testing.T) {
+		t.Run(strconv.FormatBool(truncated), func(t *testing.T) {
 			var calls int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
@@ -140,7 +141,7 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, vectors, len(texts))
 			assert.Equal(t, []int{tc.want, 1}, sizes)
-			assert.Equal(t, float32(tc.want), vectors[tc.want-1][0])
+			assert.InDelta(t, float32(tc.want), vectors[tc.want-1][0], 1e-6)
 		})
 	}
 }
@@ -176,21 +177,19 @@ func TestVertexInvalidPredictions(t *testing.T) {
 }
 
 func TestVertexUsesTransportTimeout(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-time.After(150 * time.Millisecond):
-			writeJSON(t, w, map[string]any{"predictions": []any{map[string]any{"embeddings": map[string]any{"values": []float64{1, 0}}}}})
-		case <-r.Context().Done():
-		}
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		<-release
 	}))
 	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
 	for _, tc := range []struct {
 		name        string
 		timeout     time.Duration
 		httpTimeout time.Duration
 	}{
-		{"short", 30 * time.Millisecond, 0},
-		{"caller timeout", time.Second, 30 * time.Millisecond},
+		{"short", 30 * time.Millisecond, 0},                    //nolint:kennlint // deadlinetest: a real HTTP request must time out
+		{"caller timeout", time.Second, 30 * time.Millisecond}, //nolint:kennlint // deadlinetest: a real HTTP request must time out
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			httpClient := &http.Client{Timeout: tc.httpTimeout}
