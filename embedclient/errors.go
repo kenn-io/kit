@@ -135,7 +135,7 @@ func (e *APIError) InputRejected() bool {
 // CredentialsRejected reports that the key or the permission was refused.
 // That is not a reason to skip one document.
 func (e *APIError) CredentialsRejected() bool {
-	return e.Reason == ReasonCredentials || e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
+	return e.Reason != ReasonInvalidRequest && (e.Reason == ReasonCredentials || e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden)
 }
 
 // Retryable reports a response that may succeed later: 408, 429, or a 5xx.

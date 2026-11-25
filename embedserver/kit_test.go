@@ -341,3 +341,28 @@ func TestKitLogsModelLoadFailure(t *testing.T) {
 	assert.Equal(t, 424, w.Code)
 	assert.Contains(t, log.String(), "missing model")
 }
+
+func TestKitUpstreamMissingModel(t *testing.T) {
+	assert.True(t, (&embedclient.APIError{StatusCode: http.StatusUnauthorized}).CredentialsRejected())
+	assert.True(t, (&embedclient.APIError{StatusCode: http.StatusForbidden}).CredentialsRejected())
+	assert.False(t, (&embedclient.APIError{StatusCode: http.StatusForbidden, Reason: embedclient.ReasonInvalidRequest}).CredentialsRejected())
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":"model_not_found","message":"model not found"}}`))
+	}))
+	t.Cleanup(provider.Close)
+	model := embedconfig.Model{Name: "example", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}
+	upstream, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: provider.URL}})
+	require.NoError(t, err)
+	server := httptest.NewServer(Handler(upstream, []string{"example"}))
+	t.Cleanup(server.Close)
+	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+	require.NoError(t, err)
+	_, err = client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Parts: []embedclient.Part{{Text: "hello"}}}})
+	var api *embedclient.APIError
+	require.ErrorAs(t, err, &api)
+	assert.Equal(t, http.StatusBadRequest, api.StatusCode)
+	assert.Equal(t, embedclient.ReasonInvalidRequest, api.Reason)
+	assert.False(t, api.CredentialsRejected())
+	assert.False(t, api.Retryable())
+}
