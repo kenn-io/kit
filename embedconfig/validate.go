@@ -87,11 +87,20 @@ func (d Deployment) Prepared() (Deployment, error) {
 
 // Validate checks the endpoint and resolves its canonical form.
 func (d Deployment) Validate() error {
+	if d.API != "" && d.API != APIOpenAI && d.API != APIVertex {
+		return errors.New("embed API must be openai or vertex")
+	}
 	if strings.TrimSpace(d.BaseURL) == "" {
 		return errors.New("embed endpoint is required")
 	}
-	_, err := d.Canonical()
-	return err
+	canonical, err := d.Canonical()
+	if err != nil {
+		return err
+	}
+	if d.API == APIVertex && !strings.HasSuffix(canonical, "/publishers/google/models") {
+		return errors.New("embed Vertex endpoint must end in /publishers/google/models; use VertexBaseURL")
+	}
+	return nil
 }
 
 // Canonical returns the pinned form of the endpoint.

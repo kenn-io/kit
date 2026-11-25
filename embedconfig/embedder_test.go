@@ -21,7 +21,8 @@ func TestEmbedderDecodesTheStandardKeys(t *testing.T) {
 	}
 	meta, err := toml.Decode(`
 [search.embeddings]
-base_url = "https://api.example.test/v1"
+api = "vertex"
+base_url = "https://api.example.test/v1/projects/project-a/locations/us-central1/publishers/google/models"
 model = "embed-large"
 dims = 1024
 api_key = { env = "EMBED_KEY" }
@@ -47,7 +48,7 @@ trust_private_network = true
 	}, parts.Model)
 	assert.Equal(t, embedconfig.InputTypeRetrieval, parts.Roles.InputType)
 	assert.Equal(t, embedconfig.Deployment{
-		BaseURL: "https://api.example.test/v1", TrustPrivateNetwork: true,
+		BaseURL: "https://api.example.test/v1/projects/project-a/locations/us-central1/publishers/google/models", API: embedconfig.APIVertex, TrustPrivateNetwork: true,
 	}, parts.Deployment)
 	assert.Equal(t, embedconfig.Batch{Items: 16, MaxTokens: 8192, InputTokenUpperBound: 512}, parts.Batch)
 	assert.Equal(t, 45*time.Second, parts.Transport.Timeout)

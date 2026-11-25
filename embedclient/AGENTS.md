@@ -43,7 +43,7 @@
 - Normalize with L2 only when the model normalization says so. Always reject
   a non-finite component, a null component, or a zero norm.
 - Do not copy provider bodies into errors.
-- Pack same-role inputs with the effective item cap. When both token fields
+- Pack same-role inputs, or mixed roles for Vertex, with the effective item cap. When both token fields
   are positive, the cap is min(Items, MaxTokens/InputTokenUpperBound), and
   at least 1 when Items and that quotient are at least 1. New returns an
   error when InputTokenUpperBound is greater than MaxTokens.

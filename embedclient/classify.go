@@ -70,12 +70,15 @@ func messageReason(message string) Reason {
 		return ReasonContentPolicy
 	case containsAny(message, "batch", "per request", "number of inputs", "too many inputs"):
 		return ReasonUnknown
-	case containsAny(message, "too long", "too large", "too many", "length", "maximum", "exceed",
-		"overflow", "less than") &&
+	case sizeLimit(message) &&
 		containsAny(message, "token", "context", "input", "text", "character"):
 		return ReasonInputTooLong
 	}
 	return ReasonUnknown
+}
+
+func sizeLimit(message string) bool {
+	return containsAny(message, "maximum", "exceed", "too long", "too many", "too large", "length", "overflow", "less than")
 }
 
 func modelMissing(message string) bool {

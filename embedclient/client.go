@@ -27,6 +27,7 @@ type Options struct {
 	APIKey string
 	// HTTP is an optional caller-owned client. New clones it and leaves the
 	// original unchanged. Nil builds a client from Transport.Timeout.
+	// For Vertex, a client with no timeout also uses Transport.Timeout.
 	HTTP *http.Client
 	// OllamaMetalRecovery recovers a response that contains an unusable
 	// vector when the endpoint is an Ollama /v1 URL. Valid vectors are kept.
@@ -44,6 +45,7 @@ type Options struct {
 
 // Client sends text embedding requests.
 type Client struct {
+	api            embedconfig.API
 	http           *http.Client
 	recoveryHTTP   *http.Client // ollamaRecoveryTimeout instead of Transport.Timeout
 	endpoint       string
@@ -96,6 +98,18 @@ func New(opts Options) (*Client, error) {
 			return nil, err
 		}
 	}
+	endpoint := embeddingsURL(canonical)
+	if deployment.API == embedconfig.APIVertex {
+		method := ":predict"
+		limit := 1
+		if strings.HasPrefix(model.Name, "gemini-embedding-2") {
+			method = ":embedContent"
+		} else if model.Name == "gemini-embedding-001" {
+			limit = 250
+		}
+		endpoint = canonical + "/" + url.PathEscape(model.Name) + method
+		items = min(items, limit)
+	}
 	parsed, err := url.Parse(canonical)
 	if err != nil {
 		return nil, fmt.Errorf("embed endpoint is invalid: %w", err)
@@ -105,14 +119,18 @@ func New(opts Options) (*Client, error) {
 		return nil, err
 	}
 	pinned := pinClient(opts.HTTP, origin, opts.APIKey, transport.Timeout)
+	if deployment.API == embedconfig.APIVertex && pinned.Timeout == 0 {
+		pinned.Timeout = transport.Timeout
+	}
 	// A CPU re-encode or a model reload can take minutes, far past a
 	// per-request timeout, so recovery has its own, much longer bound.
 	recovery := *pinned
 	recovery.Timeout = ollamaRecoveryTimeout
 	return &Client{
+		api:            deployment.API,
 		http:           pinned,
 		recoveryHTTP:   &recovery,
-		endpoint:       embeddingsURL(canonical),
+		endpoint:       endpoint,
 		serviceURL:     canonical,
 		ollamaRecovery: opts.OllamaMetalRecovery,
 		retry:          opts.Retry,
@@ -124,8 +142,8 @@ func New(opts Options) (*Client, error) {
 }
 
 // Embed encodes inputs in request order. An empty list returns nil.
-// Inputs that do not share a role are sent in separate requests because
-// input_type is one field per request.
+// OpenAI-compatible inputs that do not share a role are sent in separate
+// requests because input_type is one field per request.
 func (c *Client) Embed(ctx context.Context, inputs []embedmodel.Content) ([][]float32, error) {
 	if len(inputs) == 0 {
 		return nil, nil
@@ -141,15 +159,10 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 	out := make([][]float32, len(prepared))
 	for start := 0; start < len(prepared); {
 		end := start + 1
-		for end < len(prepared) && prepared[end].role == prepared[start].role && end-start < c.batchItems {
+		for end < len(prepared) && (c.api == embedconfig.APIVertex || prepared[end].role == prepared[start].role) && end-start < c.batchItems {
 			end++
 		}
-		texts := make([]string, end-start)
-		for i := start; i < end; i++ {
-			texts[i-start] = prepared[i].text
-		}
-		role := prepared[start].role
-		vectors, err := c.postBatch(ctx, role, texts)
+		vectors, err := c.postBatch(ctx, prepared[start:end])
 		if err != nil {
 			first := start
 			return nil, remapVectorIndex(err, func(i int) int { return prepared[first+i].index })
@@ -180,19 +193,21 @@ func splittableTimeout(err error) bool {
 	return ok && transport.Timeout()
 }
 
-func (c *Client) postBatch(ctx context.Context, role embedconfig.Role, texts []string) ([][]float32, error) {
-	vectors, err := retryCall(ctx, c.retry, len(texts) > 1, func() ([][]float32, error) {
-		return c.post(ctx, role, texts)
+func (c *Client) postBatch(ctx context.Context, inputs []encoded) ([][]float32, error) {
+	vectors, err := retryCall(ctx, c.retry, len(inputs) > 1, func() ([][]float32, error) {
+		return c.post(ctx, inputs)
 	})
-	if !splittableTimeout(err) || len(texts) < 2 || ctx.Err() != nil {
+	apiErr, isAPIError := errors.AsType[*APIError](err)
+	vertexInputTooLong := c.api == embedconfig.APIVertex && isAPIError && apiErr.Reason == ReasonInputTooLong
+	if (!splittableTimeout(err) && !vertexInputTooLong) || len(inputs) < 2 || ctx.Err() != nil {
 		return vectors, err
 	}
-	middle := len(texts) / 2
-	left, err := c.postBatch(ctx, role, texts[:middle])
+	middle := len(inputs) / 2
+	left, err := c.postBatch(ctx, inputs[:middle])
 	if err != nil {
 		return nil, err
 	}
-	right, err := c.postBatch(ctx, role, texts[middle:])
+	right, err := c.postBatch(ctx, inputs[middle:])
 	if err != nil {
 		return nil, remapVectorIndex(err, func(i int) int { return middle + i })
 	}
@@ -265,8 +280,18 @@ func (c *Client) prepare(inputs []embedmodel.Content, format bool) ([]encoded, e
 	return out, nil
 }
 
-func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string) ([][]float32, error) {
-	body, err := c.requestBody(role, texts)
+func (c *Client) post(ctx context.Context, inputs []encoded) ([][]float32, error) {
+	texts := make([]string, len(inputs))
+	for i, input := range inputs {
+		texts[i] = input.text
+	}
+	var body []byte
+	var err error
+	if c.api == embedconfig.APIVertex {
+		body, err = c.vertexRequestBody(inputs)
+	} else {
+		body, err = c.requestBody(inputs[0].role, texts)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +299,13 @@ func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string
 	if err != nil {
 		return nil, err
 	}
-	vectors, problems, err := c.classify(payload, len(texts))
+	var vectors [][]float32
+	var problems []error
+	if c.api == embedconfig.APIVertex {
+		vectors, problems, err = c.classifyVertex(payload, len(texts))
+	} else {
+		vectors, problems, err = c.classify(payload, len(texts))
+	}
 	if err != nil {
 		return nil, err
 	}
