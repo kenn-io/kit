@@ -7,8 +7,8 @@
 // EncodingFormat do not change a Vertex request.
 //
 // Vertex sends up to 250 inputs per request for gemini-embedding-001 and one
-// for other models, further capped by Batch.Items. A Vertex 400 that names
-// tokens is an input rejection; a request with more than one input is split
+// for other models, further capped by Batch.Items. A Vertex 400 that names a
+// token limit is an input rejection; a request with more than one input is split
 // in halves when it receives one. Set Batch.Items so a request stays under
 // 20,000 tokens to avoid failed first attempts.
 // GoogleHTTPClient supplies Application Default Credentials; pass it as

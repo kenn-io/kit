@@ -146,7 +146,8 @@ func newAPIError(resp *http.Response, vertex bool) *APIError {
 		Reason:     classifyFailure(resp.StatusCode, body),
 	}
 	_, message := errorDetail(body)
-	if vertex && resp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(message), "token") {
+	message = strings.ToLower(message)
+	if vertex && resp.StatusCode == http.StatusBadRequest && (err.Reason == ReasonUnknown || err.Reason == ReasonInputTooLong) && strings.Contains(message, "token") && containsAny(message, "up to", "limit", "maximum", "max ", "exceed", "too long", "too many", "too large", "length", "overflow", "less than") {
 		err.Reason = ReasonInputTooLong
 	}
 	return err

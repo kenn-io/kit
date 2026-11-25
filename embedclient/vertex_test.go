@@ -162,6 +162,7 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 	}{
 		{"split", "gemini-embedding-001", "input token count is 23000 but the model supports up to 20000", []string{"1", "2", "3", "4", "5"}, []int{5, 2, 3, 1, 2}, false},
 		{"single token limit", "gemini-embedding-001", "input token count is 3000 but the model supports up to 2048", []string{"1"}, []int{1}, true},
+		{"invalid token", "gemini-embedding-001", "Invalid token", []string{"1", "2", "3"}, []int{3}, true},
 		{"unknown error", "gemini-embedding-001", "invalid request", []string{"1", "2", "3"}, []int{3}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -196,6 +197,12 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 					var apiErr *embedclient.APIError
 					require.ErrorAs(t, err, &apiErr)
 					assert.True(t, apiErr.InputRejected())
+				}
+				if tc.name == "invalid token" {
+					var apiErr *embedclient.APIError
+					require.ErrorAs(t, err, &apiErr)
+					assert.Equal(t, embedclient.ReasonUnknown, apiErr.Reason)
+					assert.False(t, apiErr.InputRejected())
 				}
 			} else {
 				require.NoError(t, err)
