@@ -25,62 +25,62 @@ func (r *frontmatterRules) Set(s string) error {
 	if !ok || glob == "" || kind == "" {
 		return fmt.Errorf("invalid type rule %q: expected GLOB=TYPE", s)
 	}
-	e := frontmatterExcludes{}
-	if err := e.Set(glob); err != nil {
+	if err := (&frontmatterExcludes{}).Set(glob); err != nil {
 		return err
 	}
 	*r = append(*r, frontmatterRule{glob, kind})
 	return nil
 }
 
-func typeForFile(rules frontmatterRules, file string) (kind, problem string) {
-	var first frontmatterRule
+// typeForFile returns the type every matching rule agrees on, or "".
+func typeForFile(rules frontmatterRules, file string) string {
+	kind := ""
 	for _, rule := range rules {
-		if !frontmatterGlob(rule.glob, file) {
-			continue
-		}
-		if first.kind != "" && first.kind != rule.kind {
-			return "", fmt.Sprintf("type rules disagree: %s=%s, %s=%s", first.glob, first.kind, rule.glob, rule.kind)
-		}
-		first = rule
-	}
-	if first.kind == "" {
-		return "", "add type: or a matching -type-rule"
-	}
-	return first.kind, ""
-}
-
-func appendField(n *yaml.Node, key string, value *yaml.Node) {
-	n.Content = append(n.Content, stringNode(key), value)
-}
-
-func stringNode(s string) *yaml.Node {
-	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}
-}
-
-func profileProblems(b *okf.Document) []string {
-	p := b.ConceptProblems()
-	for _, k := range []string{"title", "description"} {
-		if !okf.NonEmptyString(b.Field(k)) {
-			p = append(p, k+" must be a non-empty string")
+		if frontmatterGlob(rule.glob, file) {
+			if kind != "" && kind != rule.kind {
+				return ""
+			}
+			kind = rule.kind
 		}
 	}
-	g := b.Field("generated")
-	if g != nil && g.Kind != yaml.MappingNode {
+	return kind
+}
+
+func nonEmptyString(n *yaml.Node) bool {
+	return n != nil && n.Kind == yaml.ScalarNode && n.Tag == "!!str" && strings.TrimSpace(n.Value) != ""
+}
+
+// profileProblems checks the Kenn profile: OKF's required type plus title,
+// description, and generated provenance. Each message says how to fix it.
+func profileProblems(d *okf.Document) []string {
+	var p []string
+	required := []struct{ key, hint string }{
+		{"type", "set it or use a single matching -type-rule with -fix"},
+		{"title", "set it or start the body with an H1 and use -fix"},
+		{"description", "set it or use -fix -description TEXT for one file"},
+	}
+	for _, f := range required {
+		if !nonEmptyString(d.Field(f.key)) {
+			p = append(p, fmt.Sprintf("%s must be a non-empty string; %s", f.key, f.hint))
+		}
+	}
+	if s := d.Field("status"); s != nil && s.Tag != "!!null" && s.Tag != "!!str" {
+		p = append(p, "status must be a string")
+	}
+	if g := d.Field("generated"); g != nil && g.Kind != yaml.MappingNode {
 		return append(p, "generated must be a mapping")
 	}
-	if !okf.NonEmptyString(b.Field("generated", "by")) {
-		p = append(p, "generated.by must be a non-empty string")
+	if !nonEmptyString(d.Field("generated", "by")) {
+		p = append(p, "generated.by must be a non-empty string; use -fix -by ACTOR when generated is absent")
 	}
-	if _, ok := okf.Timestamp(b.Field("generated", "at")); !ok {
+	if _, ok := okf.Timestamp(d.Field("generated", "at")); !ok {
 		p = append(p, "generated.at must be an RFC 3339 timestamp with an offset or a YYYY-MM-DD date")
 	}
 	return p
 }
 
 func headingTitle(body []byte) string {
-	n := parser.New().Parse(body).FirstChild()
-	h, ok := n.(*ast.Heading)
+	h, ok := parser.New().Parse(body).FirstChild().(*ast.Heading)
 	if !ok || h.Level != 1 {
 		return ""
 	}
@@ -106,63 +106,31 @@ func headingTitle(body []byte) string {
 	return strings.TrimSpace(strings.Join(parts, ""))
 }
 
-// fixOKF fills missing values and returns, by field, what the author must supply.
-func fixOKF(b *okf.Document, file string, rules frontmatterRules, by, description string) (bool, map[string]string) {
-	notes := map[string]string{}
-	for _, key := range []string{"type", "title", "description"} {
-		if n := b.Field(key); n != nil && !okf.NonEmptyString(n) {
-			return false, nil
-		}
-	}
-	g := b.Field("generated")
-	oldBy, oldAt := b.Field("generated", "by"), b.Field("generated", "at")
-	_, validAt := okf.Timestamp(oldAt)
-	if (g != nil && g.Kind != yaml.MappingNode) || (oldBy != nil && !okf.NonEmptyString(oldBy)) || (oldAt != nil && !validAt) {
-		return false, nil
-	}
+// fixOKF fills absent fields whose values are known and never touches
+// present ones. generated is written only when it is absent entirely.
+func fixOKF(d *okf.Document, file string, rules frontmatterRules, by, description string) bool {
 	changed := false
-	root := &b.Metadata
-	put := func(key, value, missing string) {
-		if value == "" {
-			notes[key] = missing
-			return
+	put := func(n *yaml.Node, key, value string) {
+		if value != "" && d.Field(key) == nil {
+			n.Content = append(n.Content, stringNode(key), stringNode(value))
+			changed = true
 		}
-		appendField(root, key, stringNode(value))
+	}
+	put(&d.Metadata, "type", typeForFile(rules, file))
+	put(&d.Metadata, "title", headingTitle(d.Body))
+	put(&d.Metadata, "description", description)
+	if by != "" && d.Field("generated") == nil {
+		g := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle}
+		g.Content = []*yaml.Node{
+			stringNode("by"), stringNode(by),
+			stringNode("at"), stringNode(time.Now().UTC().Format(time.RFC3339)),
+		}
+		d.Metadata.Content = append(d.Metadata.Content, stringNode("generated"), g)
 		changed = true
 	}
-	if b.Field("type") == nil {
-		kind, problem := typeForFile(rules, file)
-		put("type", kind, problem)
-	}
-	if b.Field("title") == nil {
-		put("title", headingTitle(b.Body), "add title: (first block is not an H1)")
-	}
-	if b.Field("description") == nil {
-		put("description", description, "supply -description TEXT")
-	}
-	if (oldBy == nil) != (oldAt == nil) {
-		missing := "generated.by"
-		if oldAt == nil {
-			missing = "generated.at"
-		}
-		notes[missing] = missing + " is missing; supply both generated.by and generated.at by hand"
-		return changed, notes
-	}
-	if oldBy != nil {
-		return changed, notes
-	}
-	if by == "" {
-		notes["generated.by"] = "generated.by: supply -by ACTOR"
-	}
-	if len(notes) != 0 {
-		return changed, notes
-	}
-	if g == nil {
-		g = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		appendField(root, "generated", g)
-	}
-	g.Style |= yaml.FlowStyle
-	appendField(g, "by", stringNode(by))
-	appendField(g, "at", stringNode(time.Now().UTC().Format(time.RFC3339)))
-	return true, notes
+	return changed
+}
+
+func stringNode(s string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}
 }

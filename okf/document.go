@@ -1,6 +1,6 @@
 // Package okf reads and edits the YAML metadata in Open Knowledge Format
-// v0.3 Markdown files. Parse accepts partial metadata, so consumers can apply
-// their own profile or read a bundle index without treating it as a concept.
+// v0.3 Markdown files. Parse accepts partial metadata; callers apply their own
+// profile.
 package okf
 
 import (
@@ -32,7 +32,6 @@ func New(body []byte) *Document {
 }
 
 // Parse reads a single delimited mapping and retains the remaining bytes as the body.
-// Metadata must use direct values. Anchors and aliases are unsupported.
 // Body shares its backing array with src.
 func Parse(src []byte) (*Document, error) {
 	line, content, _ := bytes.Cut(src, []byte("\n"))
@@ -69,32 +68,12 @@ func Parse(src []byte) (*Document, error) {
 		return nil, errors.New("frontmatter must be a YAML mapping")
 	}
 	d.Metadata = *doc.Content[0]
-	if err := prepareMapping(&d.Metadata); err != nil {
-		return nil, err
-	}
 	// Decoding into a map also checks for duplicate keys at every depth.
 	var values map[string]any
 	if err := d.Metadata.Decode(&values); err != nil {
 		return nil, fmt.Errorf("invalid frontmatter YAML: %w", err)
 	}
 	return d, nil
-}
-
-func prepareMapping(n *yaml.Node) error {
-	if n.Anchor != "" || n.Kind == yaml.AliasNode {
-		return errors.New("frontmatter does not support YAML anchors and aliases")
-	}
-	// yaml.v3 assigns a YAML 1.1 merge tag to plain <<. In the YAML 1.2
-	// core schema used by OKF it is a string.
-	if n.Tag == "!!merge" && n.Value == "<<" {
-		n.Tag = "!!str"
-	}
-	for _, child := range n.Content {
-		if err := prepareMapping(child); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // Field looks up a path of mapping keys. It returns nil if the path is absent.

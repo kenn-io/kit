@@ -18,20 +18,7 @@ import (
 	"go.kenn.io/kit/consolewindow"
 	gitenv "go.kenn.io/kit/git/env"
 	"go.kenn.io/kit/okf"
-	"go.kenn.io/kit/pathresolve"
 )
-
-// trimmedText is a flag whose value, once set, is non-empty after trimming.
-type trimmedText struct{ value string }
-
-func (t *trimmedText) String() string { return t.value }
-func (t *trimmedText) Set(s string) error {
-	t.value = strings.TrimSpace(s)
-	if t.value == "" {
-		return errors.New("value must not be empty")
-	}
-	return nil
-}
 
 type frontmatterExcludes []string
 
@@ -116,9 +103,8 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	flags := flag.NewFlagSet("kennlint frontmatter", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	changed := flags.String("changed", "", "require metadata to change for meaningful edits since this ref")
-	var by, description trimmedText
-	flags.Var(&by, "by", "actor for missing generated.by (producer/version, human:id, or process:id)")
-	flags.Var(&description, "description", "description for one selected file")
+	by := flags.String("by", "", "with -fix, actor for an absent generated mapping (producer/version, human:id, or process:id)")
+	description := flags.String("description", "", "with -fix, description for one selected file")
 	var rules frontmatterRules
 	flags.Var(&rules, "type-rule", "path rule GLOB=TYPE (repeatable)")
 	fix := flags.Bool("fix", false, "fill missing metadata where possible")
@@ -134,6 +120,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		return 0, err
 	}
 	excludes = append(excludes, customExcludes...)
+	*by, *description = strings.TrimSpace(*by), strings.TrimSpace(*description)
 	rootBytes, err := frontmatterGit(ctx, "", "rev-parse", "--show-toplevel")
 	if err != nil {
 		return 0, err
@@ -150,22 +137,10 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	var targets []string
 	for _, file := range files {
 		if frontmatterSelected(file, selected, excludes) && !frontmatterInSkillDirectory(file, skillDirs) {
-			full := filepath.Join(root, filepath.FromSlash(file))
-			resolved, err := pathresolve.EvalSymlinks(full)
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			if err != nil {
-				return 0, err
-			}
-			target := filepath.Base(resolved)
-			if target != path.Base(file) && (target == "log.md" || target == "index.md") {
-				continue // Reserved documents are only handled under their own names.
-			}
 			targets = append(targets, file)
 		}
 	}
-	if description.value != "" && len(targets) != 1 {
+	if *description != "" && len(targets) != 1 {
 		return 0, errors.New("-description requires exactly one selected file")
 	}
 	total, fixed := 0, 0
@@ -177,7 +152,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	var checked []string
 	for _, file := range targets {
-		problems, didFix, err := checkFrontmatterFile(root, file, *fix, rules, by.value, description.value)
+		problems, didFix, err := checkFrontmatterFile(root, file, *fix, rules, *by, *description)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // A tracked file deleted in the working tree needs no metadata.
 		}
@@ -244,8 +219,7 @@ func checkFrontmatterFile(root, file string, fix bool, rules frontmatterRules, b
 		}
 		return nil, false, nil
 	case "index.md":
-		// Reserved indexes are not concepts. A bundle root may carry metadata;
-		// validation and index regeneration leave it untouched.
+		// Reserved indexes are not concepts; any metadata only has to parse.
 		_, err := okf.Parse(src)
 		if err != nil && !errors.Is(err, okf.ErrNoFrontmatter) {
 			return []string{err.Error()}, false, nil
@@ -259,12 +233,8 @@ func checkFrontmatterFile(root, file string, fix bool, rules frontmatterRules, b
 	if err != nil {
 		return []string{err.Error()}, false, nil //nolint:nilerr // Count invalid metadata as a finding so scanning continues.
 	}
-	var changed bool
-	var notes map[string]string
-	if fix {
-		changed, notes = fixOKF(b, file, rules, by, description)
-	}
-	problems := frontmatterFixProblems(profileProblems(b), notes)
+	changed := fix && fixOKF(b, file, rules, by, description)
+	problems := profileProblems(b)
 	if !changed {
 		return problems, false, nil
 	}
@@ -278,16 +248,6 @@ func checkFrontmatterFile(root, file string, fix bool, rules frontmatterRules, b
 		return nil, false, err
 	}
 	return problems, true, nil
-}
-
-// Fixer guidance replaces the generic finding for the same field.
-func frontmatterFixProblems(problems []string, notes map[string]string) []string {
-	for i, problem := range problems {
-		if note, ok := notes[strings.Fields(problem)[0]]; ok {
-			problems[i] = note
-		}
-	}
-	return problems
 }
 
 // frontmatterStaleDates returns the files whose content differs from the merge
@@ -317,7 +277,7 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 	var stale []string
 	for _, file := range files {
 		if path.Base(file) == "index.md" || path.Base(file) == "log.md" {
-			continue // Reserved files are never concepts, even with extension metadata.
+			continue // Reserved files are never concepts.
 		}
 		if !modified[file] {
 			continue
