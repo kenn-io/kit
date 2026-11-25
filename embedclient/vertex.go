@@ -3,6 +3,7 @@ package embedclient
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	json "encoding/json/v2"
@@ -62,7 +63,7 @@ func (c *Client) classifyVertex(payload []byte, count int) ([][]float32, []error
 			return nil, nil, errors.New("embed response is invalid")
 		}
 		if response.Truncated {
-			return nil, nil, errors.New("embed response was truncated")
+			return nil, nil, &APIError{StatusCode: http.StatusOK, Reason: ReasonInputTooLong}
 		}
 		out, problems := c.decodeVectors([]wireEmbedding{response.Embedding.Values})
 		return out, problems, nil

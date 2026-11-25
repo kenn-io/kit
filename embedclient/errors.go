@@ -101,8 +101,9 @@ func (r Reason) String() string {
 	}
 }
 
-// APIError is a non-2xx embedding response. Reason classifies it; the
-// provider body is read only to classify and is never kept or echoed.
+// APIError is a non-2xx embedding response, or a 200 from Gemini Embedding 2
+// that reports truncated input. Reason classifies it; the provider body is
+// read only to classify and is never kept or echoed.
 type APIError struct {
 	StatusCode int
 	RetryAfter time.Duration
@@ -116,7 +117,8 @@ func (e *APIError) Error() string {
 // InputRejected reports that the endpoint refused this input itself: it is
 // too long or refused by policy. The same input will fail again, and other
 // inputs may succeed. A 400 Kit cannot attribute to the input is not an input
-// rejection.
+// rejection. A Gemini Embedding 2 response with truncated:true is one, with
+// StatusCode 200, because its vector covers only part of the input.
 func (e *APIError) InputRejected() bool {
 	return e.Reason == ReasonInputTooLong || e.Reason == ReasonContentPolicy
 }
@@ -147,7 +149,7 @@ func newAPIError(resp *http.Response, vertex bool) *APIError {
 	}
 	_, message := errorDetail(body)
 	message = strings.ToLower(message)
-	if vertex && resp.StatusCode == http.StatusBadRequest && (err.Reason == ReasonUnknown || err.Reason == ReasonInputTooLong) && strings.Contains(message, "token") && containsAny(message, "up to", "limit", "maximum", "max ", "exceed", "too long", "too many", "too large", "length", "overflow", "less than") {
+	if vertex && resp.StatusCode == http.StatusBadRequest && err.Reason == ReasonUnknown && strings.Contains(message, "token") && (sizeLimit(message) || containsAny(message, "up to", "limit", "max ")) {
 		err.Reason = ReasonInputTooLong
 	}
 	return err
