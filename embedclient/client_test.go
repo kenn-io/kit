@@ -633,6 +633,7 @@ func TestEmbedClassifiesFailedResponses(t *testing.T) {
 			embedclient.ReasonUnknown,
 		},
 		{"batch token limit", http.StatusBadRequest, "batch token limit exceeded", embedclient.ReasonUnknown},
+		{"aggregate ceiling", http.StatusBadRequest, "input token count exceeds the maximum of 20000", embedclient.ReasonUnknown},
 		{"request input count limit", http.StatusBadRequest, "maximum 250 inputs per request", embedclient.ReasonUnknown},
 		{"empty 400", http.StatusBadRequest, "", embedclient.ReasonUnknown},
 		{"route text", http.StatusBadRequest, "no route", embedclient.ReasonUnknown},

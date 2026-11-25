@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -68,6 +69,8 @@ func messageReason(message string) Reason {
 		return ReasonInvalidRequest
 	case strings.Contains(message, "content") && strings.Contains(message, "policy"):
 		return ReasonContentPolicy
+	case aggregateTokenCeiling(message):
+		return ReasonUnknown
 	case containsAny(message, "batch", "per request", "number of inputs", "too many inputs"):
 		return ReasonUnknown
 	case containsAny(message, "too long", "too large", "too many", "length", "maximum", "exceed",
@@ -81,8 +84,14 @@ func messageReason(message string) Reason {
 func requestTokenLimit(body []byte) bool {
 	_, message := errorDetail(body)
 	message = strings.ToLower(message)
-	return containsAny(message, "batch", "per request") && strings.Contains(message, "token") &&
+	return aggregateTokenCeiling(message) || containsAny(message, "batch", "per request") && strings.Contains(message, "token") &&
 		containsAny(message, "too long", "too large", "too many", "length", "maximum", "max ", "limit", "exceed", "overflow", "less than")
+}
+
+var aggregateCeilingPattern = regexp.MustCompile(`\b(?:up to|maximum(?: of)?|max(?: of)?|limit(?: of)?)\s*[:=]?\s*20,?000\b`)
+
+func aggregateTokenCeiling(message string) bool {
+	return strings.Contains(message, "token") && aggregateCeilingPattern.MatchString(message)
 }
 
 func modelMissing(message string) bool {
