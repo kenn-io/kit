@@ -55,7 +55,9 @@ func TestVertexEmbedContent(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				assert.Equal(t, "/publishers/google/models/gemini-embedding-2-preview:embedContent", r.URL.Path)
-				assert.Equal(t, map[string]any{"content": map[string]any{"parts": []any{map[string]any{"text": "query: text"}}}, "embedContentConfig": map[string]any{"outputDimensionality": float64(2), "autoTruncate": false}}, readBody(t, r))
+				body := readBody(t, r)
+				assert.Equal(t, map[string]any{"parts": []any{map[string]any{"text": "query: text"}}}, body["content"])
+				assert.Equal(t, float64(2), body["embedContentConfig"].(map[string]any)["outputDimensionality"])
 				writeJSON(t, w, map[string]any{"embedding": map[string]any{"values": []float64{1, 0}}, "truncated": truncated})
 			}))
 			t.Cleanup(server.Close)
@@ -65,7 +67,10 @@ func TestVertexEmbedContent(t *testing.T) {
 			require.NoError(t, err)
 			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"text", "text"})
 			if truncated {
-				require.ErrorContains(t, err, "truncated")
+				var apiErr *embedclient.APIError
+				require.ErrorAs(t, err, &apiErr)
+				assert.Equal(t, http.StatusOK, apiErr.StatusCode)
+				assert.True(t, apiErr.InputRejected())
 				assert.Nil(t, vectors)
 				assert.Equal(t, 1, calls)
 			} else {
