@@ -21,6 +21,7 @@ func TestTimestamp(t *testing.T) {
 		{"'2026-11-17'", noon.Add(-12 * time.Hour), true},
 		{"2026-11-17T13:00:00+01:00", noon, true},
 		{"\"2026-11-17T07:00:00-05:00\"", noon, true},
+		{"'2026-11-17t12:00:00z'", noon, true},
 		{"'2026-11-17T12:00:00'", time.Time{}, false},
 		{"17 November 2026", time.Time{}, false},
 		{"42", time.Time{}, false},

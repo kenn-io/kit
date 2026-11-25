@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: claude-code/claude-opus-5.5, at: "2026-11-25T12:00:00Z" }
+generated: { by: claude-code/claude-opus-5.5, at: "2026-11-25T15:44:30Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -67,5 +67,5 @@ Everything else is reported for you to fix by hand. Kit wraps this as
 Run the read-only check in CI with `-changed` set to the pull request base
 SHA and full Git history. When a page's metadata or rendered content changes,
 `generated.at` must move later; the same actor may edit again. Formatting-only
-edits (rewrapping, list markers, table padding) and changes to `generated`
-or `verified` alone do not count. `-fix` never bumps an existing timestamp.
+edits (rewrapping, list markers, table padding) and changes to
+`generated.by`, `generated.at`, or `verified` alone do not count. `-fix` never bumps an existing timestamp.

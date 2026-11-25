@@ -55,9 +55,9 @@ func nonEmptyString(n *yaml.Node) bool {
 func profileProblems(d *okf.Document) []string {
 	var p []string
 	required := []struct{ key, hint string }{
-		{"type", "set it or use a single matching -type-rule with -fix"},
-		{"title", "set it or start the body with an H1 and use -fix"},
-		{"description", "set it or use -fix -description TEXT for one file"},
+		{"type", "set it, or when absent use -fix with one matching -type-rule"},
+		{"title", "set it, or when absent use -fix with an H1 as the first block"},
+		{"description", "set it, or when absent use -fix -description TEXT for one file"},
 	}
 	for _, f := range required {
 		if !nonEmptyString(d.Field(f.key)) {

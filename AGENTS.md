@@ -48,7 +48,7 @@ provider workflows to this repo unless the package already owns that concern.
 - Never name private downstream projects or other private codebases in public
   artifacts. Describe reusable requirements generically and scrub public
   surfaces before publishing.
-- When creating or meaningfully updating [Kenn docs](docs/adopting-docs.md), set `generated: { by, at }` to the actual editor (coding tool/model for agent edits) and current UTC time; leave formatting-only edits alone.
+- When creating or meaningfully updating [Kenn documentation](docs/adopting-docs.md), set `generated: { by, at }` to the actual editor (coding tool/model for agent edits) and current UTC time; leave formatting-only edits alone.
 - Mark retained retired docs `status: deprecated` and link replacements when available.
 
 ## Go Conventions

@@ -1,6 +1,7 @@
 package okf
 
 import (
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -16,6 +17,6 @@ func Timestamp(n *yaml.Node) (time.Time, bool) {
 	if len(n.Value) == len(time.DateOnly) {
 		layout = time.DateOnly
 	}
-	t, err := time.Parse(layout, n.Value)
+	t, err := time.Parse(layout, strings.ToUpper(n.Value)) // RFC 3339 allows lowercase t and z.
 	return t, err == nil
 }
