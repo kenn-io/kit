@@ -63,7 +63,6 @@ func TestVertexEmbedContent(t *testing.T) {
 			model.Name = "gemini-embedding-2-preview"
 			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}, Roles: embedconfig.Roles{QueryPrefix: "query: "}, Batch: embedconfig.Batch{Items: 300}})
 			require.NoError(t, err)
-			assert.Equal(t, 1, client.BatchItems())
 			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"text", "text"})
 			if truncated {
 				require.ErrorContains(t, err, "truncated")
@@ -108,15 +107,13 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 		name  string
 		model string
 		items int
-		want  int
 		texts int
 		sizes []int
 	}{
-		{"gemini batch", "gemini-embedding-001", 32, 32, 3, []int{3}},
-		{"gemini capped", "gemini-embedding-001", 300, 250, 251, []int{250, 1}},
-		{"gemini caller cap", "gemini-embedding-001", 3, 3, 4, []int{3, 1}},
-		{"other capped", "text-embedding-005", 300, 5, 6, []int{5, 1}},
-		{"caller cap", "text-embedding-005", 3, 3, 4, []int{3, 1}},
+		{"gemini batch", "gemini-embedding-001", 32, 3, []int{3}},
+		{"gemini capped", "gemini-embedding-001", 300, 251, []int{250, 1}},
+		{"gemini caller cap", "gemini-embedding-001", 3, 4, []int{3, 1}},
+		{"other model", "text-embedding-005", 300, 2, []int{1, 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sizes []int
@@ -139,7 +136,6 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 			model.Normalization = embedconfig.NormalizationNone
 			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}, Batch: embedconfig.Batch{Items: tc.items}})
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, client.BatchItems())
 			texts := make([]string, tc.texts)
 			for i := range texts {
 				texts[i] = strconv.Itoa(i + 1)
@@ -164,18 +160,9 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 		wantSizes []int
 		wantError bool
 	}{
-		{"split", "gemini-embedding-001", "batch token limit exceeded", []string{"1", "2", "3", "4", "5"}, []int{5, 2, 3, 1, 2}, false},
-		{"aggregate ceiling", "gemini-embedding-001", "input token count is 23000 but the model supports up to 20000", []string{"1", "2", "3"}, []int{3, 1, 2}, false},
-		{"terminal aggregate ceiling", "gemini-embedding-001", "input token count exceeds the maximum of 20000", []string{"1"}, []int{1}, true},
-		{"larger ceiling", "gemini-embedding-001", "input token count is 230000 but the model supports up to 200000", []string{"1", "2", "3"}, []int{3}, true},
-		{"single too long", "gemini-embedding-001", "input exceeds maximum token length", []string{"1"}, []int{1}, true},
-		{"individual ceiling", "gemini-embedding-001", "input token count is 3000 but the model supports up to 2048", []string{"1", "2", "3"}, []int{3}, true},
-		{"other model individual ceiling", "text-embedding-005", "input token count is 3000 but the model supports up to 2048", []string{"1"}, []int{1}, true},
-		{"single batch limit", "gemini-embedding-001", "batch token limit exceeded", []string{"1"}, []int{1}, true},
-		{"input too long", "gemini-embedding-001", "input exceeds maximum token length", []string{"1", "2", "3"}, []int{3}, true},
+		{"split", "gemini-embedding-001", "input token count is 23000 but the model supports up to 20000", []string{"1", "2", "3", "4", "5"}, []int{5, 2, 3, 1, 2}, false},
+		{"single token limit", "gemini-embedding-001", "input token count is 3000 but the model supports up to 2048", []string{"1"}, []int{1}, true},
 		{"unknown error", "gemini-embedding-001", "invalid request", []string{"1", "2", "3"}, []int{3}, true},
-		{"other model", "text-embedding-005", "input exceeds maximum token length", []string{"1", "2", "3"}, []int{3}, true},
-		{"other model batch limit", "text-embedding-005", "batch token limit exceeded", []string{"1", "2", "3"}, []int{3}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sizes []int
@@ -205,19 +192,10 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 			if tc.wantError {
 				require.Error(t, err)
 				assert.IsType(t, &embedclient.APIError{}, err)
-				if tc.name == "terminal aggregate ceiling" {
+				if tc.name == "single token limit" {
 					var apiErr *embedclient.APIError
 					require.ErrorAs(t, err, &apiErr)
-					assert.Equal(t, embedclient.ReasonUnknown, apiErr.Reason)
-					assert.False(t, apiErr.InputRejected())
-				}
-				if tc.name == "individual ceiling" || tc.name == "other model individual ceiling" {
-					var apiErr *embedclient.APIError
-					require.ErrorAs(t, err, &apiErr)
-					assert.Equal(t, tc.name == "individual ceiling", apiErr.InputRejected())
-					if tc.name == "individual ceiling" {
-						assert.Equal(t, embedclient.ReasonInputTooLong, apiErr.Reason)
-					}
+					assert.True(t, apiErr.InputRejected())
 				}
 			} else {
 				require.NoError(t, err)
@@ -246,7 +224,9 @@ func TestVertexInvalidPredictions(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			t.Cleanup(server.Close)
-			client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}})
+			model := unitModel()
+			model.Name = "gemini-embedding-001"
+			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}})
 			require.NoError(t, err)
 			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, tc.texts)
 			if tc.countError != "" {

@@ -136,24 +136,17 @@ func (e *APIError) Retryable() bool {
 // maxErrorBody bounds how much of a failed response Kit reads to classify it.
 const maxErrorBody = 4096
 
-type requestTokenLimitError struct{ *APIError }
-
-func (e *requestTokenLimitError) Unwrap() error { return e.APIError }
-
 // newAPIError reads up to maxErrorBody bytes of a non-2xx response to
 // classify it. The body is not kept.
-func newAPIError(resp *http.Response, vertexGemini bool) error {
+func newAPIError(resp *http.Response, vertex bool) *APIError {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	err := &APIError{
 		StatusCode: resp.StatusCode,
 		RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
 		Reason:     classifyFailure(resp.StatusCode, body),
 	}
-	if vertexGemini && resp.StatusCode == http.StatusBadRequest && (err.Reason == ReasonUnknown || err.Reason == ReasonInputTooLong) && requestTokenLimit(body) {
-		err.Reason = ReasonUnknown
-		return &requestTokenLimitError{err}
-	}
-	if vertexGemini && resp.StatusCode == http.StatusBadRequest && err.Reason == ReasonUnknown && inputTokenCeiling(body) {
+	_, message := errorDetail(body)
+	if vertex && resp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(message), "token") {
 		err.Reason = ReasonInputTooLong
 	}
 	return err

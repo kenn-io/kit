@@ -6,13 +6,11 @@
 // always return float vectors. InputTypeMode, RequestDimensions, and
 // EncodingFormat do not change a Vertex request.
 //
-// Client.BatchItems reports the largest request the client sends: up to 250
-// inputs for gemini-embedding-001, one for gemini-embedding-2, and at most five
-// for other Vertex models, further capped by Batch.Items.
-// Pass it to vector.WithBatchSize to split inputs into requests, and pass
-// vector.WithBatchConcurrency(n) to bound how many of those
-// requests run at once. The caller chooses n; this package adds no
-// concurrency of its own. A failed request fails the whole Embed call.
+// Vertex sends up to 250 inputs per request for gemini-embedding-001 and one
+// for other models, further capped by Batch.Items. A Vertex 400 that names
+// tokens is an input rejection; a request with more than one input is split
+// in halves when it receives one. Set Batch.Items so a request stays under
+// 20,000 tokens to avoid failed first attempts.
 // GoogleHTTPClient supplies Application Default Credentials; pass it as
 // Options.HTTP.
 //
@@ -20,7 +18,7 @@
 // that client, pins requests to the configured origin, and can attach a bearer
 // token. A multi-input request that times out is split into halves, recursively,
 // while the caller's context remains active. Gemini embedding 001 prediction
-// requests also split on a request-level token limit error. Single-input timeouts and other
+// requests also split on a token rejection. Single-input timeouts and other
 // eligible failures are retried only when the caller sets Options.Retry.
 // A non-2xx response, a short body, or a vector that fails validation fails
 // the whole call.

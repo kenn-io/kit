@@ -4,7 +4,6 @@ import (
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"net/http"
-	"regexp"
 	"strings"
 )
 
@@ -59,8 +58,8 @@ var errorCodeReasons = map[string]Reason{
 // "unsupported content type" is a media-type failure, so a size word must
 // pair with an input word, and "content" must pair with "policy". A message
 // about the model or the requested dimensions is a request the endpoint
-// never accepts. Batch and request limits stay unknown because they do not
-// identify a rejected input.
+// never accepts. A limit on the whole batch or request is not about one
+// input, so it stays unknown.
 func messageReason(message string) Reason {
 	switch {
 	case message == "":
@@ -77,26 +76,6 @@ func messageReason(message string) Reason {
 		return ReasonInputTooLong
 	}
 	return ReasonUnknown
-}
-
-func requestTokenLimit(body []byte) bool {
-	_, message := errorDetail(body)
-	message = strings.ToLower(message)
-	return aggregateTokenCeiling(message) || containsAny(message, "batch", "per request") && strings.Contains(message, "token") &&
-		containsAny(message, "too long", "too large", "too many", "length", "maximum", "max ", "limit", "exceed", "overflow", "less than")
-}
-
-var aggregateCeilingPattern = regexp.MustCompile(`\b(?:up to|maximum(?: of)?|max(?: of)?|limit(?: of)?)\s*[:=]?\s*20,?000\b`)
-var inputCeilingPattern = regexp.MustCompile(`\b(?:up to|maximum(?: of)?|max(?: of)?|limit(?: of)?)\s*[:=]?\s*2,?048\b`)
-
-func aggregateTokenCeiling(message string) bool {
-	return strings.Contains(message, "token") && aggregateCeilingPattern.MatchString(message)
-}
-
-func inputTokenCeiling(body []byte) bool {
-	_, message := errorDetail(body)
-	message = strings.ToLower(message)
-	return strings.Contains(message, "token") && inputCeilingPattern.MatchString(message)
 }
 
 func modelMissing(message string) bool {

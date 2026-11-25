@@ -101,10 +101,9 @@ func New(opts Options) (*Client, error) {
 	endpoint := embeddingsURL(canonical)
 	if deployment.API == embedconfig.APIVertex {
 		method := ":predict"
-		limit := 5
+		limit := 1
 		if strings.HasPrefix(model.Name, "gemini-embedding-2") {
 			method = ":embedContent"
-			limit = 1
 		} else if model.Name == "gemini-embedding-001" {
 			limit = 250
 		}
@@ -141,9 +140,6 @@ func New(opts Options) (*Client, error) {
 		maxResponse:    int64(transport.MaxResponseBytes),
 	}, nil
 }
-
-// BatchItems returns the effective maximum number of inputs per request.
-func (c *Client) BatchItems() int { return c.batchItems }
 
 // Embed encodes inputs in request order. An empty list returns nil.
 // OpenAI-compatible inputs that do not share a role are sent in separate
@@ -201,12 +197,8 @@ func (c *Client) postBatch(ctx context.Context, inputs []encoded) ([][]float32, 
 	vectors, err := retryCall(ctx, c.retry, len(inputs) > 1, func() ([][]float32, error) {
 		return c.post(ctx, inputs)
 	})
-	limitErr, tokenLimit := errors.AsType[*requestTokenLimitError](err)
-	splitVertex := c.api == embedconfig.APIVertex && c.model.Name == "gemini-embedding-001" && tokenLimit
-	if (!splittableTimeout(err) && !splitVertex) || len(inputs) < 2 || ctx.Err() != nil {
-		if tokenLimit {
-			return vectors, limitErr.APIError
-		}
+	apiErr, isAPIError := errors.AsType[*APIError](err)
+	if (!splittableTimeout(err) && !(c.api == embedconfig.APIVertex && isAPIError && apiErr.Reason == ReasonInputTooLong)) || len(inputs) < 2 || ctx.Err() != nil {
 		return vectors, err
 	}
 	middle := len(inputs) / 2

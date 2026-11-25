@@ -85,18 +85,10 @@ func (d Deployment) Prepared() (Deployment, error) {
 	return d, d.Validate()
 }
 
-// Validate checks the provider protocol.
-func (a API) Validate() error {
-	if a != "" && a != APIOpenAI && a != APIVertex {
-		return errors.New("embed API must be openai or vertex")
-	}
-	return nil
-}
-
 // Validate checks the endpoint and resolves its canonical form.
 func (d Deployment) Validate() error {
-	if err := d.API.Validate(); err != nil {
-		return err
+	if d.API != "" && d.API != APIOpenAI && d.API != APIVertex {
+		return errors.New("embed API must be openai or vertex")
 	}
 	if strings.TrimSpace(d.BaseURL) == "" {
 		return errors.New("embed endpoint is required")
