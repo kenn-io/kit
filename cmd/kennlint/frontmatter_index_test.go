@@ -16,6 +16,9 @@ import (
 	gittest "go.kenn.io/kit/git/test"
 )
 
+const indexPageHeader = "---\ntype: Guide\ntitle: A page\ndescription: A useful page.\ngenerated: {by: 'human:test', at: '2026-11-17'}\n---\n\n# Body\n"
+const indexSkillHeader = "---\nname: example\ndescription: Example\nmetadata:\n  type: Skill\n  generated:\n    by: human:test\n    at: '2026-11-17T12:00:00Z'\n---\nBody text.\n"
+
 func TestRefreshIndex(t *testing.T) {
 	const metadata = "---\r\nexample: \"first\r\n" + indexBegin + "\r\nkeep me\r\n" + indexEnd + "\r\nlast\"\r\n---\r\n"
 	tests := []struct {
@@ -71,14 +74,14 @@ func TestManagedIndexFlow(t *testing.T) {
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
 	repo.WriteFile("docs/index.md", "# Index\n"+indexBegin+"\n- [Missing](gone.md) - Gone\n"+indexEnd+"\n[Future](/not-yet-written.md)\n")
-	repo.WriteFile("docs/a.md", goodFrontmatter)
+	repo.WriteFile("docs/a.md", indexPageHeader)
 	repo.WriteFile("docs/log.md", "no header\n")
-	repo.WriteFile("docs/README.md", goodFrontmatter)
-	repo.WriteFile("docs/testdata/hidden.md", goodFrontmatter)
-	repo.WriteFile("docs/skill/SKILL.md", goodFrontmatter)
-	repo.WriteFile("docs/skill/resource.md", goodFrontmatter)
-	repo.WriteFile("docs/old.md", strings.Replace(goodFrontmatter, "title: A page", "status: deprecated\ntitle: Old", 1))
-	repo.WriteFile("docs/untracked.md", goodFrontmatter)
+	repo.WriteFile("docs/README.md", indexPageHeader)
+	repo.WriteFile("docs/testdata/hidden.md", indexPageHeader)
+	repo.WriteFile("docs/skill/SKILL.md", indexPageHeader)
+	repo.WriteFile("docs/skill/resource.md", indexPageHeader)
+	repo.WriteFile("docs/old.md", strings.Replace(indexPageHeader, "title: A page", "status: deprecated\ntitle: Old", 1))
+	repo.WriteFile("docs/untracked.md", indexPageHeader)
 	repo.Run("add", "docs/index.md", "docs/a.md", "docs/log.md", "docs/README.md", "docs/testdata/hidden.md", "docs/skill/SKILL.md", "docs/skill/resource.md", "docs/old.md")
 	read := func() string {
 		b, err := os.ReadFile(filepath.Join(repo.Root, "docs/index.md"))
@@ -107,9 +110,6 @@ func TestManagedIndexFlow(t *testing.T) {
 	}
 	n, diagnostic = run("docs/log.md")
 	assert.Zero(t, n, diagnostic)
-	n, diagnostic = run("-legacy", "docs/log.md")
-	assert.Positive(t, n)
-	assert.Contains(t, diagnostic, "missing opening")
 }
 
 func TestManagedIndexDescriptionRendersAsText(t *testing.T) {
@@ -159,7 +159,7 @@ func TestRootSkillSkipsManagedIndexes(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
-	repo.WriteFile("SKILL.md", skillHeader)
+	repo.WriteFile("SKILL.md", indexSkillHeader)
 	repo.WriteFile("references/example.md", goodOKF)
 	const original = indexBegin + "\nold\n" + indexEnd + "\n"
 	repo.WriteFile("index.md", original)
@@ -339,7 +339,7 @@ func TestIndexReviewBundleBoundaries(t *testing.T) {
 	const protected = "# Imported resource\n" + indexBegin + "\nAuthored skill resource\n" + indexEnd + "\n"
 	external := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(external, "references"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(external, "SKILL.md"), []byte(skillHeader), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(external, "SKILL.md"), []byte(indexSkillHeader), 0o600))
 	target := filepath.Join(external, "references", "index.md")
 	require.NoError(t, os.WriteFile(target, []byte(protected), 0o600))
 	repo.WriteFile("docs/index.md", indexBegin+"\nold\n"+indexEnd+"\n")
@@ -383,7 +383,7 @@ func TestIndexReviewExternalPageAlias(t *testing.T) {
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
 	external := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(external, "SKILL.md"), []byte(skillHeader), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(external, "SKILL.md"), []byte(indexSkillHeader), 0o600))
 	target := filepath.Join(external, "resource.md")
 	require.NoError(t, os.WriteFile(target, []byte(goodOKF), 0o600))
 	repo.WriteFile("docs/index.md", indexBegin+"\nold\n"+indexEnd+"\n")
@@ -420,7 +420,7 @@ func TestIndexReviewAncestorSymlinks(t *testing.T) {
 			targetDir := t.TempDir()
 			switch boundary {
 			case "skill":
-				repo.WriteFile("skills/a/SKILL.md", skillHeader)
+				repo.WriteFile("skills/a/SKILL.md", indexSkillHeader)
 				targetDir = filepath.Join(repo.Root, "skills", "a", "references")
 			case "excluded":
 				targetDir = filepath.Join(repo.Root, "excluded")

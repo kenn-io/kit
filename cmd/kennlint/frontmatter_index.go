@@ -4,15 +4,20 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/yuin/goldmark/v2/ast"
 	"github.com/yuin/goldmark/v2/parser"
 	"github.com/yuin/goldmark/v2/text"
+
+	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/okf"
 )
 
 const (
@@ -105,7 +110,7 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 		if !ok || frontmatterHiddenPath(rel) || base == "index.md" || base == "log.md" || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, excludes) {
 			continue
 		}
-		excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes)
+		excluded, err := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes)
 		if err != nil {
 			return nil, err
 		}
@@ -119,15 +124,15 @@ func indexPages(root, index string, files []string, skillDirs map[string]struct{
 		if err != nil {
 			return nil, err
 		}
-		b, err := parseFrontmatter(src)
+		b, err := okf.Parse(src)
 		if err != nil {
 			return nil, &indexPageError{file, err}
 		}
-		if status := b.fields["status"]; status != nil && !emptyOptional(status) && (!validString(status) || (status.Value != "stable" && status.Value != "draft")) {
+		if status := b.Field("status"); status != nil && status.Tag != "!!null" && (status.Tag != "!!str" || status.Value != "") && (!nonEmptyString(status) || (status.Value != "stable" && status.Value != "draft")) {
 			continue
 		}
-		title, description := b.fields["title"], b.fields["description"]
-		if title == nil || description == nil || !validString(title) || !validString(description) {
+		title, description := b.Field("title"), b.Field("description")
+		if !nonEmptyString(title) || !nonEmptyString(description) {
 			return nil, &indexPageError{file, errors.New("index page requires a valid title and description")}
 		}
 		pages = append(pages, indexPage{rel, title.Value, description.Value})
@@ -142,7 +147,7 @@ func refreshTrackedIndex(root, file string, files []string, skillDirs map[string
 	if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(file))); err != nil {
 		return nil, false, err
 	}
-	if excluded, err := frontmatterExcludedTarget(root, file, skillDirs, excludes); err != nil || excluded {
+	if excluded, err := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes); err != nil || excluded {
 		return nil, false, err
 	}
 	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
@@ -150,11 +155,11 @@ func refreshTrackedIndex(root, file string, files []string, skillDirs map[string
 		return nil, false, err
 	}
 	body := src
-	block, err := parseFrontmatter(src)
+	block, err := okf.Parse(src)
 	switch {
 	case err == nil:
-		body = block.body
-	case !errors.Is(err, errFrontmatterMissing):
+		body = block.Body
+	case !errors.Is(err, okf.ErrNoFrontmatter):
 		return src, false, err
 	}
 	bounds, err := findIndexBlock(body)
@@ -179,4 +184,51 @@ func frontmatterHiddenPath(file string) bool {
 		}
 	}
 	return false
+}
+
+// A selected path can change any managed index above it, including when the
+// selected file was removed. Selecting a directory also selects indexes below it.
+func frontmatterIndexSelected(file string, selected []string) bool {
+	if len(selected) == 0 {
+		return true
+	}
+	dir := path.Dir(file)
+	return slices.ContainsFunc(selected, func(p string) bool {
+		return p == "." || dir == "." || p == dir || strings.HasPrefix(p, dir+"/") || strings.HasPrefix(file, p+"/")
+	})
+}
+
+func frontmatterUpdateIndexes(root string, files, selected []string, skillDirs map[string]struct{}, excludes []string, fix bool, reported map[string]bool, report func(string, []string)) (int, error) {
+	if _, rootSkill := skillDirs["."]; rootSkill {
+		return 0, nil
+	}
+	fixed := 0
+	for _, file := range files {
+		if reported[file] || path.Base(file) != "index.md" || frontmatterHiddenPath(file) || frontmatterInSkillDirectory(file, skillDirs) || !frontmatterSelected(file, nil, excludes) || !frontmatterIndexSelected(file, selected) {
+			continue
+		}
+		updated, stale, err := refreshTrackedIndex(root, file, files, skillDirs, excludes)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			pageErr, ok := errors.AsType[*indexPageError](err)
+			if !ok || !reported[pageErr.file] {
+				report(file, []string{err.Error()})
+			}
+			continue
+		}
+		if !stale {
+			continue
+		}
+		if !fix {
+			report(file, []string{"managed index is stale"})
+			continue
+		}
+		if err := atomicfile.WriteFile(filepath.Join(root, filepath.FromSlash(file)), updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink()); err != nil {
+			return fixed, err
+		}
+		fixed++
+	}
+	return fixed, nil
 }

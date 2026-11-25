@@ -1,10 +1,30 @@
 package embedconfig
 
 import (
+	"errors"
+	"fmt"
 	"net/url"
+	"regexp"
 
 	"go.kenn.io/kit/endpointpolicy"
 )
+
+var vertexName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
+
+// VertexBaseURL constructs the Vertex publisher model endpoint for a location.
+func VertexBaseURL(project, location string) (string, error) {
+	if !vertexName.MatchString(project) || !vertexName.MatchString(location) {
+		return "", errors.New("embed Vertex project and location must be lowercase names")
+	}
+	host := location + "-aiplatform.googleapis.com"
+	switch location {
+	case "global":
+		host = "aiplatform.googleapis.com"
+	case "us", "eu":
+		host = "aiplatform." + location + ".rep.googleapis.com"
+	}
+	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/publishers/google/models", host, project, location), nil
+}
 
 // CanonicalEndpoint returns the identity and request form of raw.
 // The result uses a lowercase scheme and host, drops the default port, and

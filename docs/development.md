@@ -3,7 +3,7 @@ type: Guide
 title: "Developing kit"
 description: Moved to guides/development.md
 status: deprecated
-generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-25T18:35:55Z" }
 ---
 
 This page moved to [guides/development.md](guides/development.md).

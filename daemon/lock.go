@@ -53,7 +53,7 @@ func (s RuntimeStore) AcquireStartLock(ctx context.Context) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	return acquireDaemonLock(ctx, path, "acquire daemon start lock")
+	return acquireDaemonLock(ctx, path, "acquire daemon start lock", s.ValidateFiles)
 }
 
 // TryAcquireStartLock attempts to acquire the same lock as AcquireStartLock
@@ -79,7 +79,7 @@ func (s RuntimeStore) TryAcquireStartLock(ctx context.Context) (release func(), 
 	if err != nil {
 		return nil, false, err
 	}
-	lock, err := getDaemonLock(path, action)
+	lock, err := getDaemonLock(path, action, s.ValidateFiles)
 	if err != nil {
 		return nil, false, err
 	}
@@ -112,18 +112,22 @@ func (s RuntimeStore) AcquireOwnerLock(ctx context.Context) (func(), error) {
 		return nil, err
 	}
 	path := filepath.Join(s.Dir, prefix+".lock.owner")
-	return acquireDaemonLock(ctx, path, "acquire daemon owner lock")
+	return acquireDaemonLock(ctx, path, "acquire daemon owner lock", false)
 }
 
-func getDaemonLock(lockPath, action string) (*daemonLock, error) {
+// getDaemonLock skips directory repair when validated reports that a
+// ValidateFiles store's LockPath already checked or repaired the directory.
+func getDaemonLock(lockPath, action string, validated bool) (*daemonLock, error) {
 	if lockPath == "" {
 		return nil, fmt.Errorf("%s: empty daemon lock path", action)
 	}
 	if !filepath.IsAbs(lockPath) {
 		return nil, fmt.Errorf("%s: daemon lock path %q must be absolute", action, lockPath)
 	}
-	if err := ensurePrivateRuntimeDir(filepath.Dir(lockPath)); err != nil {
-		return nil, fmt.Errorf("prepare daemon lock dir: %w", err)
+	if !validated {
+		if err := ensurePrivateRuntimeDir(filepath.Dir(lockPath)); err != nil {
+			return nil, fmt.Errorf("prepare daemon lock dir: %w", err)
+		}
 	}
 	value, _ := daemonLocks.LoadOrStore(lockPath, &daemonLock{
 		local: semaphore.NewWeighted(1),
@@ -132,8 +136,8 @@ func getDaemonLock(lockPath, action string) (*daemonLock, error) {
 	return value.(*daemonLock), nil
 }
 
-func acquireDaemonLock(ctx context.Context, lockPath, action string) (func(), error) {
-	lock, err := getDaemonLock(lockPath, action)
+func acquireDaemonLock(ctx context.Context, lockPath, action string, validated bool) (func(), error) {
+	lock, err := getDaemonLock(lockPath, action, validated)
 	if err != nil {
 		return nil, err
 	}

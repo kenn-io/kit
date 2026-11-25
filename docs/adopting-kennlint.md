@@ -3,7 +3,7 @@ type: Guide
 title: "Adopting the shared Go lint policy (kennlint)"
 description: Moved to guides/adopting-kennlint.md
 status: deprecated
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:26:52Z" }
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-25T18:35:55Z" }
 ---
 
 This page moved to [guides/adopting-kennlint.md](guides/adopting-kennlint.md).

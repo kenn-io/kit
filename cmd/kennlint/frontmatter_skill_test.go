@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gittest "go.kenn.io/kit/git/test"
+	"go.kenn.io/kit/okf"
 	"gopkg.in/yaml.v3"
 )
 
@@ -39,9 +40,9 @@ func TestSkillProfileShapes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte(tc.src))
+			b, err := okf.Parse([]byte(tc.src))
 			require.NoError(t, err)
-			problems := b.skillProblems()
+			problems := skillProblems(b)
 			if tc.want == "" {
 				assert.Empty(t, problems)
 			} else {
@@ -49,14 +50,14 @@ func TestSkillProfileShapes(t *testing.T) {
 			}
 		})
 	}
-	b, err := parseFrontmatter([]byte(skillHeader))
+	b, err := okf.Parse([]byte(skillHeader))
 	require.NoError(t, err)
 	assertSkillNodeKinds(t, b, false)
 }
 
-func assertSkillNodeKinds(t *testing.T, b *frontmatterBlock, flow bool) {
+func assertSkillNodeKinds(t *testing.T, b *okf.Document, flow bool) {
 	t.Helper()
-	m := b.fields["metadata"]
+	m := b.Field("metadata")
 	require.NotNil(t, m)
 	require.Equal(t, yaml.MappingNode, m.Kind)
 	assert.Zero(t, m.Style&yaml.FlowStyle)
@@ -112,9 +113,9 @@ func TestSkillSelectionAndFix(t *testing.T) {
 	assert.Contains(t, string(data), "# comment")
 	assert.NotContains(t, string(data), "title:")
 	assert.True(t, bytes.HasSuffix(data, []byte("Body\n")))
-	written, err := parseFrontmatter(data)
+	written, err := okf.Parse(data)
 	require.NoError(t, err)
-	assert.Empty(t, written.skillProblems())
+	assert.Empty(t, skillProblems(written))
 	assertSkillNodeKinds(t, written, true)
 	_, err = runFrontmatter(t.Context(), fix, &out, &errs)
 	require.NoError(t, err)
@@ -141,7 +142,6 @@ func TestSkillSelectionAndFix(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "no header\n", string(data))
 	for _, bad := range [][]string{
-		{"-managed-skill", "x", "-legacy"},
 		{"-managed-skill", "skills/**/SKILL.md", "-managed-skill", "typo/**/SKILL.md"},
 		{"-managed-skill", "skills/a/vendor/b/SKILL.md"},
 		{"-managed-skill", "skills/a/SKILL.md", "-exclude", "skills/a/SKILL.md"},
@@ -252,10 +252,10 @@ func TestSkillFixFlowAndSymlinkedSkills(t *testing.T) {
 	require.ErrorContains(t, err, "skills/link/SKILL.md")
 	data, err := os.ReadFile("skills/a/SKILL.md")
 	require.NoError(t, err)
-	b, err := parseFrontmatter(data)
+	b, err := okf.Parse(data)
 	require.NoError(t, err)
-	assert.Empty(t, b.skillProblems())
-	assert.Equal(t, "a", b.fields["name"].Value)
+	assert.Empty(t, skillProblems(b))
+	assert.Equal(t, "a", b.Field("name").Value)
 }
 
 func TestRootSkillBundleAndManagedSkills(t *testing.T) {
@@ -277,9 +277,9 @@ func TestRootSkillBundleAndManagedSkills(t *testing.T) {
 	for _, name := range []string{"SKILL.md"} {
 		data, err := os.ReadFile(name)
 		require.NoError(t, err)
-		b, err := parseFrontmatter(data)
+		b, err := okf.Parse(data)
 		require.NoError(t, err)
-		assert.Empty(t, b.skillProblems(), name)
+		assert.Empty(t, skillProblems(b), name)
 	}
 	for name, want := range map[string]string{"references/example.md": resource, "skills/managed/vendor/SKILL.md": missing, "skills/managed/SKILL.md": missing} {
 		data, err := os.ReadFile(name)
@@ -289,11 +289,11 @@ func TestRootSkillBundleAndManagedSkills(t *testing.T) {
 }
 
 func TestSkillFixFillsEmptyGeneratedMapping(t *testing.T) {
-	b, err := parseFrontmatter([]byte("---\nmetadata:\n  type: Skill\n  generated: {}\n---\nBody\n"))
+	b, err := okf.Parse([]byte("---\nmetadata:\n  type: Skill\n  generated: {}\n---\nBody\n"))
 	require.NoError(t, err)
-	changed, _ := b.fixSkill("codex")
+	changed, _ := fixSkill(b, "codex")
 	require.True(t, changed)
-	assert.Empty(t, b.skillProblems())
+	assert.Empty(t, skillProblems(b))
 	assertSkillNodeKinds(t, b, true)
 }
 
@@ -307,9 +307,9 @@ func TestSkillFixRefusesIncompleteProfile(t *testing.T) {
 		{"invalid status", "metadata:\n  type: Skill\n  status: [retired]\n", "human:test", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			b, err := parseFrontmatter([]byte("---\n" + tc.header + "---\nBody\n"))
+			b, err := okf.Parse([]byte("---\n" + tc.header + "---\nBody\n"))
 			require.NoError(t, err)
-			changed, notes := b.fixSkill(tc.by)
+			changed, notes := fixSkill(b, tc.by)
 			assert.False(t, changed)
 			if tc.note != "" {
 				assert.Contains(t, fmt.Sprint(notes), tc.note)
@@ -378,32 +378,32 @@ func TestFrontmatterDocumentSymlinkSkillExclusions(t *testing.T) {
 
 func TestSkillV03TimestampsAndExtensions(t *testing.T) {
 	for _, timestamp := range []string{"2026-11-17", "2026-11-17T13:00:00+01:00"} {
-		b, err := parseFrontmatter([]byte(strings.ReplaceAll(skillHeader, "2026-11-17T12:00:00Z", timestamp)))
+		b, err := okf.Parse([]byte(strings.ReplaceAll(skillHeader, "2026-11-17T12:00:00Z", timestamp)))
 		require.NoError(t, err)
-		assert.Empty(t, b.skillProblems())
+		assert.Empty(t, skillProblems(b))
 	}
 	src := "---\nname: example\ndescription: Useful\nx-root: {nested: [one, true, 2]}\nmetadata:\n  x-sync: {targets: [one, two]}\n  generated:\n    x-audit: [original, true]\n---\n# Skill\n"
-	b, err := parseFrontmatter([]byte(src))
+	b, err := okf.Parse([]byte(src))
 	require.NoError(t, err)
 	var before map[string]any
-	require.NoError(t, b.doc.Decode(&before))
-	changed, _ := b.fixSkill("human:test")
+	require.NoError(t, b.Metadata.Decode(&before))
+	changed, _ := fixSkill(b, "human:test")
 	require.True(t, changed)
-	data, _, err := b.encode()
+	data, err := b.Marshal()
 	require.NoError(t, err)
-	after, err := parseFrontmatter(data)
+	after, err := okf.Parse(data)
 	require.NoError(t, err)
 	var values map[string]any
-	require.NoError(t, after.doc.Decode(&values))
+	require.NoError(t, after.Metadata.Decode(&values))
 	assert.Equal(t, before["x-root"], values["x-root"])
 	m := before["metadata"].(map[string]any)
 	v := values["metadata"].(map[string]any)
 	assert.Equal(t, m["x-sync"], v["x-sync"])
 	assert.Equal(t, m["generated"].(map[string]any)["x-audit"], v["generated"].(map[string]any)["x-audit"])
-	assert.Empty(t, after.skillProblems())
+	assert.Empty(t, skillProblems(after))
 }
 
-func TestSkillReviewLiveRootAndLegacy(t *testing.T) {
+func TestSkillReviewLiveRoot(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
@@ -411,13 +411,9 @@ func TestSkillReviewLiveRootAndLegacy(t *testing.T) {
 	repo.WriteFile("docs/page.md", "# No metadata\n")
 	repo.Run("add", ".")
 	var out, errs bytes.Buffer
-	n, err := runLegacyFrontmatter(t.Context(), nil, &out, &errs)
-	require.NoError(t, err)
-	assert.Equal(t, 1, n, "legacy still validates documents beside a root skill")
-	assert.Contains(t, errs.String(), "docs/page.md")
 	require.NoError(t, os.Remove("SKILL.md"))
 	errs.Reset()
-	n, err = runFrontmatter(t.Context(), nil, &out, &errs)
+	n, err := runFrontmatter(t.Context(), nil, &out, &errs)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "a deleted skill cannot suppress documentation checks")
 	assert.Contains(t, errs.String(), "docs/page.md")
@@ -425,25 +421,25 @@ func TestSkillReviewLiveRootAndLegacy(t *testing.T) {
 
 func TestSkillReviewNativeTimestamps(t *testing.T) {
 	for _, timestamp := range []string{"2026-11-17", "2026-11-17T12:00:00Z", "2026-11-17T13:00:00+01:00"} {
-		b, err := parseFrontmatter([]byte(strings.ReplaceAll(strings.ReplaceAll(skillHeader, "2026-11-17T12:00:00Z", timestamp), "\"", "")))
+		b, err := okf.Parse([]byte(strings.ReplaceAll(strings.ReplaceAll(skillHeader, "2026-11-17T12:00:00Z", timestamp), "\"", "")))
 		require.NoError(t, err)
-		assert.Empty(t, b.skillProblems())
+		assert.Empty(t, skillProblems(b))
 	}
 }
 
 func TestSkillReviewAliasFixIsolation(t *testing.T) {
 	src := "---\nname: example\ndescription: Example\nx-defaults: &defaults\n  x-sync: [one, two]\nmetadata: *defaults\n---\n# Skill\n"
-	b, err := parseFrontmatter([]byte(src))
+	b, err := okf.Parse([]byte(src))
 	require.NoError(t, err)
-	changed, _ := b.fixSkill("human:test")
+	changed, _ := fixSkill(b, "human:test")
 	require.True(t, changed)
-	data, _, err := b.encode()
+	data, err := b.Marshal()
 	require.NoError(t, err)
-	after, err := parseFrontmatter(data)
+	after, err := okf.Parse(data)
 	require.NoError(t, err)
-	assert.Nil(t, mappingField(after.fields["x-defaults"], "type"))
-	assert.Nil(t, mappingField(after.fields["x-defaults"], "generated"))
-	assert.Empty(t, after.skillProblems())
+	assert.Nil(t, mappingField(after.Field("x-defaults"), "type"))
+	assert.Nil(t, mappingField(after.Field("x-defaults"), "generated"))
+	assert.Empty(t, skillProblems(after))
 }
 
 func TestSkillReviewExternalResourceSymlink(t *testing.T) {
@@ -503,23 +499,23 @@ func TestSkillReviewAnchoredSnapshots(t *testing.T) {
 		"metadata: &original {x-sync: [one, true]}\nx-snapshot: *original\n",
 		"metadata:\n  type: Skill\n  generated: &original {x-audit: [one, true]}\n  x-snapshot: *original\n",
 	} {
-		b, err := parseFrontmatter([]byte("---\nname: example\ndescription: Example\n" + header + "---\nBody\n"))
+		b, err := okf.Parse([]byte("---\nname: example\ndescription: Example\n" + header + "---\nBody\n"))
 		require.NoError(t, err)
 		var before map[string]any
-		require.NoError(t, b.doc.Decode(&before))
-		changed, _ := b.fixSkill("human:test")
+		require.NoError(t, b.Metadata.Decode(&before))
+		changed, _ := fixSkill(b, "human:test")
 		require.True(t, changed)
-		data, _, err := b.encode()
+		data, err := b.Marshal()
 		require.NoError(t, err)
-		after, err := parseFrontmatter(data)
+		after, err := okf.Parse(data)
 		require.NoError(t, err)
 		var values map[string]any
-		require.NoError(t, after.doc.Decode(&values))
+		require.NoError(t, after.Metadata.Decode(&values))
 		assert.Equal(t, before["x-snapshot"], values["x-snapshot"])
 		if metadata := before["metadata"].(map[string]any); metadata["x-snapshot"] != nil {
 			assert.Equal(t, metadata["x-snapshot"], values["metadata"].(map[string]any)["x-snapshot"])
 		}
-		assert.Empty(t, after.skillProblems())
+		assert.Empty(t, skillProblems(after))
 	}
 }
 

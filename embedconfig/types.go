@@ -106,10 +106,19 @@ type Roles struct {
 // into the vector identity. TrustPrivateNetwork is an operational permission
 // for plaintext HTTP on a private address. It is not part of either identity.
 type Deployment struct {
+	API                 API
 	BaseURL             string
 	PinEndpoint         bool
 	TrustPrivateNetwork bool
 }
+
+// API selects the embedding provider wire protocol.
+type API string
+
+const (
+	APIOpenAI API = "openai"
+	APIVertex API = "vertex"
+)
 
 // Batch limits one provider request. Items is a count. MaxTokens is an
 // aggregate input-token cap, and InputTokenUpperBound is the caller's

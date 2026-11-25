@@ -3,7 +3,7 @@ type: Guide
 title: "Shared CLI design guidance"
 description: Moved to guides/cli-design.md
 status: deprecated
-generated: { by: codex, at: "2026-11-21T19:55:12Z" }
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-25T18:35:55Z" }
 ---
 
 This page moved to [guides/cli-design.md](guides/cli-design.md).

@@ -64,6 +64,16 @@ func ValidateCurrentUserFile(file *os.File) error {
 // has a protected DACL granting access only to the current user and Windows
 // administrative principals.
 func ValidatePrivateCurrentUserFile(file *os.File) error {
+	return validateWindowsFileDACL(file, true)
+}
+
+// ValidateTrustedFile verifies the open file's owner and DACL without changing it.
+// Unlike private-file validation, it accepts inherited DACLs.
+func ValidateTrustedFile(file *os.File) error {
+	return validateWindowsFileDACL(file, false)
+}
+
+func validateWindowsFileDACL(file *os.File, requireProtected bool) error {
 	handle, err := reopenWindowsFileForDACL(file)
 	if err != nil {
 		return err
@@ -77,7 +87,7 @@ func ValidatePrivateCurrentUserFile(file *os.File) error {
 	if err != nil {
 		return err
 	}
-	return verifyWindowsFileDACL(file.Name(), handle, userSID, ownerSID)
+	return verifyWindowsDACL(file.Name(), handle, userSID, ownerSID, requireProtected)
 }
 
 func reopenWindowsFileForDACL(file *os.File) (windows.Handle, error) {

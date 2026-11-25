@@ -3,7 +3,7 @@ type: Explanation
 title: "Streaming pack I/O"
 description: Moved to ../explanation/streaming-pack-io.md
 status: deprecated
-generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:51:22Z" }
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-25T18:35:55Z" }
 ---
 
 This page moved to [../explanation/streaming-pack-io.md](../explanation/streaming-pack-io.md).
