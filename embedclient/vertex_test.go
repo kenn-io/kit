@@ -155,6 +155,59 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 	}
 }
 
+func TestVertexTokenLimitSplit(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		model     string
+		message   string
+		texts     []string
+		wantSizes []int
+		wantError bool
+	}{
+		{"split", "gemini-embedding-001", "input exceeds maximum token length", []string{"1", "2", "3", "4", "5"}, []int{5, 2, 3, 1, 2}, false},
+		{"single too long", "gemini-embedding-001", "input exceeds maximum token length", []string{"1"}, []int{1}, true},
+		{"unknown error", "gemini-embedding-001", "invalid request", []string{"1", "2", "3"}, []int{3}, true},
+		{"other model", "text-embedding-005", "input exceeds maximum token length", []string{"1", "2", "3"}, []int{3}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sizes []int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				instances := readBody(t, r)["instances"].([]any)
+				sizes = append(sizes, len(instances))
+				if len(instances) > 2 || tc.wantError {
+					w.WriteHeader(http.StatusBadRequest)
+					writeJSON(t, w, map[string]any{"error": map[string]any{"message": tc.message}})
+					return
+				}
+				predictions := make([]any, len(instances))
+				for i, instance := range instances {
+					value, err := strconv.Atoi(instance.(map[string]any)["content"].(string))
+					assert.NoError(t, err)
+					predictions[i] = map[string]any{"embeddings": map[string]any{"values": []float64{float64(value), 1}}}
+				}
+				writeJSON(t, w, map[string]any{"predictions": predictions})
+			}))
+			t.Cleanup(server.Close)
+			model := unitModel()
+			model.Name = tc.model
+			model.Normalization = embedconfig.NormalizationNone
+			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
+			require.NoError(t, err)
+			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, tc.texts)
+			if tc.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, vectors, len(tc.texts))
+				for i, vector := range vectors {
+					assert.Equal(t, []float32{float32(i + 1), 1}, vector)
+				}
+			}
+			assert.Equal(t, tc.wantSizes, sizes)
+		})
+	}
+}
+
 func TestVertexInvalidPredictions(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
