@@ -166,12 +166,7 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 		for end < len(prepared) && (c.api == embedconfig.APIVertex || prepared[end].role == prepared[start].role) && end-start < c.batchItems {
 			end++
 		}
-		texts := make([]string, end-start)
-		for i := start; i < end; i++ {
-			texts[i-start] = prepared[i].text
-		}
-		role := prepared[start].role
-		vectors, err := c.postBatch(ctx, role, texts)
+		vectors, err := c.postBatch(ctx, prepared[start:end])
 		if err != nil {
 			first := start
 			return nil, remapVectorIndex(err, func(i int) int { return prepared[first+i].index })
@@ -202,19 +197,19 @@ func splittableTimeout(err error) bool {
 	return ok && transport.Timeout()
 }
 
-func (c *Client) postBatch(ctx context.Context, role embedconfig.Role, texts []string) ([][]float32, error) {
-	vectors, err := retryCall(ctx, c.retry, len(texts) > 1, func() ([][]float32, error) {
-		return c.post(ctx, role, texts)
+func (c *Client) postBatch(ctx context.Context, inputs []encoded) ([][]float32, error) {
+	vectors, err := retryCall(ctx, c.retry, len(inputs) > 1, func() ([][]float32, error) {
+		return c.post(ctx, inputs)
 	})
-	if !splittableTimeout(err) || len(texts) < 2 || ctx.Err() != nil {
+	if !splittableTimeout(err) || len(inputs) < 2 || ctx.Err() != nil {
 		return vectors, err
 	}
-	middle := len(texts) / 2
-	left, err := c.postBatch(ctx, role, texts[:middle])
+	middle := len(inputs) / 2
+	left, err := c.postBatch(ctx, inputs[:middle])
 	if err != nil {
 		return nil, err
 	}
-	right, err := c.postBatch(ctx, role, texts[middle:])
+	right, err := c.postBatch(ctx, inputs[middle:])
 	if err != nil {
 		return nil, remapVectorIndex(err, func(i int) int { return middle + i })
 	}
@@ -287,13 +282,17 @@ func (c *Client) prepare(inputs []embedmodel.Content, format bool) ([]encoded, e
 	return out, nil
 }
 
-func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string) ([][]float32, error) {
+func (c *Client) post(ctx context.Context, inputs []encoded) ([][]float32, error) {
+	texts := make([]string, len(inputs))
+	for i, input := range inputs {
+		texts[i] = input.text
+	}
 	var body []byte
 	var err error
 	if c.api == embedconfig.APIVertex {
-		body, err = c.vertexRequestBody(texts)
+		body, err = c.vertexRequestBody(inputs)
 	} else {
-		body, err = c.requestBody(role, texts)
+		body, err = c.requestBody(inputs[0].role, texts)
 	}
 	if err != nil {
 		return nil, err

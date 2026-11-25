@@ -1,8 +1,8 @@
 // Package embedclient calls OpenAI-compatible and Vertex text embedding endpoints.
 //
-// Vertex predict requests use task type RETRIEVAL_DOCUMENT for document and
-// query roles. Gemini embedding 2 uses embedContent and callers can put its
-// task instructions in role prefixes. Both request Model.Dimensions and
+// Vertex predict requests use task type RETRIEVAL_DOCUMENT for document roles
+// and RETRIEVAL_QUERY for query roles. Gemini embedding 2 uses embedContent;
+// callers can put its task instructions in role prefixes. Both request Model.Dimensions and
 // always return float vectors. InputTypeMode, RequestDimensions, and
 // EncodingFormat do not change a Vertex request.
 //

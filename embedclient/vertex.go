@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	json "encoding/json/v2"
+
+	"go.kenn.io/kit/embedconfig"
 )
 
 type vertexInstance struct {
@@ -13,10 +15,10 @@ type vertexInstance struct {
 	TaskType string `json:"task_type"`
 }
 
-func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
+func (c *Client) vertexRequestBody(inputs []encoded) ([]byte, error) {
 	if strings.HasPrefix(c.model.Name, "gemini-embedding-2") {
 		body, err := json.Marshal(map[string]any{
-			"content":            map[string]any{"parts": []any{map[string]any{"text": texts[0]}}},
+			"content":            map[string]any{"parts": []any{map[string]any{"text": inputs[0].text}}},
 			"embedContentConfig": map[string]any{"outputDimensionality": c.model.Dimensions},
 		})
 		if err != nil {
@@ -24,9 +26,13 @@ func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
 		}
 		return body, nil
 	}
-	instances := make([]vertexInstance, len(texts))
-	for i, text := range texts {
-		instances[i] = vertexInstance{Content: text, TaskType: "RETRIEVAL_DOCUMENT"}
+	instances := make([]vertexInstance, len(inputs))
+	for i, input := range inputs {
+		taskType := "RETRIEVAL_DOCUMENT"
+		if input.role == embedconfig.RoleQuery {
+			taskType = "RETRIEVAL_QUERY"
+		}
+		instances[i] = vertexInstance{Content: input.text, TaskType: taskType}
 	}
 	var request struct {
 		Instances  []vertexInstance `json:"instances"`

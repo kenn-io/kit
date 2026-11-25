@@ -21,11 +21,11 @@ func TestVertexPredict(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		assert.Equal(t, "/models/text-embedding-005:predict", r.URL.Path)
+		assert.Equal(t, "/models/gemini-embedding-001:predict", r.URL.Path)
 		assert.Equal(t, map[string]any{
 			"instances": []any{
 				map[string]any{"content": "doc: alpha!", "task_type": "RETRIEVAL_DOCUMENT"},
-				map[string]any{"content": "query: beta?", "task_type": "RETRIEVAL_DOCUMENT"},
+				map[string]any{"content": "query: beta?", "task_type": "RETRIEVAL_QUERY"},
 			},
 			"parameters": map[string]any{"outputDimensionality": float64(2), "autoTruncate": false},
 		}, readBody(t, r))
@@ -36,7 +36,7 @@ func TestVertexPredict(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	model := unitModel()
-	model.Name = "text-embedding-005"
+	model.Name = "gemini-embedding-001"
 	model.Normalization = embedconfig.NormalizationL2
 	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/models", API: embedconfig.APIVertex}, Roles: embedconfig.Roles{DocumentPrefix: "doc: ", DocumentSuffix: "!", QueryPrefix: "query: ", QuerySuffix: "?"}})
 	require.NoError(t, err)
