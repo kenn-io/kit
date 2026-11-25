@@ -45,7 +45,7 @@ lint-config-check:
 
 .PHONY: test-embedclient-vertex
 test-embedclient-vertex:
-	go test ./embedclient -run '^(TestVertexBatchItemsAndRequests|TestVertexEmbedContent|TestVertexPredict|TestVertexTokenLimitSplit)$$'
+	go test ./embedclient -run '^(TestVertexBatchItemsAndRequests|TestVertexEmbedContent|TestVertexPredict|TestVertexTokenLimitSplit|TestEmbedClassifiesFailedResponses)$$'
 
 .PHONY: test-embedserver
 # Set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY to include native parity.

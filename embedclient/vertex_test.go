@@ -164,7 +164,7 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 		wantSizes []int
 		wantError bool
 	}{
-		{"split", "gemini-embedding-001", "input exceeds maximum token length", []string{"1", "2", "3", "4", "5"}, []int{5, 2, 3, 1, 2}, false},
+		{"split", "gemini-embedding-001", "batch token limit exceeded", []string{"1", "2", "3", "4", "5"}, []int{5, 2, 3, 1, 2}, false},
 		{"single too long", "gemini-embedding-001", "input exceeds maximum token length", []string{"1"}, []int{1}, true},
 		{"unknown error", "gemini-embedding-001", "invalid request", []string{"1", "2", "3"}, []int{3}, true},
 		{"other model", "text-embedding-005", "input exceeds maximum token length", []string{"1", "2", "3"}, []int{3}, true},
