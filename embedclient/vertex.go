@@ -6,22 +6,11 @@ import (
 	"strings"
 
 	json "encoding/json/v2"
-
-	"go.kenn.io/kit/embedconfig"
 )
 
 type vertexInstance struct {
 	Content  string `json:"content"`
 	TaskType string `json:"task_type"`
-}
-
-type vertexPrediction struct {
-	Embeddings struct {
-		Values     wireEmbedding `json:"values"`
-		Statistics struct {
-			Truncated bool `json:"truncated"`
-		} `json:"statistics"`
-	} `json:"embeddings"`
 }
 
 func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
@@ -37,7 +26,7 @@ func (c *Client) vertexRequestBody(texts []string) ([]byte, error) {
 	}
 	instances := make([]vertexInstance, len(texts))
 	for i, text := range texts {
-		instances[i] = vertexInstance{Content: text, TaskType: embedconfig.VertexTaskType}
+		instances[i] = vertexInstance{Content: text, TaskType: "RETRIEVAL_DOCUMENT"}
 	}
 	var request struct {
 		Instances  []vertexInstance `json:"instances"`
@@ -73,7 +62,11 @@ func (c *Client) classifyVertex(payload []byte, count int) ([][]float32, []error
 		return out, problems, nil
 	}
 	var response struct {
-		Predictions []vertexPrediction `json:"predictions"`
+		Predictions []struct {
+			Embeddings struct {
+				Values wireEmbedding `json:"values"`
+			} `json:"embeddings"`
+		} `json:"predictions"`
 	}
 	if err := json.Unmarshal(payload, &response); err != nil {
 		return nil, nil, errors.New("embed response is invalid")
@@ -84,9 +77,6 @@ func (c *Client) classifyVertex(payload []byte, count int) ([][]float32, []error
 	raw := make([]wireEmbedding, count)
 	for i, item := range response.Predictions {
 		raw[i] = item.Embeddings.Values
-		if item.Embeddings.Statistics.Truncated {
-			raw[i].err = errors.New("input was truncated")
-		}
 	}
 	out, problems := c.decodeVectors(raw)
 	return out, problems, nil

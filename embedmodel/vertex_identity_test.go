@@ -8,13 +8,20 @@ import (
 	"go.kenn.io/kit/embedconfig"
 )
 
-func TestVertexTaskTypeIsPartOfVectorSpace(t *testing.T) {
+func TestVertexIdentity(t *testing.T) {
 	model := embedconfig.Model{Name: "model", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationL2}
-	fields, err := vectorFields(model, embedconfig.Roles{}, embedconfig.Deployment{API: embedconfig.APIVertex})
+	deployment := embedconfig.Deployment{API: embedconfig.APIVertex}
+	vertex, err := vectorFields(model, embedconfig.Roles{}, deployment)
 	require.NoError(t, err)
-	assert.Equal(t, "RETRIEVAL_DOCUMENT", fields["vertex_task_type"])
-	model.Name = "gemini-embedding-2"
-	fields, err = vectorFields(model, embedconfig.Roles{}, embedconfig.Deployment{API: embedconfig.APIVertex})
+	openAI, err := vectorFields(model, embedconfig.Roles{}, embedconfig.Deployment{})
 	require.NoError(t, err)
-	assert.NotContains(t, fields, "vertex_task_type")
+	assert.NotEqual(t, openAI, vertex)
+
+	model.RequestDimensions = true
+	requested, err := vectorFields(model, embedconfig.Roles{}, deployment)
+	require.NoError(t, err)
+	assert.Equal(t, vertex, requested)
+	retrieval, err := vectorFields(model, embedconfig.Roles{InputType: embedconfig.InputTypeRetrieval}, deployment)
+	require.NoError(t, err)
+	assert.Equal(t, vertex, retrieval)
 }

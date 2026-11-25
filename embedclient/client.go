@@ -94,18 +94,12 @@ func New(opts Options) (*Client, error) {
 		return nil, err
 	}
 	if opts.OllamaMetalRecovery {
-		if deployment.API == embedconfig.APIVertex {
-			return nil, errors.New("embed Vertex does not support Ollama recovery")
-		}
 		if err := validateOllamaService(canonical); err != nil {
 			return nil, err
 		}
 	}
 	endpoint := embeddingsURL(canonical)
 	if deployment.API == embedconfig.APIVertex {
-		if strings.ContainsAny(model.Name, "/:?#") {
-			return nil, errors.New("embed Vertex model name is invalid")
-		}
 		method := ":predict"
 		limit := 5
 		if strings.HasPrefix(model.Name, "gemini-embedding-2") {

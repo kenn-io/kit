@@ -68,9 +68,6 @@ func vectorFields(m embedconfig.Model, r embedconfig.Roles, d embedconfig.Deploy
 	}
 	if d.API == embedconfig.APIVertex {
 		fields["api"] = string(d.API)
-		if !strings.HasPrefix(m.Name, "gemini-embedding-2") {
-			fields["vertex_task_type"] = embedconfig.VertexTaskType
-		}
 	} else {
 		fields["input_type"] = string(r.InputType)
 	}
