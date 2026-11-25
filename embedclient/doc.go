@@ -8,8 +8,9 @@
 //
 // Client.BatchItems reports the largest request the client sends: up to 250
 // inputs for gemini-embedding-001, one for gemini-embedding-2, and at most five
-// for other Vertex models, further capped by Batch.Items. Pass it to vector.WithBatchSize to split inputs into
-// requests, and pass vector.WithBatchConcurrency(n) to bound how many of those
+// for other Vertex models, further capped by Batch.Items.
+// Pass it to vector.WithBatchSize to split inputs into requests, and pass
+// vector.WithBatchConcurrency(n) to bound how many of those
 // requests run at once. The caller chooses n; this package adds no
 // concurrency of its own. A failed request fails the whole Embed call.
 // GoogleHTTPClient supplies Application Default Credentials; pass it as
