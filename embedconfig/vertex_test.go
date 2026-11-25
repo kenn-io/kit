@@ -28,3 +28,14 @@ func TestVertexBaseURL(t *testing.T) {
 		require.Error(t, err)
 	}
 }
+
+func TestVertexDeploymentURL(t *testing.T) {
+	for _, base := range []string{"https://example.com", "https://example.com/v1/projects/p/locations/r", "https://example.com/publishers/google/models/model"} {
+		err := (embedconfig.Deployment{API: embedconfig.APIVertex, BaseURL: base}).Validate()
+		require.ErrorContains(t, err, "VertexBaseURL")
+	}
+	for _, base := range []string{"https://example.com/v1/projects/p/locations/r/publishers/google/models", "https://example.com/publishers/google/models/"} {
+		require.NoError(t, (embedconfig.Deployment{API: embedconfig.APIVertex, BaseURL: base}).Validate())
+	}
+	require.NoError(t, (embedconfig.Deployment{BaseURL: "https://example.com/v1"}).Validate())
+}

@@ -101,8 +101,14 @@ func (d Deployment) Validate() error {
 	if strings.TrimSpace(d.BaseURL) == "" {
 		return errors.New("embed endpoint is required")
 	}
-	_, err := d.Canonical()
-	return err
+	canonical, err := d.Canonical()
+	if err != nil {
+		return err
+	}
+	if d.API == APIVertex && !strings.HasSuffix(canonical, "/publishers/google/models") {
+		return errors.New("embed Vertex endpoint must end in /publishers/google/models; use VertexBaseURL")
+	}
+	return nil
 }
 
 // Canonical returns the pinned form of the endpoint.

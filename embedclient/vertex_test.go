@@ -21,7 +21,7 @@ func TestVertexPredict(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		assert.Equal(t, "/models/gemini-embedding-001:predict", r.URL.Path)
+		assert.Equal(t, "/publishers/google/models/gemini-embedding-001:predict", r.URL.Path)
 		assert.Equal(t, map[string]any{
 			"instances": []any{
 				map[string]any{"content": "doc: alpha!", "task_type": "RETRIEVAL_DOCUMENT"},
@@ -38,7 +38,7 @@ func TestVertexPredict(t *testing.T) {
 	model := unitModel()
 	model.Name = "gemini-embedding-001"
 	model.Normalization = embedconfig.NormalizationL2
-	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/models", API: embedconfig.APIVertex}, Roles: embedconfig.Roles{DocumentPrefix: "doc: ", DocumentSuffix: "!", QueryPrefix: "query: ", QuerySuffix: "?"}})
+	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}, Roles: embedconfig.Roles{DocumentPrefix: "doc: ", DocumentSuffix: "!", QueryPrefix: "query: ", QuerySuffix: "?"}})
 	require.NoError(t, err)
 	vectors, err := client.Embed(t.Context(), []embedmodel.Content{{Role: embedconfig.RoleDocument, Text: "alpha"}, {Role: embedconfig.RoleQuery, Text: "beta"}})
 	require.NoError(t, err)
@@ -54,14 +54,14 @@ func TestVertexEmbedContent(t *testing.T) {
 			var calls int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
-				assert.Equal(t, "/models/gemini-embedding-2-preview:embedContent", r.URL.Path)
+				assert.Equal(t, "/publishers/google/models/gemini-embedding-2-preview:embedContent", r.URL.Path)
 				assert.Equal(t, map[string]any{"content": map[string]any{"parts": []any{map[string]any{"text": "query: text"}}}, "embedContentConfig": map[string]any{"outputDimensionality": float64(2)}}, readBody(t, r))
 				writeJSON(t, w, map[string]any{"embedding": map[string]any{"values": []float64{1, 0}}, "truncated": truncated})
 			}))
 			t.Cleanup(server.Close)
 			model := unitModel()
 			model.Name = "gemini-embedding-2-preview"
-			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/models", API: embedconfig.APIVertex}, Roles: embedconfig.Roles{QueryPrefix: "query: "}, Batch: embedconfig.Batch{Items: 300}})
+			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}, Roles: embedconfig.Roles{QueryPrefix: "query: "}, Batch: embedconfig.Batch{Items: 300}})
 			require.NoError(t, err)
 			assert.Equal(t, 1, client.BatchItems())
 			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"text", "text"})
@@ -96,7 +96,7 @@ func TestGoogleHTTPClientOverridesAPIKey(t *testing.T) {
 	t.Cleanup(server.Close)
 	httpClient, err := embedclient.GoogleHTTPClient()
 	require.NoError(t, err)
-	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}, HTTP: httpClient, APIKey: "different-key"})
+	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}, HTTP: httpClient, APIKey: "different-key"})
 	require.NoError(t, err)
 	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"a"})
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 			model := unitModel()
 			model.Name = tc.model
 			model.Normalization = embedconfig.NormalizationNone
-			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}, Batch: embedconfig.Batch{Items: tc.items}})
+			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}, Batch: embedconfig.Batch{Items: tc.items}})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, client.BatchItems())
 			texts := make([]string, tc.texts)
@@ -197,7 +197,7 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 			model := unitModel()
 			model.Name = tc.model
 			model.Normalization = embedconfig.NormalizationNone
-			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
+			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}})
 			require.NoError(t, err)
 			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, tc.texts)
 			if tc.wantError {
@@ -236,7 +236,7 @@ func TestVertexInvalidPredictions(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			t.Cleanup(server.Close)
-			client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}})
+			client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}})
 			require.NoError(t, err)
 			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, tc.texts)
 			if tc.countError != "" {
@@ -268,7 +268,7 @@ func TestVertexUsesTransportTimeout(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			httpClient := &http.Client{Timeout: tc.httpTimeout}
-			client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}, HTTP: httpClient, Transport: embedconfig.Transport{Timeout: tc.timeout}})
+			client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}, HTTP: httpClient, Transport: embedconfig.Transport{Timeout: tc.timeout}})
 			require.NoError(t, err)
 			_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
 			var transportErr *embedclient.TransportError
