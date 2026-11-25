@@ -93,7 +93,9 @@ func checkCodexAttempt(ctx context.Context, path, cwd string, owned []ownedRegis
 	defer client.Close()
 	var config struct {
 		Config *struct {
-			Features map[string]*bool `json:"features"`
+			Features struct {
+				Hooks *bool `json:"hooks"`
+			} `json:"features"`
 		} `json:"config"`
 	}
 	if err := client.Call("config/read", map[string]any{"includeLayers": false, "cwd": cwd}, &config); err != nil {
@@ -103,7 +105,7 @@ func checkCodexAttempt(ctx context.Context, path, cwd string, owned []ownedRegis
 	if config.Config == nil {
 		return CheckUnknown, "Codex didn't report whether hooks are enabled for this workspace", "Check Codex config and retry", nil
 	}
-	if enabled := config.Config.Features["hooks"]; enabled != nil && !*enabled {
+	if enabled := config.Config.Features.Hooks; enabled != nil && !*enabled {
 		return CheckDisabled, "Codex hooks are turned off for this workspace", "Set features.hooks to true in the Codex config that applies to this workspace", nil
 	}
 	var listed struct {

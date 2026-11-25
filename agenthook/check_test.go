@@ -122,6 +122,9 @@ func runHookCheckHelper(mode string) int {
 			if mode == "feature-default" {
 				feature = ""
 			}
+			if mode == "feature-table" {
+				feature = `"hooks":true,"context_management":{"experimental_mode":false}`
+			}
 			fmt.Printf("{\"id\":%d,\"result\":{\"config\":{\"features\":{%s}}}}\n", request.ID, feature)
 		case "hooks/list":
 			args, _ := request.Params["cwds"].([]any)
@@ -176,6 +179,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", "", 1, false},
 		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", "", 1, false},
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", "", 1, false},
+		{"table-valued feature", "feature-table", "trusted", "", CheckOK, "", "", 1, false},
 		{"reviewed", "normal", "trusted", "", CheckOK, "", "", 1, false},
 		{"native source capitalization", "source-case", "trusted", "", CheckOK, "", "", 1, false},
 		{"managed", "normal", "managed", "", CheckOK, "", "", 1, false},
