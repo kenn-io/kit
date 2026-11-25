@@ -136,12 +136,12 @@ func (e *APIError) Retryable() bool {
 // maxErrorBody bounds how much of a failed response Kit reads to classify it.
 const maxErrorBody = 4096
 
-// newAPIError reads up to maxErrorBody bytes of a non-2xx response to
-// classify it. The body is not kept.
 type requestTokenLimitError struct{ *APIError }
 
 func (e *requestTokenLimitError) Unwrap() error { return e.APIError }
 
+// newAPIError reads up to maxErrorBody bytes of a non-2xx response to
+// classify it. The body is not kept.
 func newAPIError(resp *http.Response, vertexGemini bool) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	err := &APIError{

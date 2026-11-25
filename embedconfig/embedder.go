@@ -18,8 +18,10 @@ import (
 type Embedder struct {
 	// API selects the provider protocol. Empty uses OpenAI-compatible requests.
 	API API `toml:"api"`
-	// BaseURL is the OpenAI-compatible endpoint base. The client appends
-	// /embeddings unless the path already ends with it.
+	// BaseURL is the endpoint base. For OpenAI-compatible endpoints, the client
+	// appends /embeddings unless the path already ends with it. For Vertex, use
+	// VertexBaseURL to construct the publisher-model URL; the client appends the
+	// model name and its :predict or :embedContent method.
 	BaseURL string `toml:"base_url"`
 	// Model is the provider model name.
 	Model string `toml:"model"`
