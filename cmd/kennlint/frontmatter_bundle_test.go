@@ -162,3 +162,51 @@ func TestBundleChangeManagedNestedSkillOwnsItsFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "a/nested/references/n.md", resource)
 }
+
+func TestScopedSkillBundleChanges(t *testing.T) {
+	isolateFrontmatterGit(t)
+	for _, tc := range []struct {
+		name, dir, shortSelection string
+		deleted, stale            bool
+	}{
+		{"nested edit", "skills/a/", "nested/ref.md", false, true},
+		{"staged deletion", "skills/a/", "nested/ref.md", true, true},
+		{"directory selection", "skills/a/", "nested", true, true},
+		{"root bundle", "", "nested/ref.md", false, true},
+		{"unrelated resource", "skills/a/", "other.md", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := gittest.NewRepoWithCommit(t)
+			t.Chdir(repo.Root)
+			owner, resource := tc.dir+"SKILL.md", tc.dir+"nested/ref.md"
+			ownerHeader := skillHeader
+			if tc.name == "nested edit" {
+				ownerHeader = strings.Replace(skillHeader, "  type: Skill\n", "", 1)
+			}
+			repo.WriteFile(owner, ownerHeader)
+			repo.WriteFile(tc.dir+"nested/SKILL.md", skillHeader)
+			repo.WriteFile(resource, "# Reference\n")
+			repo.WriteFile(tc.dir+"other.md", "unchanged\n")
+			repo.Run("add", ".")
+			repo.Run("commit", "-m", "bundle base")
+			if tc.deleted {
+				repo.Run("rm", resource)
+			} else {
+				repo.WriteFile(resource, "# Edited reference\n")
+			}
+			args := []string{"-changed", "HEAD", "-fix", "-by", "human:other", "-managed-skill", owner, tc.dir + tc.shortSelection}
+			var out, errs bytes.Buffer
+			n, err := runFrontmatter(t.Context(), args, &out, &errs)
+			require.NoError(t, err)
+			if tc.stale {
+				assert.Equal(t, 1, n)
+				assert.Contains(t, errs.String(), owner+": bundle file "+resource+" changed without a later metadata.generated.at")
+			} else {
+				assert.Zero(t, n, errs.String())
+			}
+			got, err := os.ReadFile(owner)
+			require.NoError(t, err)
+			assert.Equal(t, ownerHeader, string(got), "an indirectly checked owner is never fixed")
+		})
+	}
+}
