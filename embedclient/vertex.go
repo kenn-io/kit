@@ -11,6 +11,27 @@ import (
 	"go.kenn.io/kit/embedconfig"
 )
 
+// vertexMaxBatchItems is the most texts Vertex takes in one :predict request.
+const vertexMaxBatchItems = 250
+
+// vertexBatchModels take vertexMaxBatchItems texts per :predict request.
+// Other :predict models send one text per request.
+var vertexBatchModels = map[string]bool{
+	"gemini-embedding-001":            true,
+	"text-embedding-005":              true,
+	"text-multilingual-embedding-002": true,
+}
+
+// validateGeminiEmbedding2Roles rejects roles that carry no task instruction.
+// Gemini Embedding 2 ignores task_type, so without one a query and a document
+// with the same text get the same vector.
+func validateGeminiEmbedding2Roles(r embedconfig.Roles) error {
+	if r.DocumentPrefix == "" && r.QueryPrefix == "" && r.DocumentFormatter == "" && r.QueryFormatter == "" {
+		return errors.New(`embed model gemini-embedding-2 needs its task in the role prefixes, such as query prefix "task: search result | query: " and document prefix "title: none | text: "`)
+	}
+	return nil
+}
+
 type vertexInstance struct {
 	Content  string `json:"content"`
 	TaskType string `json:"task_type"`

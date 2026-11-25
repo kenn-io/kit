@@ -43,6 +43,10 @@
 - Normalize with L2 only when the model normalization says so. Always reject
   a non-finite component, a null component, or a zero norm.
 - Do not copy provider bodies into errors.
+- A Vertex `gemini-embedding-2` client needs a role prefix or formatter.
+  The model ignores task types, so without one a query and a document with
+  the same text get the same vector. Kit must not add prefixes itself: they
+  are part of the vector identity and the embedfit token budget.
 - Pack same-role inputs, or mixed roles for Vertex, with the effective item cap. When both token fields
   are positive, the cap is min(Items, MaxTokens/InputTokenUpperBound), and
   at least 1 when Items and that quotient are at least 1. New returns an
