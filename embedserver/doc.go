@@ -1,7 +1,8 @@
 // Package embedserver serves nomic-embed-text v1.5 and AuraFace-v1 on loopback.
 // Text callers supply
-// role prefixes. Each string truncates at 2,048 WordPiece tokens
-// including CLS and SEP. Indexed float or base64 float32 vectors use mean pooling
+// role prefixes. The limit is 2,048 WordPiece tokens including CLS and SEP.
+// /v1/embeddings truncates each string at that limit, as before; /v1/embed
+// rejects text it cannot embed in full with 413 input_too_long. Indexed float or base64 float32 vectors use mean pooling
 // and L2 normalization after selecting the requested dimensions.
 //
 // Serve prints its ready URL to stderr. Cancellation closes connections and waits

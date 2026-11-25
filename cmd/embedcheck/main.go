@@ -27,8 +27,8 @@ func run() int {
 	flag.StringVar(&opts.Model, "model", "", "model name")
 	flag.IntVar(&opts.Dimensions, "dims", 0, "vector dimensions")
 	flag.StringVar(&keyEnv, "api-key-env", "", "environment variable containing the API key")
-	flag.Var(&media, "media", "media file to embed; repeat for each file")
-	flag.BoolVar(&opts.OpenAI, "openai", false, "also check the OpenAI endpoint")
+	flag.Var(&media, "media", "media file the service must embed; repeat for each file")
+	flag.BoolVar(&opts.OpenAI, "openai", false, "also require {url}/embeddings to match {url}/embed for text")
 	flag.Parse()
 	if opts.BaseURL == "" || opts.Model == "" || opts.Dimensions <= 0 || flag.NArg() != 0 {
 		flag.Usage()
