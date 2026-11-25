@@ -153,6 +153,9 @@ func newAPIError(resp *http.Response, vertexGemini bool) error {
 		err.Reason = ReasonUnknown
 		return &requestTokenLimitError{err}
 	}
+	if vertexGemini && resp.StatusCode == http.StatusBadRequest && err.Reason == ReasonUnknown && inputTokenCeiling(body) {
+		err.Reason = ReasonInputTooLong
+	}
 	return err
 }
 

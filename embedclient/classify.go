@@ -87,9 +87,16 @@ func requestTokenLimit(body []byte) bool {
 }
 
 var aggregateCeilingPattern = regexp.MustCompile(`\b(?:up to|maximum(?: of)?|max(?: of)?|limit(?: of)?)\s*[:=]?\s*20,?000\b`)
+var inputCeilingPattern = regexp.MustCompile(`\b(?:up to|maximum(?: of)?|max(?: of)?|limit(?: of)?)\s*[:=]?\s*2,?048\b`)
 
 func aggregateTokenCeiling(message string) bool {
 	return strings.Contains(message, "token") && aggregateCeilingPattern.MatchString(message)
+}
+
+func inputTokenCeiling(body []byte) bool {
+	_, message := errorDetail(body)
+	message = strings.ToLower(message)
+	return strings.Contains(message, "token") && inputCeilingPattern.MatchString(message)
 }
 
 func modelMissing(message string) bool {

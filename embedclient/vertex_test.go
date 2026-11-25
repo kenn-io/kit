@@ -169,6 +169,8 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 		{"terminal aggregate ceiling", "gemini-embedding-001", "input token count exceeds the maximum of 20000", []string{"1"}, []int{1}, true},
 		{"larger ceiling", "gemini-embedding-001", "input token count is 230000 but the model supports up to 200000", []string{"1", "2", "3"}, []int{3}, true},
 		{"single too long", "gemini-embedding-001", "input exceeds maximum token length", []string{"1"}, []int{1}, true},
+		{"individual ceiling", "gemini-embedding-001", "input token count is 3000 but the model supports up to 2048", []string{"1", "2", "3"}, []int{3}, true},
+		{"other model individual ceiling", "text-embedding-005", "input token count is 3000 but the model supports up to 2048", []string{"1"}, []int{1}, true},
 		{"single batch limit", "gemini-embedding-001", "batch token limit exceeded", []string{"1"}, []int{1}, true},
 		{"input too long", "gemini-embedding-001", "input exceeds maximum token length", []string{"1", "2", "3"}, []int{3}, true},
 		{"unknown error", "gemini-embedding-001", "invalid request", []string{"1", "2", "3"}, []int{3}, true},
@@ -208,6 +210,14 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 					require.ErrorAs(t, err, &apiErr)
 					assert.Equal(t, embedclient.ReasonUnknown, apiErr.Reason)
 					assert.False(t, apiErr.InputRejected())
+				}
+				if tc.name == "individual ceiling" || tc.name == "other model individual ceiling" {
+					var apiErr *embedclient.APIError
+					require.ErrorAs(t, err, &apiErr)
+					assert.Equal(t, tc.name == "individual ceiling", apiErr.InputRejected())
+					if tc.name == "individual ceiling" {
+						assert.Equal(t, embedclient.ReasonInputTooLong, apiErr.Reason)
+					}
 				}
 			} else {
 				require.NoError(t, err)
