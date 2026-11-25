@@ -106,8 +106,7 @@ func TestEmbedderPreservesDefaultIdentities(t *testing.T) {
 model = "embed-text"
 dims = 768
 `
-	for _, settings := range []string{"", `api = "openai"
-`, `document_prefix = ""
+	for _, settings := range []string{"", `document_prefix = ""
 document_suffix = ""
 query_prefix = ""
 query_suffix = ""
@@ -243,7 +242,6 @@ func TestEmbedderValidate(t *testing.T) {
 		{name: "two key sources", embedder: with(func(e *embedconfig.Embedder) {
 			e.APIKey = secretref.Ref{Env: "EMBED_KEY", File: "~/embed.key"}
 		})},
-		{name: "invalid API", embedder: with(func(e *embedconfig.Embedder) { e.API = "invalid" })},
 		{name: "unknown input type", embedder: with(func(e *embedconfig.Embedder) { e.InputTypeMode = "search" })},
 		{name: "negative batch", embedder: with(func(e *embedconfig.Embedder) { e.BatchSize = -1 })},
 		{name: "negative timeout", embedder: with(func(e *embedconfig.Embedder) { e.TimeoutSeconds = -1 })},

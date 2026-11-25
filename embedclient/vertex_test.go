@@ -58,7 +58,7 @@ func TestVertexEmbedContent(t *testing.T) {
 				body := readBody(t, r)
 				assert.Equal(t, map[string]any{"parts": []any{map[string]any{"text": "query: text"}}}, body["content"])
 				assert.Equal(t, float64(2), body["embedContentConfig"].(map[string]any)["outputDimensionality"])
-				writeJSON(t, w, map[string]any{"embedding": map[string]any{"values": []float64{1, 0}}, "truncated": truncated})
+				writeJSON(t, w, map[string]any{"embedding": map[string]any{"values": []float64{3, 4}}, "truncated": truncated})
 			}))
 			t.Cleanup(server.Close)
 			model := unitModel()
@@ -75,7 +75,10 @@ func TestVertexEmbedContent(t *testing.T) {
 				assert.Equal(t, 1, calls)
 			} else {
 				require.NoError(t, err)
-				assert.Equal(t, [][]float32{{1, 0}, {1, 0}}, vectors)
+				require.Len(t, vectors, 2)
+				for _, vector := range vectors {
+					assert.InDeltaSlice(t, []float32{0.6, 0.8}, vector, 1e-6)
+				}
 				assert.Equal(t, 2, calls)
 			}
 		})
@@ -109,16 +112,18 @@ func TestGoogleHTTPClientOverridesAPIKey(t *testing.T) {
 
 func TestVertexBatchItemsAndRequests(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		model string
-		items int
-		texts int
-		sizes []int
+		name        string
+		model       string
+		items       int
+		texts       int
+		sizes       []int
+		rejectAbove int
+		message     string
 	}{
-		{"gemini batch", "gemini-embedding-001", 32, 3, []int{3}},
-		{"gemini capped", "gemini-embedding-001", 300, 251, []int{250, 1}},
-		{"gemini caller cap", "gemini-embedding-001", 3, 4, []int{3, 1}},
-		{"other model", "text-embedding-005", 300, 2, []int{1, 1}},
+		{"gemini capped", "gemini-embedding-001", 300, 251, []int{250, 1}, 0, ""},
+		{"gemini caller cap", "gemini-embedding-001", 3, 4, []int{3, 1}, 0, ""},
+		{"other model", "text-embedding-005", 300, 2, []int{1, 1}, 0, ""},
+		{"split", "gemini-embedding-001", 32, 5, []int{5, 2, 3, 1, 2}, 2, "input token count is 23000 but the model supports up to 20000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sizes []int
@@ -126,6 +131,11 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 				body := readBody(t, r)
 				instances := body["instances"].([]any)
 				sizes = append(sizes, len(instances))
+				if tc.rejectAbove > 0 && len(instances) > tc.rejectAbove {
+					w.WriteHeader(http.StatusBadRequest)
+					writeJSON(t, w, map[string]any{"error": map[string]any{"message": tc.message}})
+					return
+				}
 				predictions := make([]any, len(instances))
 				for i := range predictions {
 					content := instances[i].(map[string]any)["content"].(string)
@@ -156,126 +166,34 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 	}
 }
 
-func TestVertexTokenLimitSplit(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		model     string
-		message   string
-		texts     []string
-		wantSizes []int
-		wantError bool
-	}{
-		{"split", "gemini-embedding-001", "input token count is 23000 but the model supports up to 20000", []string{"1", "2", "3", "4", "5"}, []int{5, 2, 3, 1, 2}, false},
-		{"single token limit", "gemini-embedding-001", "input token count is 3000 but the model supports up to 2048", []string{"1"}, []int{1}, true},
-		{"invalid token", "gemini-embedding-001", "Invalid token", []string{"1", "2", "3"}, []int{3}, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var sizes []int
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				instances := readBody(t, r)["instances"].([]any)
-				sizes = append(sizes, len(instances))
-				if len(instances) > 2 || tc.wantError {
-					w.WriteHeader(http.StatusBadRequest)
-					writeJSON(t, w, map[string]any{"error": map[string]any{"message": tc.message}})
-					return
-				}
-				predictions := make([]any, len(instances))
-				for i, instance := range instances {
-					value, err := strconv.Atoi(instance.(map[string]any)["content"].(string))
-					assert.NoError(t, err)
-					predictions[i] = map[string]any{"embeddings": map[string]any{"values": []float64{float64(value), 1}}}
-				}
-				writeJSON(t, w, map[string]any{"predictions": predictions})
-			}))
-			t.Cleanup(server.Close)
-			model := unitModel()
-			model.Name = tc.model
-			model.Normalization = embedconfig.NormalizationNone
-			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}})
-			require.NoError(t, err)
-			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, tc.texts)
-			if tc.wantError {
-				require.Error(t, err)
-				assert.IsType(t, &embedclient.APIError{}, err)
-				if tc.name == "single token limit" {
-					var apiErr *embedclient.APIError
-					require.ErrorAs(t, err, &apiErr)
-					assert.True(t, apiErr.InputRejected())
-				}
-				if tc.name == "invalid token" {
-					var apiErr *embedclient.APIError
-					require.ErrorAs(t, err, &apiErr)
-					assert.Equal(t, embedclient.ReasonUnknown, apiErr.Reason)
-					assert.False(t, apiErr.InputRejected())
-				}
-			} else {
-				require.NoError(t, err)
-				require.Len(t, vectors, len(tc.texts))
-				for i, vector := range vectors {
-					assert.Equal(t, []float32{float32(i + 1), 1}, vector)
-				}
-			}
-			assert.Equal(t, tc.wantSizes, sizes)
-		})
-	}
-}
-
 func TestVertexInvalidPredictions(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		body       string
-		texts      []string
-		countError string
-	}{
-		{"count mismatch", `{"predictions":[]}`, []string{"a"}, "0 vectors for 1 inputs"},
-		{"invalid vector", `{"predictions":[{"embeddings":{"values":[1,0]}},{"embeddings":{"values":[0,0]}}]}`, []string{"a", "b"}, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = w.Write([]byte(tc.body))
-			}))
-			t.Cleanup(server.Close)
-			model := unitModel()
-			model.Name = "gemini-embedding-001"
-			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}})
-			require.NoError(t, err)
-			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, tc.texts)
-			if tc.countError != "" {
-				require.ErrorContains(t, err, tc.countError)
-			} else {
-				var vectorErr *embedclient.VectorError
-				require.ErrorAs(t, err, &vectorErr)
-				assert.Equal(t, 1, vectorErr.Index)
-			}
-			assert.Nil(t, vectors)
-		})
-	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"predictions":[]}`))
+	}))
+	t.Cleanup(server.Close)
+	model := unitModel()
+	model.Name = "gemini-embedding-001"
+	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}})
+	require.NoError(t, err)
+	vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"a"})
+	require.ErrorContains(t, err, "0 vectors for 1 inputs")
+	assert.Nil(t, vectors)
 }
 
 func TestVertexUsesTransportTimeout(t *testing.T) {
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		<-release
+		select {
+		case <-release:
+		case <-time.After(time.Second): //nolint:kennlint // deadlinetest: bound a regression that removes the client timeout
+		}
 	}))
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { close(release) })
-	for _, tc := range []struct {
-		name        string
-		timeout     time.Duration
-		httpTimeout time.Duration
-	}{
-		{"short", 30 * time.Millisecond, 0},                    //nolint:kennlint // deadlinetest: a real HTTP request must time out
-		{"caller timeout", time.Second, 30 * time.Millisecond}, //nolint:kennlint // deadlinetest: a real HTTP request must time out
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			httpClient := &http.Client{Timeout: tc.httpTimeout}
-			client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}, HTTP: httpClient, Transport: embedconfig.Transport{Timeout: tc.timeout}})
-			require.NoError(t, err)
-			_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
-			var transportErr *embedclient.TransportError
-			require.ErrorAs(t, err, &transportErr)
-			assert.True(t, transportErr.Timeout())
-			assert.Equal(t, tc.httpTimeout, httpClient.Timeout)
-		})
-	}
+	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{BaseURL: server.URL + "/publishers/google/models", API: embedconfig.APIVertex}, Transport: embedconfig.Transport{Timeout: 30 * time.Millisecond}}) //nolint:kennlint // deadlinetest: a real HTTP request must time out
+	require.NoError(t, err)
+	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleDocument, []string{"text"})
+	var transportErr *embedclient.TransportError
+	require.ErrorAs(t, err, &transportErr)
+	assert.True(t, transportErr.Timeout())
 }

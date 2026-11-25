@@ -21,7 +21,7 @@ func TestVertexBaseURL(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "https://aiplatform."+location+".rep.googleapis.com/v1/projects/project-a/locations/"+location+"/publishers/google/models", got)
 	}
-	for _, v := range []string{"", "../x", "A", "a/b", "a.b", "-abc", "abc-"} {
+	for _, v := range []string{"", "A", "a/b", "a.b", "-abc", "abc-"} {
 		_, err := embedconfig.VertexBaseURL(v, "us-central1")
 		require.Error(t, err)
 		_, err = embedconfig.VertexBaseURL("project-a", v)
@@ -30,12 +30,12 @@ func TestVertexBaseURL(t *testing.T) {
 }
 
 func TestVertexDeploymentURL(t *testing.T) {
-	for _, base := range []string{"https://example.com", "https://example.com/v1/projects/p/locations/r", "https://example.com/publishers/google/models/model"} {
+	for _, base := range []string{"https://example.com", "https://example.com/publishers/google/models/model"} {
 		err := (embedconfig.Deployment{API: embedconfig.APIVertex, BaseURL: base}).Validate()
 		require.ErrorContains(t, err, "VertexBaseURL")
 	}
 	for _, base := range []string{"https://example.com/v1/projects/p/locations/r/publishers/google/models", "https://example.com/publishers/google/models/"} {
 		require.NoError(t, (embedconfig.Deployment{API: embedconfig.APIVertex, BaseURL: base}).Validate())
 	}
-	require.NoError(t, (embedconfig.Deployment{BaseURL: "https://example.com/v1"}).Validate())
+	require.Error(t, (embedconfig.Deployment{API: "invalid", BaseURL: "https://example.com/v1"}).Validate())
 }

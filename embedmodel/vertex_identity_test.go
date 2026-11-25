@@ -1,4 +1,4 @@
-package embedmodel
+package embedmodel_test
 
 import (
 	"testing"
@@ -6,22 +6,32 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/embedmodel"
 )
 
 func TestVertexIdentity(t *testing.T) {
-	model := embedconfig.Model{Name: "model", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationL2}
-	deployment := embedconfig.Deployment{API: embedconfig.APIVertex}
-	vertex, err := vectorFields(model, embedconfig.Roles{}, deployment)
+	desc := embedmodel.Descriptor{
+		Model:      embedconfig.Model{Name: "model", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationL2},
+		Deployment: embedconfig.Deployment{API: embedconfig.APIVertex},
+	}
+	vertex, err := desc.VectorIdentity()
 	require.NoError(t, err)
-	openAI, err := vectorFields(model, embedconfig.Roles{}, embedconfig.Deployment{})
-	require.NoError(t, err)
-	assert.NotEqual(t, openAI, vertex)
+	assert.Equal(t, "979bfeb1cf23fa5204468303a16c8017b13edfb49c41cb89915121ae4fed23a5", vertex)
 
-	model.RequestDimensions = true
-	requested, err := vectorFields(model, embedconfig.Roles{}, deployment)
+	desc.Model.RequestDimensions = true
+	requested, err := desc.VectorIdentity()
 	require.NoError(t, err)
 	assert.Equal(t, vertex, requested)
-	retrieval, err := vectorFields(model, embedconfig.Roles{InputType: embedconfig.InputTypeRetrieval}, deployment)
+	desc.Roles.InputType = embedconfig.InputTypeRetrieval
+	retrieval, err := desc.VectorIdentity()
 	require.NoError(t, err)
 	assert.Equal(t, vertex, retrieval)
+
+	desc.Deployment = embedconfig.Deployment{}
+	openAI, err := desc.VectorIdentity()
+	require.NoError(t, err)
+	desc.Deployment.API = embedconfig.APIOpenAI
+	explicitOpenAI, err := desc.VectorIdentity()
+	require.NoError(t, err)
+	assert.Equal(t, openAI, explicitOpenAI)
 }
