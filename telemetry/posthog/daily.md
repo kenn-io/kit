@@ -1,7 +1,8 @@
 ---
+type: Guide
 title: "Daily screen reports"
 description: "Define and send daily screen reports through PostHog."
-last_edited: 2026-10-21
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # Daily screen reports
