@@ -118,6 +118,7 @@ type API string
 const (
 	APIOpenAI API = "openai"
 	APIVertex API = "vertex"
+	APIKit    API = "kit"
 )
 
 // Batch limits one provider request. Items is a count. MaxTokens is an

@@ -1,0 +1,142 @@
+package embedclient
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"reflect"
+	"strings"
+
+	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/embedmodel"
+)
+
+// Fixture supplies a media input for a conformance check.
+type Fixture struct {
+	MediaType string
+	Data      []byte
+}
+
+// CheckOptions describes the service and model to check.
+type CheckOptions struct {
+	BaseURL, Model, APIKey string
+	Dimensions             int
+	Media                  []Fixture
+	OpenAI                 bool
+}
+
+// Check checks the HTTP contract. It cannot judge the quality of media vectors.
+func isUnsupported(err error) bool { return errors.Is(err, embedmodel.ErrUnsupportedContent) }
+
+func Check(ctx context.Context, opts CheckOptions) []error {
+	var failures []error
+	fail := func(rule string, err any) { failures = append(failures, fmt.Errorf("%s: %v", rule, err)) }
+	model := embedconfig.Model{Name: opts.Model, Dimensions: opts.Dimensions, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone, RequestDimensions: true}
+	makeClient := func(api embedconfig.API, format string) (*Client, error) {
+		m := model
+		m.EncodingFormat = format
+		return New(Options{Model: m, Roles: embedconfig.Roles{QueryFormatter: "as-given"}, Deployment: embedconfig.Deployment{API: api, BaseURL: opts.BaseURL, TrustPrivateNetwork: true}, APIKey: opts.APIKey})
+	}
+	client, err := makeClient(embedconfig.APIKit, "float")
+	if err != nil {
+		fail("configuration", err)
+		return failures
+	}
+	inputs := []Input{{Role: embedconfig.RoleQuery, Parts: []Part{{Text: "alpha"}}}, {Role: embedconfig.RoleDocument, Parts: []Part{{Text: "beta"}}}}
+	batch, err := client.Encode(ctx, opts.Dimensions, inputs)
+	if err != nil {
+		fail("text batch", err)
+	} else {
+		for i := range inputs {
+			one, e := client.Encode(ctx, opts.Dimensions, inputs[i:i+1])
+			if e != nil {
+				fail("singleton", e)
+			} else if !reflect.DeepEqual(batch[i], one[0]) {
+				fail("batch consistency", "singleton differs")
+			}
+		}
+		encoded, e := makeClient(embedconfig.APIKit, "base64")
+		if e != nil {
+			fail("base64 configuration", e)
+		} else if vectors, e := encoded.Encode(ctx, opts.Dimensions, inputs); e != nil {
+			fail("base64", e)
+		} else if !reflect.DeepEqual(batch, vectors) {
+			fail("base64 consistency", "vectors differ")
+		}
+		if opts.OpenAI {
+			openai, e := makeClient(embedconfig.APIOpenAI, "float")
+			if e != nil {
+				fail("openai configuration", e)
+			} else if vectors, e := openai.Encode(ctx, opts.Dimensions, inputs[:1]); e != nil {
+				fail("openai", e)
+			} else if !reflect.DeepEqual(batch[0], vectors[0]) {
+				fail("openai consistency", "vectors differ")
+			}
+		}
+	}
+	fixtures := opts.Media
+	optional := len(fixtures) == 0
+	if optional {
+		png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=")
+		fixtures = []Fixture{{MediaType: "image/png", Data: png}}
+	}
+	for _, f := range fixtures {
+		_, e := client.Encode(ctx, opts.Dimensions, []Input{{Role: embedconfig.RoleDocument, Parts: []Part{{MediaType: f.MediaType, Data: f.Data}}}})
+		if e != nil && !(optional && isUnsupported(e)) {
+			fail("media", e)
+		}
+	}
+	type badCase struct {
+		name, method, body string
+		status             int
+		code               string
+	}
+	cases := []badCase{
+		{"unknown model", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query","parts":[{"text":"a"}]}]}`, opts.Model+"-unknown"), 404, "model_not_found"},
+		{"malformed", "POST", "{", 400, "invalid_request"},
+		{"empty inputs", "POST", fmt.Sprintf(`{"model":%q,"inputs":[]}`, opts.Model), 400, "invalid_request"},
+		{"bad role", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"wrong","parts":[{"text":"a"}]}]}`, opts.Model), 400, "invalid_request"},
+		{"bad base64", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query","parts":[{"media_type":"image/png","data":"!"}]}]}`, opts.Model), 400, "invalid_request"},
+		{"method", "GET", "", 405, "method_not_allowed"},
+	}
+	for _, tc := range cases {
+		req, e := http.NewRequestWithContext(ctx, tc.method, strings.TrimRight(opts.BaseURL, "/")+"/embed", bytes.NewBufferString(tc.body))
+		if e != nil {
+			fail(tc.name, e)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if opts.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+opts.APIKey)
+		}
+		resp, e := client.http.Do(req)
+		if e != nil {
+			fail(tc.name, e)
+			continue
+		}
+		body, e := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if e != nil {
+			fail(tc.name, e)
+			continue
+		}
+		var envelope struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		e = json.Unmarshal(body, &envelope)
+		if e != nil || resp.StatusCode != tc.status || envelope.Error.Code != tc.code {
+			fail(tc.name, fmt.Sprintf("got status %d and code %q", resp.StatusCode, envelope.Error.Code))
+		}
+		if tc.status == 405 && resp.Header.Get("Allow") != "POST" {
+			fail(tc.name, "Allow must be POST")
+		}
+	}
+	return failures
+}

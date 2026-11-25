@@ -2,15 +2,12 @@ package embedserver
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 )
 
@@ -127,24 +124,8 @@ func (h *handler) embeddings(ctx context.Context, req request, inputs []string) 
 		if err != nil {
 			return out, err
 		}
-		vector = vector[:req.Dimensions]
-		var squared float64
-		for _, v := range vector {
-			squared += float64(v) * float64(v)
-		}
-		if norm := math.Sqrt(squared); norm > 0 {
-			for j, v := range vector {
-				vector[j] = float32(float64(v) / norm)
-			}
-		}
-		var embedding any = vector
-		if req.Encoding == "base64" {
-			data := make([]byte, len(vector)*4)
-			for j, v := range vector {
-				binary.LittleEndian.PutUint32(data[j*4:], math.Float32bits(v))
-			}
-			embedding = base64.StdEncoding.EncodeToString(data)
-		}
+		vector = normalizeDimensions(vector, req.Dimensions)
+		embedding := encodeEmbedding(vector, req.Encoding)
 		out.Data[i] = item{Object: "embedding", Index: i, Embedding: embedding}
 		out.Usage.Prompt += tokens
 		out.Usage.Total += tokens

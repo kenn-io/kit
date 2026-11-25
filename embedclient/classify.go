@@ -15,6 +15,8 @@ func classifyFailure(status int, body []byte) Reason {
 	code, message := errorDetail(body)
 	code, message = strings.ToLower(code), strings.ToLower(message)
 	switch {
+	case status == http.StatusUnsupportedMediaType && code == "unsupported_content":
+		return ReasonUnsupportedContent
 	case status == http.StatusForbidden && code == "model_not_found":
 		return ReasonInvalidRequest
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:

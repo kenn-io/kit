@@ -39,3 +39,8 @@ func TestVertexDeploymentURL(t *testing.T) {
 	}
 	require.Error(t, (embedconfig.Deployment{API: "invalid", BaseURL: "https://example.com/v1"}).Validate())
 }
+
+func TestKitDeployment(t *testing.T) {
+	assert.NoError(t, (embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: "https://example.com/v1"}).Validate())
+	assert.Error(t, (embedconfig.Deployment{API: embedconfig.APIKit}).Validate())
+}
