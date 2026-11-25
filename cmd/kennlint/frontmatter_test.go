@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -213,4 +214,27 @@ func TestFrontmatterChanged(t *testing.T) {
 	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n, "deleted files need no metadata")
+}
+
+func TestFrontmatterSelectionSkipsUnsearchableOrdinaryDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix directory search permissions")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("chosen.md", goodOKF)
+	repo.WriteFile("protected/other.md", goodOKF)
+	repo.WriteFile("skills/a/SKILL.md", skillHeader)
+	repo.Run("add", ".")
+	require.NoError(t, os.Chmod("protected", 0o600))
+	t.Cleanup(func() { assert.NoError(t, os.Chmod(filepath.Join(repo.Root, "protected"), 0o700)) })
+	if _, err := os.Lstat("protected/other.md"); !os.IsPermission(err) {
+		t.Skip("this process can search protected directories")
+	}
+	var out, errs bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-managed-skill", "skills/a/SKILL.md", "chosen.md"}, &out, &errs)
+	require.NoError(t, err)
+	assert.Zero(t, n, errs.String())
+	assert.Contains(t, out.String(), "checked 1 Markdown file")
 }

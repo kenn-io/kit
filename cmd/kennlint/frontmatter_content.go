@@ -44,7 +44,9 @@ func metadataWithoutProvenance(d *okf.Document, skill bool) (map[string]any, err
 		header, _ = fields["metadata"].(map[string]any)
 	}
 	// Omitted status and explicit stable are equivalent under the Kenn profile.
-	if header["status"] == "stable" {
+	status := header["status"]
+	emptyList, list := status.([]any)
+	if status == "stable" || (skill && (status == nil || status == "" || (list && len(emptyList) == 0))) {
 		delete(header, "status")
 	}
 	delete(header, "verified")

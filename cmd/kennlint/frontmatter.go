@@ -147,16 +147,25 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		return 0, err
 	}
 	var targets []string
-	var eligibleSkills []string
+	var eligibleSkills, owners []string
 	docCount := 0
 	_, rootSkill := skillDirs["."]
+	// With an opted-in root skill, a scoped change check treats descendants as
+	// resources, including when the selected resource has already been removed.
+	rootResources := rootSkill && *changed != "" && len(selected) != 0 && !slices.Contains(selected, ".") &&
+		frontmatterSelected("SKILL.md", nil, excludes) &&
+		slices.ContainsFunc(managedSkills, func(pattern string) bool { return frontmatterGlob(pattern, "SKILL.md") })
 
 	for _, file := range files {
 		if !frontmatterSelected(file, nil, excludes) {
 			continue
 		}
 		skill := isSkillFile(file)
-		if rootSkill && file != "SKILL.md" && (*fix || len(selected) == 0 || slices.Contains(selected, ".") || skill) {
+		inScope := frontmatterSelected(file, selected, nil)
+		if !skill && !inScope {
+			continue
+		}
+		if rootSkill && file != "SKILL.md" && (*fix || rootResources || len(selected) == 0 || slices.Contains(selected, ".") || skill) {
 			continue // Root-bundle descendants are writable only as the listed root skill.
 		}
 		container := file
@@ -180,7 +189,8 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if skill {
 			eligibleSkills = append(eligibleSkills, file)
 		}
-		if !frontmatterSelected(file, selected, nil) {
+		optedIn := skill && slices.ContainsFunc(managedSkills, func(pattern string) bool { return frontmatterGlob(pattern, file) })
+		if (skill && !optedIn) || (!inScope && *changed == "") {
 			continue
 		}
 		beyond, resolveErr := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes)
@@ -191,20 +201,21 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			continue
 		}
 		if skill {
-			if !slices.ContainsFunc(managedSkills, func(pattern string) bool { return frontmatterGlob(pattern, file) }) {
-				continue
-			}
-		} else {
-			docCount++
+			owners = append(owners, file)
 		}
-		targets = append(targets, file)
+		if inScope {
+			if !skill {
+				docCount++
+			}
+			targets = append(targets, file)
+		}
 	}
 	for _, pattern := range managedSkills {
 		if !slices.ContainsFunc(eligibleSkills, func(file string) bool { return frontmatterGlob(pattern, file) }) {
 			return 0, fmt.Errorf("-managed-skill pattern %q matches no tracked SKILL.md", pattern)
 		}
 	}
-	if rootSkill && len(targets) == 0 {
+	if rootSkill && len(targets) == 0 && !rootResources {
 		return 0, errors.New("root SKILL.md makes document scope ambiguous: select ordinary document paths for read-only checks; -fix protects all root-bundle descendants")
 	}
 	if *description != "" && docCount != 1 {
@@ -233,7 +244,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		report(file, problems)
 	}
 	if *changed != "" {
-		stale, err := frontmatterStaleDates(ctx, root, *changed, checked)
+		stale, err := frontmatterStaleDates(ctx, root, *changed, checked, owners, selected)
 		if err != nil {
 			return total, err
 		}
@@ -368,7 +379,7 @@ type frontmatterStale struct{ file, resource string }
 // -fix so a fix that restores the base content does not count as an edit, and
 // it lets Git apply attributes and line-ending rules so CRLF checkouts are not
 // edits.
-func frontmatterStaleDates(ctx context.Context, root, ref string, files []string) ([]frontmatterStale, error) {
+func frontmatterStaleDates(ctx context.Context, root, ref string, files, owners, selected []string) ([]frontmatterStale, error) {
 	baseBytes, err := frontmatterGit(ctx, root, "merge-base", "HEAD", ref)
 	if err != nil {
 		return nil, err
@@ -378,16 +389,47 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 	if err != nil {
 		return nil, err
 	}
-	// Only checked managed skills own bundle files; an unmanaged nested
-	// SKILL.md, such as a template, is a resource of the skill above it.
-	managed := make(map[string]struct{})
+	// Determine ownership from the opted-in skills, independently of path
+	// selection. Only selected changes can pull an unselected owner into the
+	// timestamp check. They do not become document targets or fixer targets.
+	managed := make(map[string]struct{}, len(owners))
+	for _, owner := range owners {
+		managed[path.Dir(owner)] = struct{}{}
+	}
+	direct := make(map[string]bool, len(files))
 	for _, file := range files {
-		if isSkillFile(file) {
-			managed[path.Dir(file)] = struct{}{}
+		direct[file] = true
+	}
+	selectedChanges := make(map[string]string)
+	inferred := make(map[string]bool)
+	if len(selected) != 0 && len(owners) != 0 {
+		for file, status := range changes {
+			if !frontmatterSelected(file, selected, nil) {
+				continue
+			}
+			selectedChanges[file] = status
+			for dir := path.Dir(file); ; dir = path.Dir(dir) {
+				if _, ok := managed[dir]; ok {
+					owner := path.Join(dir, "SKILL.md")
+					if file != owner {
+						inferred[owner] = true
+					}
+					break
+				}
+				if dir == "." {
+					break
+				}
+			}
+		}
+	}
+	checks := slices.Clone(files)
+	for _, owner := range owners {
+		if inferred[owner] && !direct[owner] {
+			checks = append(checks, owner)
 		}
 	}
 	var stale []frontmatterStale
-	for _, file := range files {
+	for _, file := range checks {
 		if path.Base(file) == "index.md" || path.Base(file) == "log.md" {
 			continue // Reserved files are never concepts, even with extension metadata.
 		}
@@ -418,7 +460,7 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 		if !validBefore || !validAfter || afterTime.After(beforeTime) {
 			continue
 		}
-		if status == "M" {
+		if status == "M" && direct[file] {
 			meaningful, err := profileMeaningful(before, after, skill)
 			if err != nil {
 				return nil, fmt.Errorf("comparing %s: %w", file, err)
@@ -429,7 +471,11 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 			}
 		}
 		if skill {
-			resource, err := frontmatterBundleChange(ctx, root, base, path.Dir(file), changes, managed)
+			bundleChanges := changes
+			if !direct[file] {
+				bundleChanges = selectedChanges
+			}
+			resource, err := frontmatterBundleChange(ctx, root, base, path.Dir(file), bundleChanges, managed)
 			if err != nil {
 				return nil, err
 			}

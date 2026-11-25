@@ -210,6 +210,13 @@ func TestSkillChangedStatus(t *testing.T) {
 	}{
 		{"", "stable", false},
 		{"stable", "", false},
+		{"", "null", false},
+		{"null", "", false},
+		{"", "''", false},
+		{"''", "stable", false},
+		{"stable", "[]", false},
+		{"[]", "", false},
+		{"null", "draft", true},
 		{"stable", "draft", true},
 		{"deprecated", "", true},
 		{"", "experimental", true},
