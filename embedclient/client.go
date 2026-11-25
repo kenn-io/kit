@@ -106,7 +106,7 @@ func New(opts Options) (*Client, error) {
 			method = ":embedContent"
 			limit = 1
 		} else if model.Name == "gemini-embedding-001" {
-			limit = 1
+			limit = 250
 		}
 		endpoint = canonical + "/" + url.PathEscape(model.Name) + method
 		items = min(items, limit)

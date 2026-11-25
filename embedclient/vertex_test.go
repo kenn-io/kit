@@ -109,10 +109,14 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 		model string
 		items int
 		want  int
+		texts int
+		sizes []int
 	}{
-		{"gemini", "gemini-embedding-001", 300, 1},
-		{"other capped", "text-embedding-005", 300, 5},
-		{"caller cap", "text-embedding-005", 3, 3},
+		{"gemini batch", "gemini-embedding-001", 32, 32, 3, []int{3}},
+		{"gemini capped", "gemini-embedding-001", 300, 250, 251, []int{250, 1}},
+		{"gemini caller cap", "gemini-embedding-001", 3, 3, 4, []int{3, 1}},
+		{"other capped", "text-embedding-005", 300, 5, 6, []int{5, 1}},
+		{"caller cap", "text-embedding-005", 3, 3, 4, []int{3, 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sizes []int
@@ -122,7 +126,10 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 				sizes = append(sizes, len(instances))
 				predictions := make([]any, len(instances))
 				for i := range predictions {
-					predictions[i] = map[string]any{"embeddings": map[string]any{"values": []float64{float64(i + 1), 1}}}
+					content := instances[i].(map[string]any)["content"].(string)
+					value, err := strconv.Atoi(content)
+					assert.NoError(t, err)
+					predictions[i] = map[string]any{"embeddings": map[string]any{"values": []float64{float64(value), 1}}}
 				}
 				writeJSON(t, w, map[string]any{"predictions": predictions})
 			}))
@@ -133,15 +140,17 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: server.URL, API: embedconfig.APIVertex}, Batch: embedconfig.Batch{Items: tc.items}})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, client.BatchItems())
-			texts := make([]string, tc.want+1)
+			texts := make([]string, tc.texts)
 			for i := range texts {
-				texts[i] = "text"
+				texts[i] = strconv.Itoa(i + 1)
 			}
 			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, texts)
 			require.NoError(t, err)
 			require.Len(t, vectors, len(texts))
-			assert.Equal(t, []int{tc.want, 1}, sizes)
-			assert.InDelta(t, float32(tc.want), vectors[tc.want-1][0], 1e-6)
+			assert.Equal(t, tc.sizes, sizes)
+			for i, vector := range vectors {
+				assert.Equal(t, []float32{float32(i + 1), 1}, vector)
+			}
 		})
 	}
 }

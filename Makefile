@@ -43,6 +43,10 @@ lint-config:
 lint-config-check:
 	go run ./cmd/kennlint config -check
 
+.PHONY: test-embedclient-vertex
+test-embedclient-vertex:
+	go test ./embedclient -run '^(TestVertexBatchItemsAndRequests|TestVertexEmbedContent)$$'
+
 .PHONY: test-embedserver
 # Set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY to include native parity.
 # CI sets GOTESTSUM_SUITE so each job writes its own gotestsum/<suite>.json.

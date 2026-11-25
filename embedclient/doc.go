@@ -6,9 +6,9 @@
 // always return float vectors. InputTypeMode, RequestDimensions, and
 // EncodingFormat do not change a Vertex request.
 //
-// Client.BatchItems reports the largest request the client sends: one input
-// for gemini-embedding-001 and gemini-embedding-2, and at most five for other Vertex models, further
-// capped by Batch.Items. Pass it to vector.WithBatchSize to split inputs into
+// Client.BatchItems reports the largest request the client sends: up to 250
+// inputs for gemini-embedding-001, one for gemini-embedding-2, and at most five
+// for other Vertex models, further capped by Batch.Items. Pass it to vector.WithBatchSize to split inputs into
 // requests, and pass vector.WithBatchConcurrency(n) to bound how many of those
 // requests run at once. The caller chooses n; this package adds no
 // concurrency of its own. A failed request fails the whole Embed call.
