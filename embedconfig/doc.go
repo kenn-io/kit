@@ -7,8 +7,8 @@
 //
 // VertexBaseURL constructs a Vertex endpoint for a location. Set Deployment.API to
 // APIVertex to select its request protocol. Embedder.API carries the same
-// choice through Parts. The default is APIOpenAI. Vertex always sends
-// RETRIEVAL_DOCUMENT for prediction calls, requests Model.Dimensions, and returns float vectors, so
+// choice through Parts. The default is APIOpenAI. Vertex prediction calls use
+// RETRIEVAL_DOCUMENT for documents and RETRIEVAL_QUERY for queries, request Model.Dimensions, and return float vectors, so
 // InputTypeMode, RequestDimensions, and EncodingFormat have no effect there.
 // The client may send fewer than Batch.Items inputs per Vertex request; see
 // embedclient.Client.BatchItems.

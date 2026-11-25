@@ -166,8 +166,11 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 	}{
 		{"split", "gemini-embedding-001", "batch token limit exceeded", []string{"1", "2", "3", "4", "5"}, []int{5, 2, 3, 1, 2}, false},
 		{"single too long", "gemini-embedding-001", "input exceeds maximum token length", []string{"1"}, []int{1}, true},
+		{"single batch limit", "gemini-embedding-001", "batch token limit exceeded", []string{"1"}, []int{1}, true},
+		{"input too long", "gemini-embedding-001", "input exceeds maximum token length", []string{"1", "2", "3"}, []int{3}, true},
 		{"unknown error", "gemini-embedding-001", "invalid request", []string{"1", "2", "3"}, []int{3}, true},
 		{"other model", "text-embedding-005", "input exceeds maximum token length", []string{"1", "2", "3"}, []int{3}, true},
+		{"other model batch limit", "text-embedding-005", "batch token limit exceeded", []string{"1", "2", "3"}, []int{3}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sizes []int
@@ -196,6 +199,7 @@ func TestVertexTokenLimitSplit(t *testing.T) {
 			vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleDocument, tc.texts)
 			if tc.wantError {
 				require.Error(t, err)
+				assert.IsType(t, &embedclient.APIError{}, err)
 			} else {
 				require.NoError(t, err)
 				require.Len(t, vectors, len(tc.texts))

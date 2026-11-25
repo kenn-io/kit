@@ -138,13 +138,21 @@ const maxErrorBody = 4096
 
 // newAPIError reads up to maxErrorBody bytes of a non-2xx response to
 // classify it. The body is not kept.
-func newAPIError(resp *http.Response) *APIError {
+type requestTokenLimitError struct{ *APIError }
+
+func (e *requestTokenLimitError) Unwrap() error { return e.APIError }
+
+func newAPIError(resp *http.Response, vertexGemini bool) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-	return &APIError{
+	err := &APIError{
 		StatusCode: resp.StatusCode,
 		RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
 		Reason:     classifyFailure(resp.StatusCode, body),
 	}
+	if vertexGemini && resp.StatusCode == http.StatusBadRequest && err.Reason == ReasonUnknown && requestTokenLimit(body) {
+		return &requestTokenLimitError{err}
+	}
+	return err
 }
 
 func retryAfter(header string) time.Duration {

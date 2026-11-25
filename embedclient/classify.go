@@ -58,8 +58,8 @@ var errorCodeReasons = map[string]Reason{
 // "unsupported content type" is a media-type failure, so a size word must
 // pair with an input word, and "content" must pair with "policy". A message
 // about the model or the requested dimensions is a request the endpoint
-// never accepts. Batch and request limits stay unknown unless they name a
-// token size limit.
+// never accepts. Batch and request limits stay unknown because they do not
+// identify a rejected input.
 func messageReason(message string) Reason {
 	switch {
 	case message == "":
@@ -68,8 +68,6 @@ func messageReason(message string) Reason {
 		return ReasonInvalidRequest
 	case strings.Contains(message, "content") && strings.Contains(message, "policy"):
 		return ReasonContentPolicy
-	case strings.Contains(message, "token") && containsAny(message, "too long", "too large", "too many", "length", "maximum", "max ", "limit", "exceed", "overflow", "less than"):
-		return ReasonInputTooLong
 	case containsAny(message, "batch", "per request", "number of inputs", "too many inputs"):
 		return ReasonUnknown
 	case containsAny(message, "too long", "too large", "too many", "length", "maximum", "exceed",
@@ -78,6 +76,13 @@ func messageReason(message string) Reason {
 		return ReasonInputTooLong
 	}
 	return ReasonUnknown
+}
+
+func requestTokenLimit(body []byte) bool {
+	_, message := errorDetail(body)
+	message = strings.ToLower(message)
+	return containsAny(message, "batch", "per request") && strings.Contains(message, "token") &&
+		containsAny(message, "too long", "too large", "too many", "length", "maximum", "max ", "limit", "exceed", "overflow", "less than")
 }
 
 func modelMissing(message string) bool {

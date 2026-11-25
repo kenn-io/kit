@@ -201,9 +201,12 @@ func (c *Client) postBatch(ctx context.Context, inputs []encoded) ([][]float32, 
 	vectors, err := retryCall(ctx, c.retry, len(inputs) > 1, func() ([][]float32, error) {
 		return c.post(ctx, inputs)
 	})
-	apiErr, inputTooLong := errors.AsType[*APIError](err)
-	splitVertex := c.api == embedconfig.APIVertex && c.model.Name == "gemini-embedding-001" && inputTooLong && apiErr.Reason == ReasonInputTooLong
+	limitErr, tokenLimit := errors.AsType[*requestTokenLimitError](err)
+	splitVertex := c.api == embedconfig.APIVertex && c.model.Name == "gemini-embedding-001" && tokenLimit
 	if (!splittableTimeout(err) && !splitVertex) || len(inputs) < 2 || ctx.Err() != nil {
+		if tokenLimit {
+			return vectors, limitErr.APIError
+		}
 		return vectors, err
 	}
 	middle := len(inputs) / 2

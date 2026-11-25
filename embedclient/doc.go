@@ -20,7 +20,7 @@
 // that client, pins requests to the configured origin, and can attach a bearer
 // token. A multi-input request that times out is split into halves, recursively,
 // while the caller's context remains active. Gemini embedding 001 prediction
-// requests also split on an input-too-long error. Single-input timeouts and other
+// requests also split on a request-level token limit error. Single-input timeouts and other
 // eligible failures are retried only when the caller sets Options.Retry.
 // A non-2xx response, a short body, or a vector that fails validation fails
 // the whole call.
