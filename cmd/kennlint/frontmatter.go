@@ -256,6 +256,10 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			return total, err
 		}
 		for _, s := range stale {
+			if len(s.problems) != 0 {
+				report(s.file, s.problems)
+				continue
+			}
 			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to the actual editor"
 			switch {
 			case s.resource != "":
@@ -378,7 +382,10 @@ func checkFrontmatterFile(root, file string, fix bool, rules frontmatterRules, b
 // frontmatterStale names a file whose timestamp missed a meaningful edit. For
 // a managed skill, resource names the first changed bundle file when SKILL.md
 // itself changed only cosmetically.
-type frontmatterStale struct{ file, resource string }
+type frontmatterStale struct {
+	file, resource string
+	problems       []string
+}
 
 // frontmatterStaleDates returns the files whose content differs from the merge
 // base with ref while the profile timestamp still matches. A managed skill also
@@ -429,14 +436,8 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files, owners,
 			}
 		}
 	}
-	checks := slices.Clone(files)
-	for _, owner := range owners {
-		if inferred[owner] && !direct[owner] {
-			checks = append(checks, owner)
-		}
-	}
 	var stale []frontmatterStale
-	for _, file := range checks {
+	for _, file := range files {
 		if path.Base(file) == "index.md" || path.Base(file) == "log.md" {
 			continue // Reserved files are never concepts, even with extension metadata.
 		}
@@ -467,7 +468,7 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files, owners,
 		if !validBefore || !validAfter || afterTime.After(beforeTime) {
 			continue
 		}
-		if status == "M" && direct[file] {
+		if status == "M" {
 			meaningful, err := profileMeaningful(before, after, skill)
 			if err != nil {
 				return nil, fmt.Errorf("comparing %s: %w", file, err)
@@ -478,11 +479,7 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files, owners,
 			}
 		}
 		if skill {
-			bundleChanges := changes
-			if !direct[file] {
-				bundleChanges = selectedChanges
-			}
-			resource, err := frontmatterBundleChange(ctx, root, base, path.Dir(file), bundleChanges, managed)
+			resource, err := frontmatterBundleChange(ctx, root, base, path.Dir(file), changes, managed)
 			if err != nil {
 				return nil, err
 			}
@@ -491,7 +488,58 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files, owners,
 			}
 		}
 	}
+	for _, owner := range owners {
+		if !inferred[owner] || direct[owner] || changes[owner] == "A" {
+			continue
+		}
+		finding, err := frontmatterIndirectSkill(ctx, root, base, owner, selectedChanges, managed)
+		if err != nil {
+			return nil, err
+		}
+		if finding != nil {
+			stale = append(stale, *finding)
+		}
+	}
 	return stale, nil
+}
+
+// Check only the provenance of an indirectly selected skill. The owner is
+// never fixed, and first-time provenance adoption has no timestamp to advance.
+func frontmatterIndirectSkill(ctx context.Context, root, base, owner string, changes map[string]string, managed map[string]struct{}) (*frontmatterStale, error) {
+	resource, err := frontmatterBundleChange(ctx, root, base, path.Dir(owner), changes, managed)
+	if err != nil || resource == "" {
+		return nil, err
+	}
+	previous, err := frontmatterGit(ctx, root, "cat-file", "blob", base+":"+owner)
+	if err != nil {
+		return nil, err
+	}
+	before, err := okf.Parse(previous)
+	if err != nil {
+		return nil, nil //nolint:nilerr // A skill adopting provenance has no prior timestamp.
+	}
+	beforeTime, validBefore := okf.Timestamp(before.Field("metadata", "generated", "at"))
+	if !validBefore {
+		return nil, nil
+	}
+	current, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(owner)))
+	if err != nil {
+		return nil, err
+	}
+	finding := &frontmatterStale{file: owner, resource: resource}
+	after, err := okf.Parse(current)
+	if err != nil {
+		finding.problems = []string{fmt.Sprintf("bundle file %s changed, but skill metadata cannot be read: %v", resource, err)}
+		return finding, nil
+	}
+	if problems := generatedProblems(after.Field("metadata", "generated"), "metadata.generated"); len(problems) != 0 {
+		finding.problems = problems
+		return finding, nil
+	}
+	if afterTime, ok := okf.Timestamp(after.Field("metadata", "generated", "at")); ok && afterTime.After(beforeTime) {
+		return nil, nil
+	}
+	return finding, nil
 }
 
 // frontmatterChanges maps each tracked path that differs from base to its

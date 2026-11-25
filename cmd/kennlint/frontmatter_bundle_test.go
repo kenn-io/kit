@@ -210,3 +210,59 @@ func TestScopedSkillBundleChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestScopedSkillOwnerProvenance(t *testing.T) {
+	isolateFrontmatterGit(t)
+	const (
+		owner    = "skills/a/SKILL.md"
+		selected = "skills/a/ref.md"
+		original = "# Reference\n\nThe original reference text.\n"
+		edited   = "# Reference\n\nThe changed reference text.\n"
+	)
+	missingAt := strings.Replace(skillHeader, "    at: \"2026-11-17T12:00:00Z\"\n", "", 1)
+	invalidAt := strings.Replace(skillHeader, "2026-11-17T12:00:00Z", "not a date", 1)
+	missingBy := strings.Replace(skillHeader, "    by: human:test\n", "", 1)
+	later := strings.Replace(skillHeader, "12:00:00Z", "12:01:00Z", 1)
+	const malformed = "---\nmetadata: [\n---\n"
+	for _, tc := range []struct {
+		name, before, after, resource, finding string
+	}{
+		{"missing timestamp", skillHeader, missingAt, edited, "metadata.generated.at"},
+		{"invalid timestamp", skillHeader, invalidAt, edited, "metadata.generated.at"},
+		{"missing actor", skillHeader, missingBy, edited, "metadata.generated.by must"},
+		{"later timestamp with missing actor", skillHeader, strings.Replace(missingBy, "12:00:00Z", "12:01:00Z", 1), edited, "metadata.generated.by must"},
+		{"missing header", skillHeader, "# No header\n", edited, "missing opening"},
+		{"malformed YAML", skillHeader, malformed, edited, "invalid frontmatter YAML"},
+		{"format only", skillHeader, malformed, "# Reference\n\nThe original\nreference text.\n", ""},
+		{"unrelated", skillHeader, malformed, original, ""},
+		{"adoption", invalidAt, malformed, edited, ""},
+		{"first missing header", "# No header\n", invalidAt, edited, ""},
+		{"later valid edit", skillHeader, later, edited, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := gittest.NewRepoWithCommit(t)
+			t.Chdir(repo.Root)
+			repo.WriteFile(owner, tc.before)
+			repo.WriteFile(selected, original)
+			repo.WriteFile("skills/a/other.md", original)
+			repo.Run("add", ".")
+			repo.Run("commit", "-m", "bundle base")
+			repo.WriteFile(owner, tc.after)
+			repo.WriteFile(selected, tc.resource)
+			repo.WriteFile("skills/a/other.md", edited)
+			var out, errs bytes.Buffer
+			n, err := runFrontmatter(t.Context(), []string{"-changed", "HEAD", "-fix", "-by", "human:other", "-managed-skill", owner, selected}, &out, &errs)
+			require.NoError(t, err)
+			if tc.finding == "" {
+				assert.Zero(t, n, errs.String())
+			} else {
+				assert.Equal(t, 1, n, errs.String())
+				assert.Contains(t, errs.String(), owner+":")
+				assert.Contains(t, errs.String(), tc.finding)
+			}
+			got, err := os.ReadFile(owner)
+			require.NoError(t, err)
+			assert.Equal(t, tc.after, string(got))
+		})
+	}
+}
