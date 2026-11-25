@@ -102,10 +102,14 @@ func New(opts Options) (*Client, error) {
 	if deployment.API == embedconfig.APIVertex {
 		method := ":predict"
 		limit := 1
-		if strings.HasPrefix(model.Name, "gemini-embedding-2") {
+		switch {
+		case strings.HasPrefix(model.Name, "gemini-embedding-2"):
 			method = ":embedContent"
-		} else if model.Name == "gemini-embedding-001" {
-			limit = 250
+			if err := validateGeminiEmbedding2Roles(roles); err != nil {
+				return nil, err
+			}
+		case vertexBatchModels[model.Name]:
+			limit = vertexMaxBatchItems
 		}
 		endpoint = canonical + "/" + url.PathEscape(model.Name) + method
 		items = min(items, limit)

@@ -85,6 +85,32 @@ func TestVertexEmbedContent(t *testing.T) {
 	}
 }
 
+func TestVertexGeminiEmbedding2RequiresTaskRoles(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		roles embedconfig.Roles
+		ok    bool
+	}{
+		{"no task", embedconfig.Roles{DocumentSuffix: "."}, false},
+		{"query prefix", embedconfig.Roles{QueryPrefix: "task: search result | query: "}, true},
+		{"document prefix", embedconfig.Roles{DocumentPrefix: "title: none | text: "}, true},
+		{"formatter", embedconfig.Roles{DocumentFormatter: "titled"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, name := range []string{"gemini-embedding-2", "gemini-embedding-2-preview"} {
+				model := unitModel()
+				model.Name = name
+				_, err := embedclient.New(embedclient.Options{Model: model, Roles: tc.roles, Deployment: embedconfig.Deployment{BaseURL: "https://aiplatform.googleapis.com/v1/projects/p/locations/global/publishers/google/models", API: embedconfig.APIVertex}})
+				if tc.ok {
+					assert.NoError(t, err, name)
+				} else {
+					assert.ErrorContains(t, err, `"task: search result | query: "`, name)
+				}
+			}
+		})
+	}
+}
+
 func TestGoogleHTTPClientOverridesAPIKey(t *testing.T) {
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -122,7 +148,9 @@ func TestVertexBatchItemsAndRequests(t *testing.T) {
 	}{
 		{"gemini capped", "gemini-embedding-001", 300, 251, []int{250, 1}, 0, ""},
 		{"gemini caller cap", "gemini-embedding-001", 3, 4, []int{3, 1}, 0, ""},
-		{"other model", "text-embedding-005", 300, 2, []int{1, 1}, 0, ""},
+		{"text embedding capped", "text-embedding-005", 300, 251, []int{250, 1}, 0, ""},
+		{"multilingual capped", "text-multilingual-embedding-002", 300, 251, []int{250, 1}, 0, ""},
+		{"other model", "custom-embedding", 300, 2, []int{1, 1}, 0, ""},
 		{"split", "gemini-embedding-001", 32, 5, []int{5, 2, 3, 1, 2}, 2, "input token count is 23000 but the model supports up to 20000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

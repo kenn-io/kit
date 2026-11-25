@@ -1,13 +1,16 @@
 // Package embedclient calls OpenAI-compatible and Vertex text embedding endpoints.
 //
 // Vertex predict requests use task type RETRIEVAL_DOCUMENT for document roles
-// and RETRIEVAL_QUERY for query roles. Gemini embedding 2 uses embedContent;
-// callers can put its task instructions in role prefixes. Both request Model.Dimensions and
+// and RETRIEVAL_QUERY for query roles. Gemini embedding 2 uses embedContent
+// and ignores task types, so New requires a role prefix or formatter that
+// carries its task, such as "task: search result | query: " for queries and
+// "title: none | text: " for documents. Both request Model.Dimensions and
 // always return float vectors. InputTypeMode, RequestDimensions, and
 // EncodingFormat do not change a Vertex request.
 //
-// Vertex sends up to 250 inputs per request for gemini-embedding-001 and one
-// for other models, further capped by Batch.Items. A Vertex 400 that names a
+// Vertex sends up to 250 inputs per request for gemini-embedding-001,
+// text-embedding-005, and text-multilingual-embedding-002, and one for other
+// models, further capped by Batch.Items. A Vertex 400 that names a
 // token limit is an input rejection; a request with more than one input is split
 // in halves when it receives one. Set Batch.Items so a request stays under
 // 20,000 tokens to avoid failed first attempts.
