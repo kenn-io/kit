@@ -544,112 +544,123 @@ func TestEmbedClassifiesFailedResponses(t *testing.T) {
 		status int
 		body   string
 		want   embedclient.Reason
+		vertex bool
 	}{
 		{
 			"structured context length code", http.StatusBadRequest,
 			`{"error":{"message":"This model's maximum context length is 8192 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}`,
-			embedclient.ReasonInputTooLong,
+			embedclient.ReasonInputTooLong, false,
 		},
 		{
 			"structured model code", http.StatusBadRequest,
 			`{"error":{"message":"The model does not exist","code":"model_not_found"}}`,
-			embedclient.ReasonInvalidRequest,
+			embedclient.ReasonInvalidRequest, false,
 		},
 		{
 			"plain error string over the context", http.StatusBadRequest,
-			`{"error":"maximum context length is 8192 tokens"}`, embedclient.ReasonInputTooLong,
+			`{"error":"maximum context length is 8192 tokens"}`, embedclient.ReasonInputTooLong, false,
 		},
-		{"text body token overflow", http.StatusBadRequest, "token window overflow", embedclient.ReasonInputTooLong},
-		{"payload too large", http.StatusRequestEntityTooLarge, "input too large", embedclient.ReasonInputTooLong},
-		{"payload too large without a body", http.StatusRequestEntityTooLarge, "", embedclient.ReasonInputTooLong},
-		{"content policy", http.StatusUnprocessableEntity, "content policy violation", embedclient.ReasonContentPolicy},
+		{"text body token overflow", http.StatusBadRequest, "token window overflow", embedclient.ReasonInputTooLong, false},
+		{"payload too large", http.StatusRequestEntityTooLarge, "input too large", embedclient.ReasonInputTooLong, false},
+		{"payload too large without a body", http.StatusRequestEntityTooLarge, "", embedclient.ReasonInputTooLong, false},
+		{"content policy", http.StatusUnprocessableEntity, "content policy violation", embedclient.ReasonContentPolicy, false},
 		{
 			"unsupported dimensions", http.StatusBadRequest,
-			`{"error":"input exceeds supported dimensions"}`, embedclient.ReasonInvalidRequest,
+			`{"error":"input exceeds supported dimensions"}`, embedclient.ReasonInvalidRequest, false,
 		},
-		{"unknown model", http.StatusBadRequest, `{"error":"model \"x\" not found"}`, embedclient.ReasonInvalidRequest},
+		{"unknown model", http.StatusBadRequest, `{"error":"model \"x\" not found"}`, embedclient.ReasonInvalidRequest, false},
 		// Bodies below follow the error shapes each server sends.
 		{
 			"openai context length with a null code", http.StatusBadRequest,
 			`{"error":{"message":"Invalid 'input': maximum context length is 8192 tokens.","type":"invalid_request_error","param":null,"code":null}}`,
-			embedclient.ReasonInputTooLong,
+			embedclient.ReasonInputTooLong, false,
 		},
 		{
 			"openai unsupported dimensions", http.StatusBadRequest,
 			`{"error":{"message":"This model does not support specifying dimensions.","type":"invalid_request_error","param":null,"code":null}}`,
-			embedclient.ReasonInvalidRequest,
+			embedclient.ReasonInvalidRequest, false,
 		},
 		{
 			"openai model without access", http.StatusForbidden,
 			`{"error":{"message":"The model does not exist or you do not have access to it.","code":"model_not_found"}}`,
-			embedclient.ReasonInvalidRequest,
+			embedclient.ReasonInvalidRequest, false,
 		},
 		{
 			"ollama native context length", http.StatusBadRequest,
-			`{"error":"the input length exceeds the context length"}`, embedclient.ReasonInputTooLong,
+			`{"error":"the input length exceeds the context length"}`, embedclient.ReasonInputTooLong, false,
 		},
 		{
 			"ollama openai route invalid input", http.StatusBadRequest,
 			`{"error":{"message":"invalid input","type":"invalid_request_error","param":null,"code":null}}`,
-			embedclient.ReasonUnknown,
+			embedclient.ReasonUnknown, false,
 		},
 		{
 			"tei token limit", http.StatusUnprocessableEntity,
 			`{"message":"Input validation error: ` + "`inputs`" + ` must have less than 512 tokens. Given: 600","code":422,"type":"Validation"}`,
-			embedclient.ReasonInputTooLong,
+			embedclient.ReasonInputTooLong, false,
 		},
 		{
 			"tei batch limit", http.StatusUnprocessableEntity,
 			`{"message":"batch size 64 > maximum allowed batch size 32","code":422,"type":"Validation"}`,
-			embedclient.ReasonUnknown,
+			embedclient.ReasonUnknown, false,
 		},
 		{
 			"tei plain text rejection", http.StatusUnprocessableEntity,
-			"Failed to deserialize the JSON body into the target type", embedclient.ReasonUnknown,
+			"Failed to deserialize the JSON body into the target type", embedclient.ReasonUnknown, false,
 		},
 		{
 			"vllm context length", http.StatusBadRequest,
 			`{"error":{"message":"This model's maximum context length is 512 tokens. However, you requested 600 tokens.","type":"BadRequestError","param":"input_tokens","code":400}}`,
-			embedclient.ReasonInputTooLong,
+			embedclient.ReasonInputTooLong, false,
 		},
 		{
 			"vllm matryoshka dimensions", http.StatusBadRequest,
 			`{"error":{"message":"Model 'x' does not support Matryoshka embeddings; dimensions must be unset","type":"BadRequestError","param":null,"code":400}}`,
-			embedclient.ReasonInvalidRequest,
+			embedclient.ReasonInvalidRequest, false,
 		},
 		{
 			"litellm context window", http.StatusBadRequest,
 			`{"error":{"message":"litellm.ContextWindowExceededError: input too long","type":null,"param":null,"code":"400"}}`,
-			embedclient.ReasonInputTooLong,
+			embedclient.ReasonInputTooLong, false,
 		},
 		{
 			"request input count", http.StatusBadRequest,
 			`{"error":{"message":"Too many inputs. The max number of inputs is 2048.","code":null}}`,
-			embedclient.ReasonUnknown,
+			embedclient.ReasonUnknown, false,
 		},
 		{
 			"request token total", http.StatusBadRequest,
 			`{"error":{"message":"Requested 400000 tokens, max 300000 tokens per request","code":null}}`,
-			embedclient.ReasonUnknown,
+			embedclient.ReasonUnknown, false,
 		},
-		{"empty 400", http.StatusBadRequest, "", embedclient.ReasonUnknown},
-		{"route text", http.StatusBadRequest, "no route", embedclient.ReasonUnknown},
-		{"invalid token wording", http.StatusBadRequest, "invalid token", embedclient.ReasonUnknown},
-		{"unsupported content type", http.StatusUnprocessableEntity, "unsupported content type", embedclient.ReasonUnknown},
-		{"not found", http.StatusNotFound, "model not found", embedclient.ReasonInvalidRequest},
-		{"unauthorized", http.StatusUnauthorized, "invalid token", embedclient.ReasonCredentials},
-		{"forbidden", http.StatusForbidden, "forbidden", embedclient.ReasonCredentials},
-		{"rate limited", http.StatusTooManyRequests, "input rate limited", embedclient.ReasonRateLimited},
-		{"server error", http.StatusInternalServerError, "token error", embedclient.ReasonUnavailable},
-		{"bad gateway", http.StatusBadGateway, "", embedclient.ReasonUnavailable},
+		{"empty 400", http.StatusBadRequest, "", embedclient.ReasonUnknown, false},
+		{"route text", http.StatusBadRequest, "no route", embedclient.ReasonUnknown, false},
+		{"invalid token wording", http.StatusBadRequest, "invalid token", embedclient.ReasonUnknown, false},
+		{"unsupported content type", http.StatusUnprocessableEntity, "unsupported content type", embedclient.ReasonUnknown, false},
+		{"not found", http.StatusNotFound, "model not found", embedclient.ReasonInvalidRequest, false},
+		{"unauthorized", http.StatusUnauthorized, "invalid token", embedclient.ReasonCredentials, false},
+		{"forbidden", http.StatusForbidden, "forbidden", embedclient.ReasonCredentials, false},
+		{"rate limited", http.StatusTooManyRequests, "input rate limited", embedclient.ReasonRateLimited, false},
+		{"server error", http.StatusInternalServerError, "token error", embedclient.ReasonUnavailable, false},
+		{"bad gateway", http.StatusBadGateway, "", embedclient.ReasonUnavailable, false},
+		{"vertex single token limit", http.StatusBadRequest, `{"error":{"message":"input token count is 3000 but the model supports up to 2048"}}`, embedclient.ReasonInputTooLong, true},
+		{"vertex invalid token", http.StatusBadRequest, `{"error":{"message":"Invalid token"}}`, embedclient.ReasonUnknown, true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, _ *http.Request) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(test.status)
 				_, _ = io.WriteString(w, test.body)
-			})
-			_, err := client.Embed(t.Context(), oneText())
+			}))
+			t.Cleanup(server.Close)
+			deployment := embedconfig.Deployment{BaseURL: server.URL}
+			if test.vertex {
+				deployment.API = embedconfig.APIVertex
+				deployment.BaseURL += "/publishers/google/models"
+			}
+			client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: deployment})
+			require.NoError(t, err)
+			_, err = client.Embed(t.Context(), oneText())
 			api, ok := errors.AsType[*embedclient.APIError](err)
 			require.True(t, ok, "got %v", err)
 			assert.Equal(t, test.want, api.Reason)

@@ -305,6 +305,8 @@ func encodeResponse(spec profileSpec, event Event, output handledOutput) ([]byte
 		err      error
 	)
 	switch spec.responseFormat {
+	case responseAgy:
+		response, err = encodeAgyResponse(event, output.value)
 	case responseClaude:
 		response, err = encodeClaudeResponse(spec, event, output.value)
 	case responseCopilot:

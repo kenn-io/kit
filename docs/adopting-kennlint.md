@@ -2,7 +2,7 @@
 type: Guide
 title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
-generated: { by: codex/gpt-6.1-sol, at: "2026-11-19T16:24:14Z" }
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-25T18:37:19Z" }
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -121,9 +121,7 @@ it after adding rule labels and reasons to their suppressions.
    go run go.kenn.io/kit/cmd/kennlint@<kit version> frontmatter
    ```
 
-   Follow the [docs profile and autofix guide](adopting-docs.md) for metadata and migration.
-
-   Repositories that have not migrated can temporarily use `-legacy` as a bridge.
+   Follow the [docs profile and autofix guide](adopting-docs.md) for metadata requirements.
 
    Add `frontmatter` to the lint target and a Markdown pre-commit hook.
    On pull requests, also run:
@@ -136,10 +134,10 @@ it after adding rule labels and reasons to their suppressions.
    Actions, `github.event.pull_request.base.sha`) and use a checkout with full
    history. A meaningful edit to an existing file must set `generated.at` to a
    later time, including edits within the same day; `-fix` never bumps it. New files only need valid metadata.
-   Deletions are skipped. Findings print as `path: problem` on stderr and return a
+   To opt in compatible skills, pass the same repeatable `-managed-skill GLOB`
+   to checks and fixes. Deleting a tracked resource from a managed skill is
+   an edit to that skill's bundle. Other file deletions are skipped. Findings print as `path: problem` on stderr and return a
    nonzero exit status; success prints a short summary.
-
-Use `-managed-skill 'skills/*/SKILL.md'` for [compatible managed skills](adopting-docs.md#skills).
 
 ## Overlay semantics
 

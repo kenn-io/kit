@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gittest "go.kenn.io/kit/git/test"
+	"go.kenn.io/kit/okf"
 )
 
 func TestFrontmatterMergedProvenance(t *testing.T) {
@@ -27,7 +28,7 @@ func TestFrontmatterMergedProvenance(t *testing.T) {
 			file := filepath.Join(root, tc.file)
 			require.NoError(t, os.WriteFile(file, []byte(src), 0o600))
 			for range 2 {
-				problems, changed, err := checkFrontmatterFile(t.Context(), root, tc.file, true, false, false, nil, "human:new", "")
+				problems, changed, err := checkFrontmatterFile(root, tc.file, true, nil, "human:new", "")
 				require.NoError(t, err)
 				assert.Empty(t, problems)
 				assert.False(t, changed)
@@ -74,13 +75,13 @@ func TestMergedProvenanceChangedContent(t *testing.T) {
 
 func TestMappingFieldMergePrecedence(t *testing.T) {
 	src := "---\na: &a {by: first, at: first}\nb: &b {by: second, at: second}\nmerged: {<<: [*a, *b], by: null}\nquoted: {'<<': *a}\n---\n"
-	b, err := parseFrontmatter([]byte(src))
+	b, err := okf.Parse([]byte(src))
 	require.NoError(t, err)
-	at := mappingField(b.fields["merged"], "at")
+	at := mappingField(b.Field("merged"), "at")
 	require.NotNil(t, at)
 	assert.Equal(t, "first", at.Value)
-	by := mappingField(b.fields["merged"], "by")
+	by := mappingField(b.Field("merged"), "by")
 	require.NotNil(t, by)
 	assert.Equal(t, "!!null", by.ShortTag())
-	assert.Nil(t, mappingField(b.fields["quoted"], "by"))
+	assert.Nil(t, mappingField(b.Field("quoted"), "by"))
 }

@@ -17,21 +17,18 @@
   module plugin.
 - `cmd/kennlint` runs analyzers, renders or checks configuration, and scans
   workflow downloads with `kennlint workflow-retries`. Its `frontmatter`
-  command checks git-tracked Markdown metadata against the Kenn OKF profile,
-  or the temporary legacy profile. Fixes preserve bodies, never rewrite invalid
-  values, never rewrite an unlisted `SKILL.md`, and never bump valid timestamps.
-  Meaningful edits require a changed timestamp against the merge base;
-  formatting-only edits do not. A managed skill's timestamp also covers every
-  tracked file in its bundle outside managed nested skills; unmanaged nested
-  `SKILL.md` templates are resources of the enclosing skill. Bundle files carry
-  no frontmatter.
+  command checks git-tracked Markdown metadata against the Kenn OKF profile.
+  Fixes fill only absent fields, preserve bodies, and never bump
+  timestamps. Meaningful edits require a changed
+  timestamp against the merge base; formatting-only edits do not.
+  Opted-in skills use nested `metadata.generated` and own their tracked
+  bundle resources, including unlisted nested templates; no resource gets
+  a documentation header.
 
 See `docs/adopting-kennlint.md` for the consumer workflow.
 
 ## Invariants
 
-- Source validation checks declared metadata only; never fetch resources or
-  infer source-citation intent from ordinary Markdown footnotes.
 - Every analyzer is type-aware through `go/analysis` and proves its behavior
   with `analysistest` fixtures under `testdata/`, including negative cases.
   Do not replace an analyzer with text matching.

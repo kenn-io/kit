@@ -13,27 +13,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
-
-	"gopkg.in/yaml.v3"
 
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/consolewindow"
 	gitenv "go.kenn.io/kit/git/env"
+	"go.kenn.io/kit/okf"
 	"go.kenn.io/kit/pathresolve"
 )
-
-// trimmedText is a flag whose value, once set, is non-empty after trimming.
-type trimmedText struct{ value string }
-
-func (t *trimmedText) String() string { return t.value }
-func (t *trimmedText) Set(s string) error {
-	t.value = strings.TrimSpace(s)
-	if t.value == "" {
-		return errors.New("value must not be empty")
-	}
-	return nil
-}
 
 type frontmatterExcludes []string
 
@@ -85,72 +71,6 @@ func frontmatterGit(ctx context.Context, dir string, args ...string) ([]byte, er
 	return out, nil
 }
 
-type frontmatterBlock struct {
-	doc     yaml.Node
-	fields  map[string]*yaml.Node
-	body    []byte
-	newline string
-}
-
-var errFrontmatterMissing = errors.New("missing opening --- frontmatter delimiter")
-
-func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
-	lines := bytes.SplitAfter(src, []byte("\n"))
-	lineText := func(line []byte) string { return strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r") }
-	if lineText(lines[0]) != "---" {
-		return nil, errFrontmatterMissing
-	}
-	end := 1
-	for end < len(lines) && lineText(lines[end]) != "---" {
-		end++
-	}
-	if end == len(lines) {
-		return nil, errors.New("missing closing --- frontmatter delimiter")
-	}
-	b := &frontmatterBlock{body: bytes.Join(lines[end+1:], nil), newline: "\n"}
-	if bytes.HasSuffix(lines[0], []byte("\r\n")) {
-		b.newline = "\r\n"
-	}
-	header := bytes.Join(lines[1:end], nil)
-	dec := yaml.NewDecoder(bytes.NewReader(header))
-	if err := dec.Decode(&b.doc); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("invalid frontmatter YAML: %w", err)
-	}
-	var extra yaml.Node
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, errors.New("frontmatter must contain a single YAML mapping")
-	}
-	if len(b.doc.Content) != 1 || b.doc.Content[0].Kind != yaml.MappingNode {
-		return nil, errors.New("frontmatter must be a YAML mapping")
-	}
-	// Decode the whole mapping to reject duplicate keys at every depth.
-	var fields map[string]any
-	if err := b.doc.Decode(&fields); err != nil {
-		return nil, fmt.Errorf("invalid frontmatter YAML: %w", err)
-	}
-	// Freeze alias uses as independent values before any fixer can mutate an
-	// anchor or remove its defining field. Unknown extensions retain their values.
-	materializeYAMLAliases(&b.doc)
-	b.fields = make(map[string]*yaml.Node, len(fields))
-	root := b.doc.Content[0]
-	for i := 0; i < len(root.Content); i += 2 {
-		if key := root.Content[i]; key.ShortTag() != "!!merge" {
-			b.fields[key.Value] = resolveYAML(root.Content[i+1])
-		}
-	}
-	// Decode includes inherited keys; retain their effective syntax nodes too.
-	for key := range fields {
-		if b.fields[key] == nil {
-			b.fields[key] = mappingField(root, key)
-		}
-	}
-	return b, nil
-}
-
-func isSkillFile(file string) bool {
-	return path.Base(file) == "SKILL.md"
-}
-
 func frontmatterInSkillDirectory(file string, skillDirs map[string]struct{}) bool {
 	for dir := path.Dir(file); dir != "."; dir = path.Dir(dir) {
 		if _, ok := skillDirs[dir]; ok {
@@ -160,64 +80,12 @@ func frontmatterInSkillDirectory(file string, skillDirs map[string]struct{}) boo
 	return false
 }
 
-func frontmatterDate(n *yaml.Node) bool {
-	if n == nil || n.Kind != yaml.ScalarNode || len(n.Value) != len(time.DateOnly) {
-		return false
-	}
-	date, err := time.Parse(time.DateOnly, n.Value)
-	return err == nil && date.Year() > 0
-}
-
-func (b *frontmatterBlock) problems() []string {
-	var problems []string
-	for _, key := range []string{"title", "description"} {
-		if !validString(b.fields[key]) {
-			problems = append(problems, key+" must be a non-empty string")
-		}
-	}
-	n := b.fields["last_edited"]
-	if n == nil || !frontmatterDate(n) || n.Tag != "!!timestamp" || n.Style != 0 {
-		problems = append(problems, "last_edited must be a bare YYYY-MM-DD date")
-	}
-	return problems
-}
-
-func (b *frontmatterBlock) fix(date string) ([]byte, bool, error) {
-	n := b.fields["last_edited"]
-	switch {
-	case n == nil:
-		n = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!timestamp", Value: date}
-		b.doc.Content[0].Content = append(b.doc.Content[0].Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "last_edited"}, n)
-		b.fields["last_edited"] = n
-	case frontmatterDate(n) && (n.Style == yaml.SingleQuotedStyle || n.Style == yaml.DoubleQuotedStyle):
-		n.Tag, n.Style = "!!timestamp", 0
-	default:
-		return nil, false, nil
-	}
-	return b.encode()
-}
-
-func (b *frontmatterBlock) encode() ([]byte, bool, error) {
-	var header bytes.Buffer
-	enc := yaml.NewEncoder(&header)
-	enc.SetIndent(2)
-	if err := enc.Encode(&b.doc); err != nil {
-		return nil, false, fmt.Errorf("encoding frontmatter: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return nil, false, err
-	}
-	result := []byte("---" + b.newline + strings.ReplaceAll(header.String(), "\n", b.newline) + "---" + b.newline)
-	result = append(result, b.body...)
-	if _, err := parseFrontmatter(result); err != nil {
-		return nil, false, fmt.Errorf("encoded frontmatter is invalid: %w", err)
-	}
-	return result, true, nil
-}
-
 // frontmatterTracked lists tracked Markdown files and the directories that
 // hold a SKILL.md.
+func isSkillFile(file string) bool {
+	return path.Base(file) == "SKILL.md"
+}
+
 func frontmatterTracked(ctx context.Context, root string) ([]string, map[string]struct{}, error) {
 	data, err := frontmatterGit(ctx, root, "ls-files", "-z", "--cached", "--deduplicate", "--", "*.md")
 	if err != nil {
@@ -245,10 +113,8 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	flags := flag.NewFlagSet("kennlint frontmatter", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	changed := flags.String("changed", "", "require metadata to change for meaningful edits since this ref")
-	legacy := flags.Bool("legacy", false, "use the temporary last_edited profile")
-	var by, description trimmedText
-	flags.Var(&by, "by", "actor for missing generated.by (producer/version, human:id, or process:id)")
-	flags.Var(&description, "description", "description for one selected file")
+	by := flags.String("by", "", "with -fix, actor for an absent generated mapping (producer/version, human:id, or process:id)")
+	description := flags.String("description", "", "with -fix, description for one selected file")
 	var rules frontmatterRules
 	flags.Var(&rules, "type-rule", "path rule GLOB=TYPE (repeatable)")
 	fix := flags.Bool("fix", false, "fill missing metadata where possible")
@@ -265,13 +131,8 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err := flags.Parse(args); err != nil {
 		return 0, err
 	}
-	if *legacy && len(managedSkills) > 0 {
-		return 0, errors.New("-managed-skill cannot be used with -legacy")
-	}
-	if *legacy {
-		excludes = append(excludes, "**/SKILL.md")
-	}
 	excludes = append(excludes, customExcludes...)
+	*by, *description = strings.TrimSpace(*by), strings.TrimSpace(*description)
 	rootBytes, err := frontmatterGit(ctx, "", "rev-parse", "--show-toplevel")
 	if err != nil {
 		return 0, err
@@ -285,19 +146,11 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return 0, err
 	}
-	// rev-parse --revs-only returns no revisions for an unborn HEAD, which has
-	// no commit dates for -fix to use.
-	head, err := frontmatterGit(ctx, root, "rev-parse", "--revs-only", "HEAD")
-	if err != nil {
-		return 0, err
-	}
-	hasHead := len(bytes.TrimSpace(head)) != 0
-
 	var targets []string
 	var eligibleSkills []string
 	docCount := 0
 	_, rootSkill := skillDirs["."]
-	rootSkill = rootSkill && !*legacy
+
 	for _, file := range files {
 		if !frontmatterSelected(file, nil, excludes) {
 			continue
@@ -315,7 +168,13 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 		// A symlinked SKILL.md is an import and is never checked or rewritten.
 		info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(file)))
-		if errors.Is(err, fs.ErrNotExist) || (skill && err == nil && info.Mode()&os.ModeSymlink != 0) {
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("%s: inspect selected path: %w", file, err)
+		}
+		if skill && info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
 		if skill {
@@ -324,7 +183,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if !frontmatterSelected(file, selected, nil) {
 			continue
 		}
-		beyond, resolveErr := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes, *legacy)
+		beyond, resolveErr := frontmatterResolvesBeyondBoundary(root, file, skillDirs, excludes)
 		if resolveErr != nil {
 			return 0, resolveErr
 		}
@@ -348,7 +207,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	if rootSkill && len(targets) == 0 {
 		return 0, errors.New("root SKILL.md makes document scope ambiguous: select ordinary document paths for read-only checks; -fix protects all root-bundle descendants")
 	}
-	if description.value != "" && docCount != 1 {
+	if *description != "" && docCount != 1 {
 		return 0, errors.New("-description requires exactly one selected file")
 	}
 	total, fixed := 0, 0
@@ -360,7 +219,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	var checked []string
 	for _, file := range targets {
-		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, hasHead, *legacy, rules, by.value, description.value)
+		problems, didFix, err := checkFrontmatterFile(root, file, *fix, rules, *by, *description)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // A tracked file deleted in the working tree needs no metadata.
 		}
@@ -374,15 +233,13 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		report(file, problems)
 	}
 	if *changed != "" {
-		stale, err := frontmatterStaleDates(ctx, root, *changed, checked, *legacy)
+		stale, err := frontmatterStaleDates(ctx, root, *changed, checked)
 		if err != nil {
 			return total, err
 		}
 		for _, s := range stale {
 			message := "content changed without a later generated.at; set generated.at to the edit time and generated.by to the actual editor"
 			switch {
-			case *legacy:
-				message = "content changed without changing last_edited"
 			case s.resource != "":
 				message = "bundle file " + s.resource + " changed without a later metadata.generated.at; set metadata.generated.at to the edit time and metadata.generated.by to the actual editor"
 			case isSkillFile(s.file):
@@ -403,7 +260,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 // bundle, or on an excluded path. Such a document, and any SKILL.md reached
 // through an alias, is never read or rewritten through its alias; an eligible
 // in-repository document alias stays supported.
-func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]struct{}, excludes []string, legacy bool) (bool, error) {
+func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]struct{}, excludes []string) (bool, error) {
 	resolved, err := pathresolve.EvalSymlinks(filepath.Join(root, filepath.FromSlash(file)))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -418,7 +275,7 @@ func frontmatterResolvesBeyondBoundary(root, file string, skillDirs map[string]s
 	rel, relErr := filepath.Rel(resolvedRoot, resolved)
 	inside := relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	target := filepath.ToSlash(rel)
-	if !legacy && target != file && (path.Base(target) == "log.md" || path.Base(target) == "index.md") {
+	if target != file && (path.Base(target) == "log.md" || path.Base(target) == "index.md") {
 		return true, nil // Reserved documents are only handled under their own names.
 	}
 	container := target
@@ -453,98 +310,51 @@ func frontmatterSelected(file string, selected []string, excludes []string) bool
 	})
 }
 
-func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead, legacy bool, rules frontmatterRules, by, description string) ([]string, bool, error) {
+func checkFrontmatterFile(root, file string, fix bool, rules frontmatterRules, by, description string) ([]string, bool, error) {
 	full := filepath.Join(root, filepath.FromSlash(file))
 	src, err := os.ReadFile(full)
 	if err != nil {
 		return nil, false, err
 	}
-	if !legacy {
-		switch path.Base(file) {
-		case "log.md":
-			if bytes.HasPrefix(src, []byte("---\n")) || bytes.HasPrefix(src, []byte("---\r\n")) {
-				return []string{"log.md must not have frontmatter"}, false, nil
-			}
-			return nil, false, nil
-		case "index.md":
-			// Reserved indexes are not concepts. A bundle root may carry metadata;
-			// validation and index regeneration leave it untouched.
-			_, err := parseFrontmatter(src)
-			if err != nil && !errors.Is(err, errFrontmatterMissing) {
-				return []string{err.Error()}, false, nil
-			}
-			return nil, false, nil
+	switch path.Base(file) {
+	case "log.md":
+		if bytes.HasPrefix(src, []byte("---\n")) || bytes.HasPrefix(src, []byte("---\r\n")) {
+			return []string{"log.md must not have frontmatter"}, false, nil
 		}
+		return nil, false, nil
+	case "index.md":
+		// Reserved indexes are not concepts; any metadata only has to parse.
+		_, err := okf.Parse(src)
+		if err != nil && !errors.Is(err, okf.ErrNoFrontmatter) {
+			return []string{err.Error()}, false, nil
+		}
+		return nil, false, nil
 	}
-	b, err := parseFrontmatter(src)
-	skill := isSkillFile(file)
-	if !skill && fix && errors.Is(err, errFrontmatterMissing) {
-		b, err = parseFrontmatter(frontmatterScaffold(src))
-		if err == nil {
-			b.doc.Content[0].Style = 0
-		}
+	if isSkillFile(file) {
+		return checkManagedSkill(full, src, fix, by)
+	}
+	b, err := okf.Parse(src)
+	if fix && errors.Is(err, okf.ErrNoFrontmatter) {
+		b, err = okf.New(src), nil
 	}
 	if err != nil {
 		return []string{err.Error()}, false, nil //nolint:nilerr // Count invalid metadata as a finding so scanning continues.
 	}
-	if !legacy {
-		var changed bool
-		var notes map[string]string
-		var problems []string
-		if skill {
-			if fix {
-				changed, notes = b.fixSkill(by)
-			}
-			problems = b.skillProblems()
-		} else {
-			if fix {
-				changed, notes = b.fixOKF(file, rules, by, description)
-			}
-			problems = b.okfProblems()
-		}
-		problems = frontmatterFixProblems(problems, notes)
-		if !changed {
-			return problems, false, nil
-		}
-		updated, _, err := b.encode()
-		if err == nil {
-			err = atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink())
-		}
-		return problems, err == nil, err
+	changed := fix && fixOKF(b, file, rules, by, description)
+	problems := profileProblems(b)
+	if !changed {
+		return problems, false, nil
 	}
-	if !fix {
-		return b.problems(), false, nil
-	}
-	date := time.Now().UTC().Format(time.DateOnly)
-	if b.fields["last_edited"] == nil && hasHead {
-		committed, err := frontmatterGit(ctx, root, "log", "-1", "--format=%cs", "--", file)
-		if err != nil {
-			return nil, false, err
-		}
-		if value := strings.TrimSpace(string(committed)); value != "" {
-			date = value
-		}
-	}
-	updated, changed, err := b.fix(date)
-	if err != nil || !changed {
-		return b.problems(), false, err
+	updated, err := b.Marshal()
+	if err != nil {
+		return nil, false, err
 	}
 	// A Markdown symlink is fixed like any path: the file it names changes and
 	// the link stays.
 	if err := atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink()); err != nil {
 		return nil, false, err
 	}
-	return b.problems(), true, nil
-}
-
-// Fixer guidance replaces the generic finding for the same field.
-func frontmatterFixProblems(problems []string, notes map[string]string) []string {
-	for i, problem := range problems {
-		if note, ok := notes[strings.Fields(problem)[0]]; ok {
-			problems[i] = note
-		}
-	}
-	return problems
+	return problems, true, nil
 }
 
 // frontmatterStale names a file whose timestamp missed a meaningful edit. For
@@ -558,7 +368,7 @@ type frontmatterStale struct{ file, resource string }
 // -fix so a fix that restores the base content does not count as an edit, and
 // it lets Git apply attributes and line-ending rules so CRLF checkouts are not
 // edits.
-func frontmatterStaleDates(ctx context.Context, root, ref string, files []string, legacy bool) ([]frontmatterStale, error) {
+func frontmatterStaleDates(ctx context.Context, root, ref string, files []string) ([]frontmatterStale, error) {
 	baseBytes, err := frontmatterGit(ctx, root, "merge-base", "HEAD", ref)
 	if err != nil {
 		return nil, err
@@ -572,16 +382,16 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 	// SKILL.md, such as a template, is a resource of the skill above it.
 	managed := make(map[string]struct{})
 	for _, file := range files {
-		if !legacy && isSkillFile(file) {
+		if isSkillFile(file) {
 			managed[path.Dir(file)] = struct{}{}
 		}
 	}
 	var stale []frontmatterStale
 	for _, file := range files {
-		if !legacy && (path.Base(file) == "index.md" || path.Base(file) == "log.md") {
+		if path.Base(file) == "index.md" || path.Base(file) == "log.md" {
 			continue // Reserved files are never concepts, even with extension metadata.
 		}
-		skill := !legacy && isSkillFile(file)
+		skill := isSkillFile(file)
 		status := changes[file]
 		if status == "A" || (status != "M" && !skill) {
 			continue // New files carry their first timestamp; untouched documents need none.
@@ -594,29 +404,29 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 		if err != nil {
 			return nil, err
 		}
-		before, errBefore := parseFrontmatter(previous)
-		after, errAfter := parseFrontmatter(current)
+		before, errBefore := okf.Parse(previous)
+		after, errAfter := okf.Parse(current)
 		if errBefore != nil || errAfter != nil {
 			continue // Missing or invalid metadata is reported, or was adopted in this change.
 		}
-		if legacy {
-			if b, a := before.fields["last_edited"], after.fields["last_edited"]; status == "M" && b != nil && a != nil && b.Value == a.Value {
-				stale = append(stale, frontmatterStale{file: file})
-			}
-			continue
-		}
-		bg, ag := before.fields["generated"], after.fields["generated"]
+		keys := []string{"generated", "at"}
 		if skill {
-			bg, ag = mappingField(before.fields["metadata"], "generated"), mappingField(after.fields["metadata"], "generated")
+			keys = append([]string{"metadata"}, keys...)
 		}
-		beforeTime, validBefore := parseTimestamp(mappingField(bg, "at"))
-		afterTime, validAfter := parseTimestamp(mappingField(ag, "at"))
+		beforeTime, validBefore := okf.Timestamp(before.Field(keys...))
+		afterTime, validAfter := okf.Timestamp(after.Field(keys...))
 		if !validBefore || !validAfter || afterTime.After(beforeTime) {
 			continue
 		}
-		if status == "M" && frontmatterMeaningful(before, after, skill) {
-			stale = append(stale, frontmatterStale{file: file})
-			continue
+		if status == "M" {
+			meaningful, err := profileMeaningful(before, after, skill)
+			if err != nil {
+				return nil, fmt.Errorf("comparing %s: %w", file, err)
+			}
+			if meaningful {
+				stale = append(stale, frontmatterStale{file: file})
+				continue
+			}
 		}
 		if skill {
 			resource, err := frontmatterBundleChange(ctx, root, base, path.Dir(file), changes, managed)
@@ -706,12 +516,4 @@ func frontmatterNestedSkill(name, dir string, managed map[string]struct{}) bool 
 		}
 	}
 	return false
-}
-
-func frontmatterScaffold(src []byte) []byte {
-	newline := "\n"
-	if i := bytes.IndexByte(src, '\n'); i > 0 && src[i-1] == '\r' {
-		newline = "\r\n"
-	}
-	return append([]byte("---"+newline+"{}"+newline+"---"+newline), src...)
 }

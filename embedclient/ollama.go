@@ -163,7 +163,7 @@ func (c *Client) ollamaNativeEmbed(ctx context.Context, embedURL string, inputs 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newAPIError(resp)
+		return nil, newAPIError(resp, false)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
 	if err != nil {
@@ -231,7 +231,7 @@ func (c *Client) ollamaModelLoaded(ctx context.Context, psURL string) (bool, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false, newAPIError(resp)
+		return false, newAPIError(resp, false)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
 	if err != nil {

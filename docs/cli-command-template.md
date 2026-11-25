@@ -2,7 +2,7 @@
 type: Guide
 title: "CLI command design template"
 description: "Worksheet and review checklist for designing a CLI command or command family."
-generated: { by: codex, at: "2026-11-21T19:55:11Z" }
+generated: { by: codex/gpt-6, at: "2026-11-20T15:03:29Z" }
 ---
 
 # CLI command design template

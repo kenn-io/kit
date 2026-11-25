@@ -14,6 +14,7 @@ import (
 
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/fsname"
+	"go.kenn.io/kit/safefileio"
 )
 
 // RuntimeRecord is the on-disk daemon.<pid>.json shape used for discovery.
@@ -66,6 +67,9 @@ func (r RuntimeRecord) Endpoint() Endpoint {
 type RuntimeStore struct {
 	Dir    string
 	Prefix string
+	// ValidateFiles opts List, LockPath and start locks into validation before
+	// deep repair. Other methods keep deep repair.
+	ValidateFiles bool
 }
 
 const (
@@ -163,10 +167,24 @@ func (s RuntimeStore) LockPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if s.ValidateFiles && validatePrivateRuntimeDir(s.Dir) == nil && validateLockFile(path) == nil {
+		return path, nil
+	}
 	if err := s.prepareDir(); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+func validateLockFile(path string) error {
+	file, err := openRuntimeFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.Join(safefileio.ValidateTrustedFile(file), file.Close())
 }
 
 func (s RuntimeStore) startLockPath() (string, error) {
@@ -240,10 +258,22 @@ func (s RuntimeStore) readPrepared(path string) (RuntimeRecord, error) {
 		return RuntimeRecord{}, err
 	}
 	defer func() { _ = file.Close() }()
+	body, err := readRuntimeFile(file)
+	if err != nil {
+		return RuntimeRecord{}, err
+	}
+	return parseRuntimeFile(path, body)
+}
+
+func readRuntimeFile(file *os.File) ([]byte, error) {
 	body, err := io.ReadAll(file)
 	if err != nil {
-		return RuntimeRecord{}, fmt.Errorf("read runtime file %s: %w", path, err)
+		return nil, fmt.Errorf("read runtime file %s: %w", file.Name(), err)
 	}
+	return body, nil
+}
+
+func parseRuntimeFile(path string, body []byte) (RuntimeRecord, error) {
 	var rec RuntimeRecord
 	if err := json.Unmarshal(body, &rec); err != nil {
 		return RuntimeRecord{}, fmt.Errorf("parse runtime file %s: %w", path, err)
@@ -259,9 +289,54 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.ValidateFiles && s.validateDir() == nil && validatePrivateRuntimeDir(s.Dir) == nil {
+		records, err := s.listValidated(prefix)
+		if err == nil {
+			return records, nil
+		}
+	}
 	if err := s.prepareDir(); err != nil {
 		return nil, err
 	}
+	return s.listPrepared(prefix)
+}
+
+func (s RuntimeStore) listValidated(prefix string) ([]RuntimeRecord, error) {
+	entries, err := os.ReadDir(s.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("read runtime dir: %w", err)
+	}
+	var records []RuntimeRecord
+	for _, entry := range entries {
+		pid, ok := pidFromName(prefix, entry.Name())
+		if !entry.Type().IsRegular() || !ok {
+			continue
+		}
+		file, err := openRuntimeFile(filepath.Join(s.Dir, entry.Name()))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		if err := safefileio.ValidateTrustedFile(file); err != nil {
+			return nil, errors.Join(err, file.Close())
+		}
+		body, err := readRuntimeFile(file)
+		_ = file.Close()
+		if err != nil {
+			return nil, err
+		}
+		rec, err := parseRuntimeFile(file.Name(), body)
+		if err == nil && rec.PID == pid && rec.Address != "" {
+			records = append(records, rec)
+		}
+	}
+	sortRuntimeRecords(records)
+	return records, nil
+}
+
+func (s RuntimeStore) listPrepared(prefix string) ([]RuntimeRecord, error) {
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -286,13 +361,17 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 		}
 		records = append(records, rec)
 	}
+	sortRuntimeRecords(records)
+	return records, nil
+}
+
+func sortRuntimeRecords(records []RuntimeRecord) {
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].StartedAt.Equal(records[j].StartedAt) {
 			return records[i].PID < records[j].PID
 		}
 		return records[i].StartedAt.Before(records[j].StartedAt)
 	})
-	return records, nil
 }
 
 // CleanupDead removes runtime files whose filename PID matches the record PID
