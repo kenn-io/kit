@@ -69,8 +69,6 @@ func messageReason(message string) Reason {
 		return ReasonInvalidRequest
 	case strings.Contains(message, "content") && strings.Contains(message, "policy"):
 		return ReasonContentPolicy
-	case aggregateTokenCeiling(message):
-		return ReasonUnknown
 	case containsAny(message, "batch", "per request", "number of inputs", "too many inputs"):
 		return ReasonUnknown
 	case containsAny(message, "too long", "too large", "too many", "length", "maximum", "exceed",

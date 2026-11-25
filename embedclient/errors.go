@@ -149,7 +149,8 @@ func newAPIError(resp *http.Response, vertexGemini bool) error {
 		RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
 		Reason:     classifyFailure(resp.StatusCode, body),
 	}
-	if vertexGemini && resp.StatusCode == http.StatusBadRequest && err.Reason == ReasonUnknown && requestTokenLimit(body) {
+	if vertexGemini && resp.StatusCode == http.StatusBadRequest && (err.Reason == ReasonUnknown || err.Reason == ReasonInputTooLong) && requestTokenLimit(body) {
+		err.Reason = ReasonUnknown
 		return &requestTokenLimitError{err}
 	}
 	return err
