@@ -117,7 +117,9 @@ func fixOKF(d *okf.Document, file string, rules frontmatterRules, by, descriptio
 		}
 	}
 	put(&d.Metadata, "type", typeForFile(rules, file))
-	put(&d.Metadata, "title", headingTitle(d.Body))
+	if d.Field("title") == nil {
+		put(&d.Metadata, "title", headingTitle(d.Body))
+	}
 	put(&d.Metadata, "description", description)
 	if by != "" && d.Field("generated") == nil {
 		g := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle}
