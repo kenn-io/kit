@@ -198,7 +198,8 @@ func (c *Client) postBatch(ctx context.Context, inputs []encoded) ([][]float32, 
 		return c.post(ctx, inputs)
 	})
 	apiErr, isAPIError := errors.AsType[*APIError](err)
-	if (!splittableTimeout(err) && !(c.api == embedconfig.APIVertex && isAPIError && apiErr.Reason == ReasonInputTooLong)) || len(inputs) < 2 || ctx.Err() != nil {
+	vertexInputTooLong := c.api == embedconfig.APIVertex && isAPIError && apiErr.Reason == ReasonInputTooLong
+	if (!splittableTimeout(err) && !vertexInputTooLong) || len(inputs) < 2 || ctx.Err() != nil {
 		return vectors, err
 	}
 	middle := len(inputs) / 2

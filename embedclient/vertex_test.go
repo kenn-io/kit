@@ -57,7 +57,7 @@ func TestVertexEmbedContent(t *testing.T) {
 				assert.Equal(t, "/publishers/google/models/gemini-embedding-2-preview:embedContent", r.URL.Path)
 				body := readBody(t, r)
 				assert.Equal(t, map[string]any{"parts": []any{map[string]any{"text": "query: text"}}}, body["content"])
-				assert.Equal(t, float64(2), body["embedContentConfig"].(map[string]any)["outputDimensionality"])
+				assert.InDelta(t, 2, body["embedContentConfig"].(map[string]any)["outputDimensionality"], 0)
 				writeJSON(t, w, map[string]any{"embedding": map[string]any{"values": []float64{3, 4}}, "truncated": truncated})
 			}))
 			t.Cleanup(server.Close)
@@ -185,7 +185,7 @@ func TestVertexUsesTransportTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		select {
 		case <-release:
-		case <-time.After(time.Second): //nolint:kennlint // deadlinetest: bound a regression that removes the client timeout
+		case <-time.After(time.Second):
 		}
 	}))
 	t.Cleanup(server.Close)
