@@ -298,9 +298,10 @@ func (c *Client) post(ctx context.Context, inputs []encoded) ([][]float32, error
 	}
 	var body []byte
 	var err error
-	if c.api == embedconfig.APIVertex {
+	switch c.api {
+	case embedconfig.APIVertex:
 		body, err = c.vertexRequestBody(inputs)
-	} else if c.api == embedconfig.APIKit {
+	case embedconfig.APIKit:
 		in := make([]Input, len(inputs))
 		for i, input := range inputs {
 			in[i] = input.input
@@ -315,7 +316,7 @@ func (c *Client) post(ctx context.Context, inputs []encoded) ([][]float32, error
 			Encoding   string  `json:"encoding_format,omitempty"`
 			Inputs     []Input `json:"inputs"`
 		}{c.model.Name, c.model.Dimensions, c.model.EncodingFormat, in})
-	} else {
+	default:
 		body, err = c.requestBody(inputs[0].role, texts)
 	}
 	if err != nil {

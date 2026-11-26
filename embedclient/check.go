@@ -31,8 +31,7 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 	var failures []error
 	fail := func(rule string, err any) {
 		if e, ok := err.(error); ok {
-			var contractErr *checkContractError
-			if errors.As(e, &contractErr) {
+			if contractErr, ok := errors.AsType[*checkContractError](e); ok {
 				err = contractErr
 			}
 		}
@@ -89,7 +88,7 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 	}
 	for _, f := range fixtures {
 		_, e := client.Encode(ctx, opts.Dimensions, []Input{f})
-		if e != nil && !(optional && isUnsupported(e)) {
+		if e != nil && (!optional || !isUnsupported(e)) {
 			fail("media", e)
 		}
 	}
@@ -248,6 +247,7 @@ func closeVector(a, b []float32) bool {
 	}
 	return true
 }
+
 func closeVectors(a, b [][]float32) bool {
 	if len(a) != len(b) {
 		return false

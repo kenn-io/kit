@@ -63,7 +63,7 @@ func TestKitInputs(t *testing.T) {
 
 func TestKitRejectsInvalidInputs(t *testing.T) {
 	for _, in := range []embedclient.Input{{Role: embedconfig.RoleQuery}, {Role: embedconfig.RoleQuery, Text: " "}, {Role: embedconfig.RoleQuery, MediaType: "image/png"}, {Role: embedconfig.RoleQuery, Text: "text", MediaType: "image/png", Data: []byte{1}}, {Role: "bad", Text: "text"}} {
-		assert.Error(t, in.Validate())
+		require.Error(t, in.Validate())
 	}
 	for _, api := range []embedconfig.API{embedconfig.APIOpenAI, embedconfig.APIVertex} {
 		model := unitModel()
@@ -75,20 +75,20 @@ func TestKitRejectsInvalidInputs(t *testing.T) {
 		client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: api, BaseURL: base}})
 		require.NoError(t, err)
 		_, err = client.EmbedInputs(t.Context(), []embedclient.Input{{Role: embedconfig.RoleQuery, MediaType: "image/png", Data: []byte{1}}})
-		assert.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+		require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
 	}
 }
 
 func TestKitUnsupportedContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(415)
+		w.WriteHeader(http.StatusUnsupportedMediaType)
 		_, _ = w.Write([]byte(`{"error":{"code":"unsupported_content"}}`))
 	}))
 	t.Cleanup(server.Close)
 	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
 	require.NoError(t, err)
 	_, err = client.EmbedInputs(t.Context(), []embedclient.Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}})
-	assert.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+	require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
 	var api *embedclient.APIError
 	require.ErrorAs(t, err, &api)
 	assert.False(t, api.InputRejected())
@@ -107,9 +107,9 @@ func TestKitGeminiRoleGuard(t *testing.T) {
 	_, err = client.Encode(t.Context(), 2, input)
 	require.NoError(t, err)
 	_, err = client.EmbedInputs(t.Context(), input)
-	assert.ErrorContains(t, err, "needs its task")
+	require.ErrorContains(t, err, "needs its task")
 	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"beach"})
-	assert.ErrorContains(t, err, "needs its task")
+	require.ErrorContains(t, err, "needs its task")
 	_, err = client.EmbedInputs(t.Context(), []embedclient.Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}})
 	require.NoError(t, err)
 }
@@ -119,7 +119,7 @@ func TestKitMediaFailureIndex(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 3 {
-			w.WriteHeader(415)
+			w.WriteHeader(http.StatusUnsupportedMediaType)
 			_, _ = w.Write([]byte(`{"error":{"code":"unsupported_content"}}`))
 			return
 		}
@@ -131,8 +131,8 @@ func TestKitMediaFailureIndex(t *testing.T) {
 	inputs := []embedclient.Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}, {Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{2}}, {Role: embedconfig.RoleDocument, MediaType: "video/mp4", Data: []byte{3}}}
 	vectors, err := client.EmbedInputs(t.Context(), inputs)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "input 2")
-	assert.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+	require.ErrorContains(t, err, "input 2")
+	require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
 	var api *embedclient.APIError
 	require.ErrorAs(t, err, &api)
 	assert.Equal(t, 415, api.StatusCode)
@@ -147,7 +147,7 @@ func TestKitBatchSingletonRejection(t *testing.T) {
 		inputs := body["inputs"].([]any)
 		counts = append(counts, len(inputs))
 		if len(inputs) > 1 || inputs[0].(map[string]any)["text"] == "large" {
-			w.WriteHeader(413)
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			_, _ = w.Write([]byte(`{"error":{"code":"input_too_long"}}`))
 			return
 		}

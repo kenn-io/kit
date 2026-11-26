@@ -31,8 +31,8 @@ func TestVertexLiveMedia(t *testing.T) {
 	require.NoError(t, err)
 	pngBytes := func(c color.RGBA) []byte {
 		img := image.NewRGBA(image.Rect(0, 0, 64, 64))
-		for y := 0; y < 64; y++ {
-			for x := 0; x < 64; x++ {
+		for y := range 64 {
+			for x := range 64 {
 				img.SetRGBA(x, y, c)
 			}
 		}

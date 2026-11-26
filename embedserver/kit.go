@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -173,14 +174,7 @@ func Handler(backend embedclient.Backend, models []string) http.Handler {
 			fail(400, "invalid_request", "invalid request")
 			return
 		}
-		found := false
-		for _, name := range models {
-			if req.Model == name {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(models, req.Model) {
 			fail(404, "model_not_found", "model not found")
 			return
 		}
@@ -203,16 +197,14 @@ func Handler(backend embedclient.Backend, models []string) http.Handler {
 				fail(415, "unsupported_content", "content is unsupported")
 				return
 			}
-			var load *modelLoadError
-			if errors.As(err, &load) {
+			if _, ok := errors.AsType[*modelLoadError](err); ok {
 				if local, ok := backend.(*Local); ok {
 					_, _ = fmt.Fprintf(local.h.log, "inference failed: %v\n", err)
 				}
 				fail(424, "model_unavailable", "model could not be loaded")
 				return
 			}
-			var api *embedclient.APIError
-			if errors.As(err, &api) {
+			if api, ok := errors.AsType[*embedclient.APIError](err); ok {
 				switch {
 				case api.Reason == embedclient.ReasonInputTooLong:
 					fail(413, "input_too_long", "input too long")

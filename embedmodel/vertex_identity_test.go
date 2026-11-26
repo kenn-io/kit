@@ -47,6 +47,5 @@ func TestVertexIdentity(t *testing.T) {
 		openai, err := desc.VectorIdentity()
 		require.NoError(t, err)
 		assert.NotEqual(t, kit, openai)
-
 	})
 }

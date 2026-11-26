@@ -41,6 +41,6 @@ func TestVertexDeploymentURL(t *testing.T) {
 }
 
 func TestKitDeployment(t *testing.T) {
-	assert.NoError(t, (embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: "https://example.com/v1"}).Validate())
-	assert.Error(t, (embedconfig.Deployment{API: embedconfig.APIKit}).Validate())
+	require.NoError(t, (embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: "https://example.com/v1"}).Validate())
+	require.Error(t, (embedconfig.Deployment{API: embedconfig.APIKit}).Validate())
 }

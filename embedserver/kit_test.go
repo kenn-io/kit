@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image/png"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,7 @@ func (testBackend) Encode(_ context.Context, _ int, inputs []embedclient.Input) 
 	}
 	return out, nil
 }
+
 func TestKitHandler(t *testing.T) {
 	handler := Handler(testBackend{}, []string{"example"})
 	for _, tc := range []struct {
@@ -58,7 +60,7 @@ func TestKitHandler(t *testing.T) {
 		{"null absent", "POST", `{"model":"example","inputs":[{"role":"query","text":"hello","data":null}]}`, 200, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest(tc.method, "/v1/embed", bytes.NewBufferString(tc.body))
+			r := httptest.NewRequestWithContext(t.Context(), tc.method, "/v1/embed", bytes.NewBufferString(tc.body))
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, r)
 			assert.Equal(t, tc.status, w.Code)
@@ -70,16 +72,18 @@ func TestKitHandler(t *testing.T) {
 		})
 	}
 }
+
 func TestKitCheck(t *testing.T) {
 	server := httptest.NewServer(Handler(testBackend{}, []string{"example"}))
 	t.Cleanup(server.Close)
 	failures := embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2})
 	assert.Empty(t, failures)
 }
+
 func TestKitLocalMedia(t *testing.T) {
 	local := newLocal(nil)
 	_, err := local.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}})
-	assert.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+	require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
 }
 
 type captureBackend struct{ inputs []embedclient.Input }
@@ -88,9 +92,10 @@ func (b *captureBackend) Encode(_ context.Context, _ int, in []embedclient.Input
 	b.inputs = in
 	return [][]float32{{1, 0}}, nil
 }
+
 func TestKitHandlerPreservesText(t *testing.T) {
 	backend := &captureBackend{}
-	req := httptest.NewRequest("POST", "/v1/embed", bytes.NewBufferString(`{"model":"example","inputs":[{"role":"query","text":"query: hello"}]}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embed", bytes.NewBufferString(`{"model":"example","inputs":[{"role":"query","text":"query: hello"}]}`))
 	w := httptest.NewRecorder()
 	Handler(backend, []string{"example"}).ServeHTTP(w, req)
 	require.Equal(t, 200, w.Code)
@@ -110,7 +115,9 @@ func TestKitBackendsDirectAndHTTP(t *testing.T) {
 			} else {
 				provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					var req map[string]any
-					require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+					if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&req)) {
+						return
+					}
 					w.Header().Set("Content-Type", "application/json")
 					if kind == "vertex" {
 						parts := req["content"].(map[string]any)["parts"].([]any)
@@ -128,7 +135,7 @@ func TestKitBackendsDirectAndHTTP(t *testing.T) {
 					for i := range inputs {
 						data[i] = map[string]any{"index": i, "embedding": []float32{0.6, 0.8}}
 					}
-					require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": data}))
+					assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": data}))
 				}))
 				t.Cleanup(provider.Close)
 				api := embedconfig.APIOpenAI
@@ -171,7 +178,7 @@ func TestKitBackendsDirectAndHTTP(t *testing.T) {
 				{"/v1/nope", `{}`, 404},
 				{"/v1/embeddings", fmt.Sprintf(`{"model":%q,"input":{"media_type":"image/png","data":"AQ=="}}`, modelName), 400},
 			} {
-				request, err := http.NewRequestWithContext(t.Context(), "POST", server.URL+tc.path, strings.NewReader(tc.body))
+				request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+tc.path, strings.NewReader(tc.body))
 				require.NoError(t, err)
 				response, err := http.DefaultClient.Do(request)
 				require.NoError(t, err)
@@ -190,8 +197,8 @@ func TestKitBackendsDirectAndHTTP(t *testing.T) {
 				assert.NoError(t, directErr)
 				assert.NoError(t, httpErr)
 			} else {
-				assert.ErrorIs(t, directErr, embedmodel.ErrUnsupportedContent)
-				assert.ErrorIs(t, httpErr, embedmodel.ErrUnsupportedContent)
+				require.ErrorIs(t, directErr, embedmodel.ErrUnsupportedContent)
+				require.ErrorIs(t, httpErr, embedmodel.ErrUnsupportedContent)
 			}
 			assert.Empty(t, embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: modelName, Dimensions: 2}))
 		})
@@ -216,6 +223,7 @@ func (batchBackend) Encode(_ context.Context, _ int, in []embedclient.Input) ([]
 	}
 	return out, nil
 }
+
 func TestKitCheckDetectsBrokenServices(t *testing.T) {
 	for _, tc := range []struct {
 		name, rule string
@@ -235,13 +243,15 @@ func TestKitCheckDetectsBrokenServices(t *testing.T) {
 				for i := range data {
 					data[i] = map[string]any{"index": i, "embedding": []float32{0.6, 0.8}}
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+				if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+					return
+				}
 				return
 			}
 			Handler(testBackend{}, []string{"example"}).ServeHTTP(w, r)
 		})},
 		{"model", "unknown model", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "POST" {
+			if r.Method == http.MethodPost {
 				var b bytes.Buffer
 				_, _ = b.ReadFrom(r.Body)
 				r.Body = io.NopCloser(bytes.NewReader(b.Bytes()))
@@ -288,6 +298,7 @@ type canceledBackend struct{}
 func (canceledBackend) Encode(ctx context.Context, _ int, _ []embedclient.Input) ([][]float32, error) {
 	return nil, ctx.Err()
 }
+
 func TestKitHandlerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -296,12 +307,13 @@ func TestKitHandlerCancellation(t *testing.T) {
 	Handler(canceledBackend{}, []string{"example"}).ServeHTTP(w, r)
 	assert.Empty(t, w.Body.String())
 }
+
 func TestKitHandlerLenientJSON(t *testing.T) {
 	backend := &captureBackend{}
 	body := append([]byte(`{"model":"wrong","model":"example","inputs":[{"role":"query","text":"a`), 0xff)
 	body = append(body, []byte(`b"}]}`)...)
 	w := httptest.NewRecorder()
-	Handler(backend, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", bytes.NewReader(body)))
+	Handler(backend, []string{"example"}).ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embed", bytes.NewReader(body)))
 	require.Equal(t, 200, w.Code)
 	assert.Equal(t, "a\ufffdb", backend.inputs[0].Text)
 }
@@ -311,6 +323,7 @@ type errorBackend struct{ err error }
 func (b errorBackend) Encode(context.Context, int, []embedclient.Input) ([][]float32, error) {
 	return nil, b.err
 }
+
 func TestKitBackendErrorClasses(t *testing.T) {
 	cases := []struct {
 		name                         string
@@ -345,6 +358,7 @@ func TestKitBackendErrorClasses(t *testing.T) {
 		})
 	}
 }
+
 func TestKitLocalLongNative(t *testing.T) {
 	dir, library := os.Getenv("KIT_EMBED_TEST_DIR"), os.Getenv("KIT_EMBED_TEST_LIBRARY")
 	if dir == "" || library == "" {
@@ -358,12 +372,12 @@ func TestKitLocalLongNative(t *testing.T) {
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
 	handler := Handler(local, []string{"example"})
-	handler.ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", bytes.NewReader(body)))
+	handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embed", bytes.NewReader(body)))
 	require.Equal(t, 200, w.Code)
 	oldBody, err := json.Marshal(map[string]any{"model": "example", "input": input.Text, "dimensions": 2})
 	require.NoError(t, err)
 	old := httptest.NewRecorder()
-	handler.ServeHTTP(old, httptest.NewRequest("POST", "/v1/embeddings", bytes.NewReader(oldBody)))
+	handler.ServeHTTP(old, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", bytes.NewReader(oldBody)))
 	require.Equal(t, 200, old.Code)
 	var kitResult, openaiResult struct {
 		Data []struct {
@@ -384,7 +398,7 @@ func TestKitLogsModelLoadFailure(t *testing.T) {
 	var log bytes.Buffer
 	local.h.log = &log
 	w := httptest.NewRecorder()
-	Handler(local, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", strings.NewReader(`{"model":"example","inputs":[{"role":"query","text":"hello"}]}`)))
+	Handler(local, []string{"example"}).ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embed", strings.NewReader(`{"model":"example","inputs":[{"role":"query","text":"hello"}]}`)))
 	assert.Equal(t, 424, w.Code)
 	assert.Contains(t, log.String(), "missing model")
 }
@@ -419,6 +433,7 @@ type vectorBackend struct{ vectors [][]float32 }
 func (b vectorBackend) Encode(context.Context, int, []embedclient.Input) ([][]float32, error) {
 	return b.vectors, nil
 }
+
 func TestKitRejectsInvalidVectors(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -428,7 +443,7 @@ func TestKitRejectsInvalidVectors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			Handler(vectorBackend{tc.vectors}, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", strings.NewReader(`{"model":"example","dimensions":2,"inputs":[{"role":"query","text":"a"}]}`)))
+			Handler(vectorBackend{tc.vectors}, []string{"example"}).ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embed", strings.NewReader(`{"model":"example","dimensions":2,"inputs":[{"role":"query","text":"a"}]}`)))
 			assert.Equal(t, 500, w.Code)
 			assert.Contains(t, w.Body.String(), "internal_error")
 		})
@@ -439,9 +454,11 @@ func TestKitRejectsInvalidVectors(t *testing.T) {
 func independentService(w http.ResponseWriter, r *http.Request) {
 	fail := func(status int, code string) {
 		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}})
+		if err := json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}}); err != nil {
+			return
+		}
 	}
-	if r.Method != "POST" {
+	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		fail(405, "method_not_allowed")
 		return
@@ -490,8 +507,11 @@ func independentService(w http.ResponseWriter, r *http.Request) {
 		}
 		data[i] = map[string]any{"index": i, "embedding": vec}
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"model": req.Model, "data": data})
+	if err := json.NewEncoder(w).Encode(map[string]any{"model": req.Model, "data": data}); err != nil {
+		return
+	}
 }
+
 func TestKitCheckIndependentService(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(independentService))
 	t.Cleanup(server.Close)
@@ -513,9 +533,7 @@ func TestKitCheckRejectsFaultyIndependentServices(t *testing.T) {
 				response := httptest.NewRecorder()
 				independentService(response, r)
 				if response.Code != 200 {
-					for k, values := range response.Header() {
-						w.Header()[k] = values
-					}
+					maps.Copy(w.Header(), response.Header())
 					w.WriteHeader(response.Code)
 					_, _ = w.Write(response.Body.Bytes())
 					return
@@ -602,9 +620,7 @@ func TestKitCheckRequiresIndexesAnd200(t *testing.T) {
 					return
 				}
 				if response.Code != 200 {
-					for key, values := range response.Header() {
-						w.Header()[key] = values
-					}
+					maps.Copy(w.Header(), response.Header())
 					w.WriteHeader(response.Code)
 					_, _ = w.Write(response.Body.Bytes())
 					return
@@ -667,7 +683,7 @@ func TestKitOpenAIInputForms(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := &recordingBackend{}
 			w := httptest.NewRecorder()
-			Handler(backend, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(tc.body)))
+			Handler(backend, []string{"example"}).ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(tc.body)))
 			assert.Equal(t, tc.status, w.Code)
 			if tc.status != 200 {
 				return
@@ -718,6 +734,7 @@ func (roleSensitiveBackend) Encode(_ context.Context, _ int, inputs []embedclien
 	}
 	return out, nil
 }
+
 func TestKitRoleSensitiveIdentity(t *testing.T) {
 	server := httptest.NewServer(Handler(roleSensitiveBackend{}, []string{"example"}))
 	t.Cleanup(server.Close)
@@ -744,7 +761,9 @@ func TestKitRoleSensitiveIdentity(t *testing.T) {
 func TestKitCheckValidPNG(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if !assert.NoError(t, err) {
+			return
+		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		var req struct {
 			Inputs []embedclient.Input `json:"inputs"`
@@ -753,7 +772,7 @@ func TestKitCheckValidPNG(t *testing.T) {
 		if len(req.Inputs) == 1 && req.Inputs[0].MediaType == "image/png" && req.Inputs[0].Text == "" && len(req.Inputs[0].Data) > 0 {
 			_, err := png.Decode(bytes.NewReader(req.Inputs[0].Data))
 			if err != nil {
-				w.WriteHeader(503)
+				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"model": "example", "data": []any{map[string]any{"index": 0, "embedding": []float32{0.6, 0.8}}}})
@@ -769,12 +788,13 @@ func TestKitLocalMixedMediaPrevalidation(t *testing.T) {
 	engine := &fakeEngine{}
 	local := newLocal(engine)
 	_, err := local.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleDocument, Text: "text"}, {Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}})
-	assert.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+	require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
 	assert.Empty(t, engine.inputs)
 	_, err = local.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleDocument, Text: "text"}, {Role: embedconfig.RoleDocument}})
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Empty(t, engine.inputs)
 }
+
 func TestKitBatchBodyLimit(t *testing.T) {
 	backend := &testBackend{}
 	server := httptest.NewServer(Handler(backend, []string{"example"}))
@@ -801,9 +821,7 @@ func TestKitCheckToleratesFloatRounding(t *testing.T) {
 		response := httptest.NewRecorder()
 		independentService(response, r)
 		if response.Code != 200 {
-			for key, values := range response.Header() {
-				w.Header()[key] = values
-			}
+			maps.Copy(w.Header(), response.Header())
 			w.WriteHeader(response.Code)
 			_, _ = w.Write(response.Body.Bytes())
 			return
