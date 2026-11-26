@@ -45,6 +45,33 @@ func TestEmbedFaces(t *testing.T) {
 	}
 }
 
+func TestEmbedFacesEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, path string
+		api              embedconfig.API
+	}{
+		{"kit", "/v1", "/v1/faces", embedconfig.APIKit},
+		{"openai", "/v1", "/v1/faces", embedconfig.APIOpenAI},
+		{"openai full endpoint", "/v1/embeddings", "/v1/faces", embedconfig.APIOpenAI},
+		{"openai embed base", "/v1/embed", "/v1/embed/faces", embedconfig.APIOpenAI},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !assert.Equal(t, tc.path, r.URL.Path) {
+					http.NotFound(w, r)
+					return
+				}
+				assert.NoError(t, json.MarshalWrite(w, FaceResponse{Model: FaceModel, Revision: FaceRevision, Recipe: FaceRecipe, Data: []FaceResult{{Index: 0}}}, json.FormatNilSliceAsNull(true)))
+			}))
+			t.Cleanup(server.Close)
+			client, err := New(Options{Model: embedconfig.Model{Name: FaceModel, Dimensions: 512, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{API: tc.api, BaseURL: server.URL + tc.base}})
+			require.NoError(t, err)
+			_, err = client.EmbedFaces(t.Context(), []byte("preview"), []FaceBox{{Width: 1, Height: 1}})
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestFaceBoxValidation(t *testing.T) {
 	for _, box := range []FaceBox{{Width: 0, Height: 1}, {Width: 1, Height: 1, Y: -0.1}, {X: 0.5, Width: 0.6, Height: 1}, {X: math.NaN(), Width: 1, Height: 1}, {Width: 1, Height: math.Inf(1)}, {X: -2e-6, Width: 1, Height: 1}, {X: 0.5, Width: 0.500002, Height: 1}} {
 		require.Error(t, box.Validate())

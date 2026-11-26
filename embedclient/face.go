@@ -104,7 +104,7 @@ func (c *Client) embedFaceBatch(ctx context.Context, preview []byte, boxes []Fac
 	if len(body) > 64<<20 {
 		return result, errors.New("face request exceeds 64 MiB")
 	}
-	endpoint := strings.TrimSuffix(c.endpoint, "/embeddings") + "/faces"
+	endpoint := strings.TrimSuffix(c.serviceURL, "/embeddings") + "/faces"
 	payload, err := retryCall(ctx, c.retry, false, func() ([]byte, error) { return c.postJSON(ctx, endpoint, body) })
 	if err != nil {
 		return result, err
