@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 
+	jsonv2 "encoding/json/v2"
+
 	"go.kenn.io/kit/embedconfig"
 	"go.kenn.io/kit/embedmodel"
 )
@@ -216,20 +218,12 @@ func (t *checkTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if int64(len(body)) > t.maxResponse {
 		return nil, ErrResponseTooLarge
 	}
-	var result struct {
-		Data []struct {
-			Index *int `json:"index"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
+	var result wireResponse
+	if err := jsonv2.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
-	seen := make([]bool, len(result.Data))
-	for _, item := range result.Data {
-		if item.Index == nil || *item.Index < 0 || *item.Index >= len(seen) || seen[*item.Index] {
-			return nil, &checkContractError{message: "response indexes must be present, unique, and in range"}
-		}
-		seen[*item.Index] = true
+	if _, err := orderItems(result.Data, len(result.Data), true); err != nil {
+		return nil, &checkContractError{message: "response indexes must be present, unique, and in range"}
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	return resp, nil

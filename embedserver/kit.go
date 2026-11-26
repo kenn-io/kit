@@ -221,7 +221,7 @@ func Handler(backend embedclient.Backend, models []string) http.Handler {
 					}
 					fail(429, "rate_limited", "upstream rate limited")
 					return
-				case api.Reason == embedclient.ReasonInvalidRequest:
+				case api.Reason == embedclient.ReasonInvalidRequest || api.StatusCode >= 400 && api.StatusCode < 500 && !api.Retryable():
 					fail(400, "invalid_request", "upstream request invalid")
 					return
 				}

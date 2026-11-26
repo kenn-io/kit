@@ -428,6 +428,27 @@ func TestKitUpstreamMissingModel(t *testing.T) {
 	assert.False(t, api.Retryable())
 }
 
+func TestKitUpstreamUnknownClientError(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"unsupported media"}}`))
+	}))
+	t.Cleanup(provider.Close)
+	model := embedconfig.Model{Name: "example", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}
+	upstream, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{BaseURL: provider.URL}})
+	require.NoError(t, err)
+	server := httptest.NewServer(Handler(upstream, []string{"example"}))
+	t.Cleanup(server.Close)
+	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+	require.NoError(t, err)
+	_, err = client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "hello"}})
+	var api *embedclient.APIError
+	require.ErrorAs(t, err, &api)
+	assert.Equal(t, http.StatusBadRequest, api.StatusCode)
+	assert.Equal(t, embedclient.ReasonInvalidRequest, api.Reason)
+	assert.False(t, api.Retryable())
+}
+
 type vectorBackend struct{ vectors [][]float32 }
 
 func (b vectorBackend) Encode(context.Context, int, []embedclient.Input) ([][]float32, error) {

@@ -88,6 +88,17 @@ func TestEmbedKeepsPositionalOrderWhenIndexIsAbsent(t *testing.T) {
 	assert.InDeltaSlice(t, []float32{1, 0}, vectors[0], 1e-6)
 }
 
+func TestKitRejectsUnindexedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]any{"data": []map[string]any{{"embedding": []float64{0, 1}}, {"embedding": []float64{1, 0}}}})
+	}))
+	t.Cleanup(server.Close)
+	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+	require.NoError(t, err)
+	_, err = client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "first"}, {Role: embedconfig.RoleQuery, Text: "second"}})
+	require.Error(t, err)
+}
+
 func TestEmbedRejectsBadResponses(t *testing.T) {
 	tests := []struct {
 		name string
