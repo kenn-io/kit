@@ -1,9 +1,12 @@
 // Package embedserver serves nomic-embed-text v1.5 and AuraFace-v1 on loopback.
-// Text callers supply
-// role prefixes. The limit is 2,048 WordPiece tokens including CLS and SEP.
-// /v1/embeddings truncates each string at that limit, as before; /v1/embed
-// rejects text it cannot embed in full with 413 input_too_long. Indexed float or base64 float32 vectors use mean pooling
-// and L2 normalization after selecting the requested dimensions.
+// Text callers supply role prefixes. The text window is 2,048 WordPiece tokens
+// including CLS and SEP. /v1/embeddings truncates each string at that window,
+// as before. /v1/embed serves the Kit HTTP contract at
+// https://github.com/kenn-io/kit/blob/main/docs/embedding-http.md and rejects
+// longer text with 413 input_too_long. Local runs the same strict path in
+// process, and Handler serves the contract for any embedclient.Backend.
+// Indexed float or base64 float32 vectors use mean pooling and L2
+// normalization after selecting the requested dimensions.
 //
 // Serve prints its ready URL to stderr. Cancellation closes connections and waits
 // for active inference before releasing native resources and removing its record.

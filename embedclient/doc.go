@@ -66,11 +66,14 @@
 // EncodeFunc sends its strings unchanged, so text from embedfit.Prepared is
 // not wrapped a second time.
 //
-// EmbedInputs accepts text and media parts. It applies role affixes only to
-// text-only inputs. Encode sends inputs as given and implements Backend.
-// Kit services use the HTTP contract at
-// https://github.com/kenn-io/kit/blob/main/docs/embedding-http.md.
-// OpenAI-compatible services and non-Gemini-2 Vertex models reject media with
-// embedmodel.ErrUnsupportedContent. The same error identifies a Kit service
-// that reports unsupported content. Embed remains text-only.
+// An Input carries a role and one payload: Text, or MediaType with Data.
+// EmbedInputs adds role affixes to text inputs. Encode sends inputs as given
+// and implements Backend. Neither joins, trims, nor splits text. Kit services
+// receive inputs over the HTTP contract at
+// https://github.com/kenn-io/kit/blob/main/docs/embedding-http.md, and Check
+// tests a service against it. A media input goes in its own request to a Kit
+// service or to Vertex gemini-embedding-2. OpenAI-compatible services and
+// other Vertex models reject media with embedmodel.ErrUnsupportedContent. The
+// same error identifies a Kit service that reports unsupported content. Embed
+// remains text-only.
 package embedclient
