@@ -53,7 +53,7 @@ A successful response has status 200 and a JSON body:
 ```
 
 - `data` has exactly one item per input.
-- Each item's `index` is the position of its input in `inputs`. Items may be in any order when every item has an `index`. Do not mix indexed and unindexed items.
+- Every item must have an `index`, the zero-based position of its input in `inputs`. Indexes are unique and cover every input. Items may appear in any order.
 - `embedding` is a JSON array of numbers for `float`. For `base64`, it is a base64 string of little-endian float32 values.
 - Each vector has exactly the requested number of dimensions. Its values are finite float32 values and are not all zero.
 - An input gets the same vector within float32 rounding whether it is sent alone or in a batch, and with either encoding. Each component may differ by at most `1e-5 + 1e-5 * max(abs(a), abs(b))`.
