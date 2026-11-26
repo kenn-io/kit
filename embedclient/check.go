@@ -28,12 +28,25 @@ func isUnsupported(err error) bool { return errors.Is(err, embedmodel.ErrUnsuppo
 // Check checks the HTTP contract. It cannot judge the quality of media vectors.
 func Check(ctx context.Context, opts CheckOptions) []error {
 	var failures []error
-	fail := func(rule string, err any) { failures = append(failures, fmt.Errorf("%s: %v", rule, err)) }
+	fail := func(rule string, err any) {
+		if e, ok := err.(error); ok {
+			var contractErr *checkContractError
+			if errors.As(e, &contractErr) {
+				err = contractErr
+			}
+		}
+		failures = append(failures, fmt.Errorf("%s: %v", rule, err))
+	}
 	model := embedconfig.Model{Name: opts.Model, Dimensions: opts.Dimensions, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone, RequestDimensions: true}
 	makeClient := func(format string) (*Client, error) {
 		m := model
 		m.EncodingFormat = format
-		return New(Options{Model: m, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: opts.BaseURL, TrustPrivateNetwork: true}, APIKey: opts.APIKey})
+		c, err := New(Options{Model: m, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: opts.BaseURL, TrustPrivateNetwork: true}, APIKey: opts.APIKey})
+		if err != nil {
+			return nil, err
+		}
+		c.http.Transport = &checkTransport{base: c.http.Transport, maxResponse: c.maxResponse}
+		return c, nil
 	}
 	client, err := makeClient("float")
 	if err != nil {
@@ -174,4 +187,50 @@ func checkWireEncoding(ctx context.Context, c *Client, opts CheckOptions, format
 		return problems[0]
 	}
 	return nil
+}
+
+type checkContractError struct{ message string }
+
+func (e *checkContractError) Error() string { return e.message }
+
+// checkTransport enforces the Kit response contract on every successful request.
+type checkTransport struct {
+	base        http.RoundTripper
+	maxResponse int64
+}
+
+func (t *checkTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, &checkContractError{message: fmt.Sprintf("expected status 200, got %d", resp.StatusCode)}
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, t.maxResponse+1))
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > t.maxResponse {
+		return nil, ErrResponseTooLarge
+	}
+	var result struct {
+		Data []struct {
+			Index *int `json:"index"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	seen := make([]bool, len(result.Data))
+	for _, item := range result.Data {
+		if item.Index == nil || *item.Index < 0 || *item.Index >= len(seen) || seen[*item.Index] {
+			return nil, &checkContractError{message: "response indexes must be present, unique, and in range"}
+		}
+		seen[*item.Index] = true
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return resp, nil
 }

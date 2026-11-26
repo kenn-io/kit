@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -556,6 +557,75 @@ func TestKitCheckRejectsInvalidPayloadAcceptance(t *testing.T) {
 				}
 			}
 			assert.True(t, found, "failures: %v", failures)
+		})
+	}
+}
+
+func TestReviewCheckerRequiresIndexesAnd200(t *testing.T) {
+	for _, kind := range []string{"missing-index", "missing-one-index", "duplicate-index", "out-of-range-index", "status-201", "singleton-index", "media-index", "singleton-201"} {
+		t.Run(kind, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body bytes.Buffer
+				_, _ = body.ReadFrom(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+				var req struct {
+					Inputs []map[string]any `json:"inputs"`
+				}
+				_ = json.Unmarshal(body.Bytes(), &req)
+				response := httptest.NewRecorder()
+				independentService(response, r)
+				media := len(req.Inputs) == 1 && req.Inputs[0]["media_type"] != nil && req.Inputs[0]["data"] != nil
+				if media && kind == "media-index" {
+					_ = json.NewEncoder(w).Encode(map[string]any{"model": "example", "data": []any{map[string]any{"embedding": []float32{0.6, 0.8}}}})
+					return
+				}
+				if response.Code != 200 {
+					for key, values := range response.Header() {
+						w.Header()[key] = values
+					}
+					w.WriteHeader(response.Code)
+					_, _ = w.Write(response.Body.Bytes())
+					return
+				}
+				var result struct {
+					Model string           `json:"model"`
+					Data  []map[string]any `json:"data"`
+				}
+				_ = json.Unmarshal(response.Body.Bytes(), &result)
+				switch kind {
+				case "missing-index":
+					for _, item := range result.Data {
+						delete(item, "index")
+					}
+				case "missing-one-index":
+					delete(result.Data[0], "index")
+				case "duplicate-index":
+					if len(result.Data) > 1 {
+						result.Data[1]["index"] = result.Data[0]["index"]
+					}
+				case "out-of-range-index":
+					result.Data[0]["index"] = len(result.Data)
+				case "status-201":
+					w.WriteHeader(http.StatusCreated)
+				case "singleton-index":
+					if len(result.Data) == 1 {
+						delete(result.Data[0], "index")
+					}
+				case "singleton-201":
+					if len(result.Data) == 1 {
+						w.WriteHeader(http.StatusCreated)
+					}
+				}
+				_ = json.NewEncoder(w).Encode(result)
+			}))
+			t.Cleanup(server.Close)
+			failures := embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2})
+			require.NotEmpty(t, failures)
+			want := "response indexes"
+			if kind == "status-201" || kind == "singleton-201" {
+				want = "expected status 200, got 201"
+			}
+			assert.Contains(t, fmt.Sprint(failures), want)
 		})
 	}
 }
