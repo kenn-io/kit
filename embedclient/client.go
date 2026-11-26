@@ -159,11 +159,6 @@ func (c *Client) Embed(ctx context.Context, inputs []embedmodel.Content) ([][]fl
 }
 
 func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format bool) ([][]float32, error) {
-	if format && c.api == embedconfig.APIKit && strings.HasPrefix(c.model.Name, "gemini-embedding-2") {
-		if err := validateGeminiEmbedding2Roles(c.roles); err != nil {
-			return nil, err
-		}
-	}
 	prepared, err := c.prepare(inputs, format)
 	if err != nil {
 		return nil, err
@@ -175,7 +170,7 @@ func (c *Client) embedPrepared(ctx context.Context, prepared []encoded) ([][]flo
 	out := make([][]float32, len(prepared))
 	for start := 0; start < len(prepared); {
 		end := start + 1
-		for end < len(prepared) && (c.api == embedconfig.APIVertex || c.api == embedconfig.APIKit || prepared[end].role == prepared[start].role) && !hasMedia(prepared[start].parts) && !hasMedia(prepared[end].parts) && end-start < c.batchItems {
+		for end < len(prepared) && (c.api == embedconfig.APIVertex || c.api == embedconfig.APIKit || prepared[end].role == prepared[start].role) && prepared[start].input.MediaType == "" && prepared[end].input.MediaType == "" && end-start < c.batchItems {
 			end++
 		}
 		vectors, err := c.postBatch(ctx, prepared[start:end])
@@ -270,7 +265,7 @@ type encoded struct {
 	index int
 	role  embedconfig.Role
 	text  string
-	parts []Part
+	input Input
 }
 
 func (c *Client) prepare(inputs []embedmodel.Content, format bool) ([]encoded, error) {
@@ -309,11 +304,11 @@ func (c *Client) post(ctx context.Context, inputs []encoded) ([][]float32, error
 	} else if c.api == embedconfig.APIKit {
 		in := make([]Input, len(inputs))
 		for i, input := range inputs {
-			parts := input.parts
-			if len(parts) == 0 {
-				parts = []Part{{Text: input.text}}
+			in[i] = input.input
+			in[i].Role = input.role
+			if in[i].MediaType == "" {
+				in[i].Text = input.text
 			}
-			in[i] = Input{Role: input.role, Parts: parts}
 		}
 		body, err = jsonv2.Marshal(struct {
 			Model      string  `json:"model"`

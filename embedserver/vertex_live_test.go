@@ -55,7 +55,7 @@ func TestVertexLiveMedia(t *testing.T) {
 	t.Cleanup(server.Close)
 	kit, err := embedclient.New(embedclient.Options{Model: model, Roles: roles, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
 	require.NoError(t, err)
-	inputs := []embedclient.Input{{Role: embedconfig.RoleQuery, Parts: []embedclient.Part{{Text: "a solid red square"}}}, {Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{MediaType: "image/png", Data: red}}}, {Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{MediaType: "image/png", Data: blue}}}, {Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{MediaType: "application/pdf", Data: pdf}}}, {Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{MediaType: "video/mp4", Data: video}}}}
+	inputs := []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "a solid red square"}, {Role: embedconfig.RoleDocument, MediaType: "image/png", Data: red}, {Role: embedconfig.RoleDocument, MediaType: "image/png", Data: blue}, {Role: embedconfig.RoleDocument, MediaType: "application/pdf", Data: pdf}, {Role: embedconfig.RoleDocument, MediaType: "video/mp4", Data: video}}
 	for _, client := range []*embedclient.Client{vertex, kit} {
 		vectors, err := client.EmbedInputs(t.Context(), inputs)
 		require.NoError(t, err)

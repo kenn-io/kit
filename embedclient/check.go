@@ -16,18 +16,11 @@ import (
 	"go.kenn.io/kit/embedmodel"
 )
 
-// Fixture supplies a media input for a conformance check.
-type Fixture struct {
-	MediaType string
-	Data      []byte
-}
-
 // CheckOptions describes the service and model to check.
 type CheckOptions struct {
 	BaseURL, Model, APIKey string
 	Dimensions             int
-	Media                  []Fixture
-	OpenAI                 bool
+	Media                  []Input
 }
 
 func isUnsupported(err error) bool { return errors.Is(err, embedmodel.ErrUnsupportedContent) }
@@ -37,12 +30,12 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 	var failures []error
 	fail := func(rule string, err any) { failures = append(failures, fmt.Errorf("%s: %v", rule, err)) }
 	model := embedconfig.Model{Name: opts.Model, Dimensions: opts.Dimensions, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone, RequestDimensions: true}
-	makeClient := func(api embedconfig.API, format string) (*Client, error) {
+	makeClient := func(format string) (*Client, error) {
 		m := model
 		m.EncodingFormat = format
-		return New(Options{Model: m, Roles: embedconfig.Roles{QueryFormatter: "as-given"}, Deployment: embedconfig.Deployment{API: api, BaseURL: opts.BaseURL, TrustPrivateNetwork: true}, APIKey: opts.APIKey})
+		return New(Options{Model: m, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: opts.BaseURL, TrustPrivateNetwork: true}, APIKey: opts.APIKey})
 	}
-	client, err := makeClient(embedconfig.APIKit, "float")
+	client, err := makeClient("float")
 	if err != nil {
 		fail("configuration", err)
 		return failures
@@ -52,7 +45,7 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 			fail(format+" encoding", err)
 		}
 	}
-	inputs := []Input{{Role: embedconfig.RoleQuery, Parts: []Part{{Text: "alpha"}}}, {Role: embedconfig.RoleDocument, Parts: []Part{{Text: "beta"}}}}
+	inputs := []Input{{Role: embedconfig.RoleQuery, Text: "alpha"}, {Role: embedconfig.RoleDocument, Text: "beta"}}
 	batch, err := client.Encode(ctx, opts.Dimensions, inputs)
 	if err != nil {
 		fail("text batch", err)
@@ -65,7 +58,7 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 				fail("batch consistency", "singleton differs")
 			}
 		}
-		encoded, e := makeClient(embedconfig.APIKit, "base64")
+		encoded, e := makeClient("base64")
 		if e != nil {
 			fail("base64 configuration", e)
 		} else if vectors, e := encoded.Encode(ctx, opts.Dimensions, inputs); e != nil {
@@ -73,25 +66,15 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 		} else if !reflect.DeepEqual(batch, vectors) {
 			fail("base64 consistency", "vectors differ")
 		}
-		if opts.OpenAI {
-			openai, e := makeClient(embedconfig.APIOpenAI, "float")
-			if e != nil {
-				fail("openai configuration", e)
-			} else if vectors, e := openai.Encode(ctx, opts.Dimensions, inputs[:1]); e != nil {
-				fail("openai", e)
-			} else if !reflect.DeepEqual(batch[0], vectors[0]) {
-				fail("openai consistency", "vectors differ")
-			}
-		}
 	}
 	fixtures := opts.Media
 	optional := len(fixtures) == 0
 	if optional {
 		png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=")
-		fixtures = []Fixture{{MediaType: "image/png", Data: png}}
+		fixtures = []Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: png}}
 	}
 	for _, f := range fixtures {
-		_, e := client.Encode(ctx, opts.Dimensions, []Input{{Role: embedconfig.RoleDocument, Parts: []Part{{MediaType: f.MediaType, Data: f.Data}}}})
+		_, e := client.Encode(ctx, opts.Dimensions, []Input{f})
 		if e != nil && !(optional && isUnsupported(e)) {
 			fail("media", e)
 		}
@@ -102,11 +85,11 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 		code               string
 	}
 	cases := []badCase{
-		{"unknown model", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query","parts":[{"text":"a"}]}]}`, opts.Model+"-unknown"), 404, "model_not_found"},
+		{"unknown model", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query","text":"a"}]}`, opts.Model+"-unknown"), 404, "model_not_found"},
 		{"malformed", "POST", "{", 400, "invalid_request"},
 		{"empty inputs", "POST", fmt.Sprintf(`{"model":%q,"inputs":[]}`, opts.Model), 400, "invalid_request"},
-		{"bad role", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"wrong","parts":[{"text":"a"}]}]}`, opts.Model), 400, "invalid_request"},
-		{"bad base64", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query","parts":[{"media_type":"image/png","data":"!"}]}]}`, opts.Model), 400, "invalid_request"},
+		{"bad role", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"wrong","text":"a"}]}`, opts.Model), 400, "invalid_request"},
+		{"bad base64", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query","media_type":"image/png","data":"!"}]}`, opts.Model), 400, "invalid_request"},
 		{"method", "GET", "", 405, "method_not_allowed"},
 	}
 	for _, tc := range cases {
@@ -152,7 +135,7 @@ func checkWireEncoding(ctx context.Context, c *Client, opts CheckOptions, format
 		Dimensions int     `json:"dimensions"`
 		Encoding   string  `json:"encoding_format"`
 		Inputs     []Input `json:"inputs"`
-	}{opts.Model, opts.Dimensions, format, []Input{{Role: embedconfig.RoleQuery, Parts: []Part{{Text: "alpha"}}}}})
+	}{opts.Model, opts.Dimensions, format, []Input{{Role: embedconfig.RoleQuery, Text: "alpha"}, {Role: embedconfig.RoleDocument, Text: "beta"}}})
 	if err != nil {
 		return err
 	}
@@ -168,16 +151,24 @@ func checkWireEncoding(ctx context.Context, c *Client, opts CheckOptions, format
 	if err := json.Unmarshal(payload, &response); err != nil {
 		return err
 	}
-	if len(response.Data) != 1 {
-		return errors.New("expected one embedding")
+	if len(response.Data) != 2 {
+		return errors.New("expected two embeddings")
 	}
-	raw := bytes.TrimSpace(response.Data[0].Embedding)
+
 	want := byte('[')
 	if format == "base64" {
 		want = '"'
 	}
-	if len(raw) == 0 || raw[0] != want {
-		return fmt.Errorf("expected %s embedding", format)
+	for _, item := range response.Data {
+		raw := bytes.TrimSpace(item.Embedding)
+		if len(raw) == 0 || raw[0] != want {
+			return fmt.Errorf("expected %s embedding", format)
+		}
+	}
+	if _, problems, err := c.classify(payload, 2); err != nil {
+		return err
+	} else if len(problems) > 0 {
+		return problems[0]
 	}
 	return nil
 }

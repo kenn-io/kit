@@ -49,6 +49,7 @@ test-embedclient-vertex:
 	go test ./embedconfig -run '^(TestVertex.*|TestKit.*|TestEmbedderDecodesTheStandardKeys)$$'
 	go test ./embedmodel -run '^(TestVertexIdentity|TestKitIdentity|TestVectorIdentityPinsTheEndpointOnlyOnRequest)$$'
 	go test ./embedserver -run '^TestVertexLiveMedia$$'
+	go test ./cmd/embedcheck -run '^TestEmbedcheckUsage$$'
 
 .PHONY: test-embedserver
 # Set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY to include native parity.

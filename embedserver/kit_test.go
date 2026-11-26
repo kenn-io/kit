@@ -3,9 +3,12 @@ package embedserver
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,10 +29,8 @@ type testBackend struct{}
 func (testBackend) Encode(_ context.Context, _ int, inputs []embedclient.Input) ([][]float32, error) {
 	out := make([][]float32, len(inputs))
 	for i, in := range inputs {
-		for _, p := range in.Parts {
-			if p.MediaType != "" {
-				return nil, embedmodel.ErrUnsupportedContent
-			}
+		if in.MediaType != "" {
+			return nil, embedmodel.ErrUnsupportedContent
 		}
 		out[i] = []float32{0.6, 0.8}
 	}
@@ -42,13 +43,17 @@ func TestKitHandler(t *testing.T) {
 		status             int
 		code               string
 	}{
-		{"success", "POST", `{"model":"example","dimensions":2,"inputs":[{"role":"query","parts":[{"text":"hello"}]}]}`, 200, ""},
-		{"base64", "POST", `{"model":"example","encoding_format":"base64","inputs":[{"role":"document","parts":[{"text":"hello"}]}]}`, 200, ""},
-		{"unknown", "POST", `{"model":"other","inputs":[{"role":"query","parts":[{"text":"hello"}]}]}`, 404, "model_not_found"},
-		{"role", "POST", `{"model":"example","inputs":[{"role":"bad","parts":[{"text":"hello"}]}]}`, 400, "invalid_request"},
-		{"media", "POST", `{"model":"example","inputs":[{"role":"query","parts":[{"media_type":"image/png","data":"AQ=="}]}]}`, 415, "unsupported_content"},
+		{"success", "POST", `{"model":"example","dimensions":2,"inputs":[{"role":"query","text":"hello"}]}`, 200, ""},
+		{"base64", "POST", `{"model":"example","encoding_format":"base64","inputs":[{"role":"document","text":"hello"}]}`, 200, ""},
+		{"unknown", "POST", `{"model":"other","inputs":[{"role":"query","text":"hello"}]}`, 404, "model_not_found"},
+		{"role", "POST", `{"model":"example","inputs":[{"role":"bad","text":"hello"}]}`, 400, "invalid_request"},
+		{"media", "POST", `{"model":"example","inputs":[{"role":"query","media_type":"image/png","data":"AQ=="}]}`, 415, "unsupported_content"},
 		{"method", "GET", "", 405, "method_not_allowed"},
-		{"mixed part", "POST", `{"model":"example","inputs":[{"role":"query","parts":[{"text":"hello","data":""}]}]}`, 400, "invalid_request"},
+		{"both payloads", "POST", `{"model":"example","inputs":[{"role":"query","text":"hello","media_type":"image/png","data":"AQ=="}]}`, 400, "invalid_request"},
+		{"empty", "POST", `{"model":"example","inputs":[{"role":"query"}]}`, 400, "invalid_request"},
+		{"blank", "POST", `{"model":"example","inputs":[{"role":"query","text":"  "}]}`, 400, "invalid_request"},
+		{"media without data", "POST", `{"model":"example","inputs":[{"role":"query","media_type":"image/png"}]}`, 400, "invalid_request"},
+		{"null absent", "POST", `{"model":"example","inputs":[{"role":"query","text":"hello","data":null}]}`, 200, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(tc.method, "/v1/embed", bytes.NewBufferString(tc.body))
@@ -71,7 +76,7 @@ func TestKitCheck(t *testing.T) {
 }
 func TestKitLocalMedia(t *testing.T) {
 	local := newLocal(nil)
-	_, err := local.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{MediaType: "image/png", Data: []byte{1}}}}})
+	_, err := local.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}})
 	assert.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
 }
 
@@ -83,30 +88,40 @@ func (b *captureBackend) Encode(_ context.Context, _ int, in []embedclient.Input
 }
 func TestKitHandlerPreservesText(t *testing.T) {
 	backend := &captureBackend{}
-	req := httptest.NewRequest("POST", "/v1/embed", bytes.NewBufferString(`{"model":"example","inputs":[{"role":"query","parts":[{"text":"query: hello"}]}]}`))
+	req := httptest.NewRequest("POST", "/v1/embed", bytes.NewBufferString(`{"model":"example","inputs":[{"role":"query","text":"query: hello"}]}`))
 	w := httptest.NewRecorder()
 	Handler(backend, []string{"example"}).ServeHTTP(w, req)
 	require.Equal(t, 200, w.Code)
-	assert.Equal(t, []embedclient.Input{{Role: embedconfig.RoleQuery, Parts: []embedclient.Part{{Text: "query: hello"}}}}, backend.inputs)
+	assert.Equal(t, []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "query: hello"}}, backend.inputs)
 }
 
 func TestKitBackendsDirectAndHTTP(t *testing.T) {
 	for _, kind := range []string{"openai", "vertex", "local"} {
 		t.Run(kind, func(t *testing.T) {
 			var backend embedclient.Backend
+			var seen []string
+			var localEngine *fakeEngine
 			modelName := "example"
 			if kind == "local" {
-				backend = newLocal(&fakeEngine{})
+				localEngine = &fakeEngine{}
+				backend = newLocal(localEngine)
 			} else {
 				provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					var req map[string]any
 					require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 					w.Header().Set("Content-Type", "application/json")
 					if kind == "vertex" {
+						parts := req["content"].(map[string]any)["parts"].([]any)
+						if text, ok := parts[0].(map[string]any)["text"].(string); ok {
+							seen = append(seen, text)
+						}
 						_, _ = w.Write([]byte(`{"embedding":{"values":[0.6,0.8]}}`))
 						return
 					}
 					inputs := req["input"].([]any)
+					for _, text := range inputs {
+						seen = append(seen, text.(string))
+					}
 					data := make([]map[string]any, len(inputs))
 					for i := range inputs {
 						data[i] = map[string]any{"index": i, "embedding": []float32{0.6, 0.8}}
@@ -125,7 +140,7 @@ func TestKitBackendsDirectAndHTTP(t *testing.T) {
 				require.NoError(t, err)
 				backend = client
 			}
-			inputs := []embedclient.Input{{Role: embedconfig.RoleQuery, Parts: []embedclient.Part{{Text: "query text"}}}, {Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{Text: "document text"}}}}
+			inputs := []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "  query\ntext  "}, {Role: embedconfig.RoleDocument, Text: "  document\ntext  "}}
 			direct, err := backend.Encode(t.Context(), 2, inputs)
 			require.NoError(t, err)
 			server := httptest.NewServer(Handler(backend, []string{modelName}))
@@ -135,7 +150,11 @@ func TestKitBackendsDirectAndHTTP(t *testing.T) {
 			viaHTTP, err := client.Encode(t.Context(), 2, inputs)
 			require.NoError(t, err)
 			assert.Equal(t, direct, viaHTTP)
-			media := []embedclient.Input{{Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{MediaType: "image/png", Data: []byte{1}}}}}
+			if localEngine != nil {
+				seen = localEngine.inputs
+			}
+			assert.Equal(t, []string{"  query\ntext  ", "  document\ntext  ", "  query\ntext  ", "  document\ntext  "}, seen)
+			media := []embedclient.Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}}
 			_, directErr := backend.Encode(t.Context(), 2, media)
 			_, httpErr := client.Encode(t.Context(), 2, media)
 			if kind == "vertex" {
@@ -153,7 +172,7 @@ func TestKitBackendsDirectAndHTTP(t *testing.T) {
 func TestKitServeCheck(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	_, record, done := startServe(t, ctx, t.TempDir(), new(fakeEngine), daemon.Endpoint.ListenContext)
-	failures := embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: record.Endpoint().BaseURL() + "/v1", Model: "nomic-embed-text", Dimensions: 2, OpenAI: true})
+	failures := embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: record.Endpoint().BaseURL() + "/v1", Model: "nomic-embed-text", Dimensions: 2})
 	cancel()
 	require.NoError(t, <-done)
 	assert.Empty(t, failures)
@@ -243,19 +262,19 @@ func (canceledBackend) Encode(ctx context.Context, _ int, _ []embedclient.Input)
 func TestKitHandlerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	r := httptest.NewRequestWithContext(ctx, "POST", "/v1/embed", strings.NewReader(`{"model":"example","inputs":[{"role":"query","parts":[{"text":"hello"}]}]}`))
+	r := httptest.NewRequestWithContext(ctx, "POST", "/v1/embed", strings.NewReader(`{"model":"example","inputs":[{"role":"query","text":"hello"}]}`))
 	w := httptest.NewRecorder()
 	Handler(canceledBackend{}, []string{"example"}).ServeHTTP(w, r)
 	assert.Empty(t, w.Body.String())
 }
 func TestKitHandlerLenientJSON(t *testing.T) {
 	backend := &captureBackend{}
-	body := append([]byte(`{"model":"wrong","model":"example","inputs":[{"role":"query","parts":[{"text":"a`), 0xff)
-	body = append(body, []byte(`b"}]}]}`)...)
+	body := append([]byte(`{"model":"wrong","model":"example","inputs":[{"role":"query","text":"a`), 0xff)
+	body = append(body, []byte(`b"}]}`)...)
 	w := httptest.NewRecorder()
 	Handler(backend, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", bytes.NewReader(body)))
 	require.Equal(t, 200, w.Code)
-	assert.Equal(t, "a\ufffdb", backend.inputs[0].Parts[0].Text)
+	assert.Equal(t, "a\ufffdb", backend.inputs[0].Text)
 }
 
 type errorBackend struct{ err error }
@@ -285,7 +304,7 @@ func TestKitBackendErrorClasses(t *testing.T) {
 			t.Cleanup(server.Close)
 			client, err := embedclient.New(embedclient.Options{Model: embedconfig.Model{Name: "example", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
 			require.NoError(t, err)
-			_, err = client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Parts: []embedclient.Part{{Text: "hello"}}}})
+			_, err = client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "hello"}})
 			var got *embedclient.APIError
 			require.ErrorAs(t, err, &got)
 			assert.Equal(t, tc.status, got.StatusCode)
@@ -302,7 +321,7 @@ func TestKitRejectsTruncatedLocalInput(t *testing.T) {
 	assert.Len(t, tok.encodeLimit(strings.Repeat("a ", 2046), 2049), 2048)
 	assert.Len(t, tok.encodeLimit(strings.Repeat("a ", 2047), 2049), 2049)
 	local := newLocal(&models{text: &model{tokenizer: tok}})
-	input := embedclient.Input{Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{Text: strings.Repeat("a ", 2047)}}}
+	input := embedclient.Input{Role: embedconfig.RoleDocument, Text: strings.Repeat("a ", 2047)}
 	_, err := local.Encode(t.Context(), 2, []embedclient.Input{input})
 	var api *embedclient.APIError
 	require.ErrorAs(t, err, &api)
@@ -322,12 +341,17 @@ func TestKitLocalLongNative(t *testing.T) {
 	local, err := NewLocal(t.Context(), dir, library)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, local.Close()) })
-	input := embedclient.Input{Role: embedconfig.RoleDocument, Parts: []embedclient.Part{{Text: strings.Repeat("hello ", 2047)}}}
+	input := embedclient.Input{Role: embedconfig.RoleDocument, Text: strings.Repeat("hello ", 2047)}
 	body, err := json.Marshal(map[string]any{"model": "example", "inputs": []embedclient.Input{input}})
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
 	Handler(local, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", bytes.NewReader(body)))
 	assert.Equal(t, 413, w.Code)
+	oldBody, err := json.Marshal(map[string]any{"model": "nomic-embed-text", "input": input.Text, "dimensions": 2})
+	require.NoError(t, err)
+	old := httptest.NewRecorder()
+	local.h.ServeHTTP(old, httptest.NewRequest("POST", "/v1/embeddings", bytes.NewReader(oldBody)))
+	assert.Equal(t, 200, old.Code)
 }
 
 func TestKitLogsModelLoadFailure(t *testing.T) {
@@ -337,7 +361,7 @@ func TestKitLogsModelLoadFailure(t *testing.T) {
 	var log bytes.Buffer
 	local.h.log = &log
 	w := httptest.NewRecorder()
-	Handler(local, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", strings.NewReader(`{"model":"example","inputs":[{"role":"query","parts":[{"text":"hello"}]}]}`)))
+	Handler(local, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", strings.NewReader(`{"model":"example","inputs":[{"role":"query","text":"hello"}]}`)))
 	assert.Equal(t, 424, w.Code)
 	assert.Contains(t, log.String(), "missing model")
 }
@@ -358,11 +382,143 @@ func TestKitUpstreamMissingModel(t *testing.T) {
 	t.Cleanup(server.Close)
 	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
 	require.NoError(t, err)
-	_, err = client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Parts: []embedclient.Part{{Text: "hello"}}}})
+	_, err = client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "hello"}})
 	var api *embedclient.APIError
 	require.ErrorAs(t, err, &api)
 	assert.Equal(t, http.StatusBadRequest, api.StatusCode)
 	assert.Equal(t, embedclient.ReasonInvalidRequest, api.Reason)
 	assert.False(t, api.CredentialsRejected())
 	assert.False(t, api.Retryable())
+}
+
+type vectorBackend struct{ vectors [][]float32 }
+
+func (b vectorBackend) Encode(context.Context, int, []embedclient.Input) ([][]float32, error) {
+	return b.vectors, nil
+}
+func TestKitRejectsInvalidVectors(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		vectors [][]float32
+	}{
+		{"zero", [][]float32{{0, 0}}}, {"wrong count", nil}, {"wrong size", [][]float32{{1}}}, {"nan", [][]float32{{float32(math.NaN()), 1}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			Handler(vectorBackend{tc.vectors}, []string{"example"}).ServeHTTP(w, httptest.NewRequest("POST", "/v1/embed", strings.NewReader(`{"model":"example","dimensions":2,"inputs":[{"role":"query","text":"a"}]}`)))
+			assert.Equal(t, 500, w.Code)
+			assert.Contains(t, w.Body.String(), "internal_error")
+		})
+	}
+}
+
+// independentService implements the wire contract without using Handler.
+func independentService(w http.ResponseWriter, r *http.Request) {
+	fail := func(status int, code string) {
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}})
+	}
+	if r.Method != "POST" {
+		w.Header().Set("Allow", "POST")
+		fail(405, "method_not_allowed")
+		return
+	}
+	var req struct {
+		Model      string `json:"model"`
+		Dimensions int    `json:"dimensions"`
+		Encoding   string `json:"encoding_format"`
+		Inputs     []struct {
+			Role      string `json:"role"`
+			Text      string `json:"text"`
+			MediaType string `json:"media_type"`
+			Data      []byte `json:"data"`
+		} `json:"inputs"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil || req.Model == "" || len(req.Inputs) == 0 {
+		fail(400, "invalid_request")
+		return
+	}
+	if req.Model != "example" {
+		fail(404, "model_not_found")
+		return
+	}
+	for _, in := range req.Inputs {
+		if in.Role != "query" && in.Role != "document" {
+			fail(400, "invalid_request")
+			return
+		}
+		if in.MediaType != "" {
+			fail(415, "unsupported_content")
+			return
+		}
+		if in.Text == "" {
+			fail(400, "invalid_request")
+			return
+		}
+	}
+	data := make([]map[string]any, len(req.Inputs))
+	for i := range data {
+		var vec any = []float32{0.6, 0.8}
+		if req.Encoding == "base64" {
+			var raw [8]byte
+			binary.LittleEndian.PutUint32(raw[:4], math.Float32bits(0.6))
+			binary.LittleEndian.PutUint32(raw[4:], math.Float32bits(0.8))
+			vec = base64.StdEncoding.EncodeToString(raw[:])
+		}
+		data[i] = map[string]any{"index": i, "embedding": vec}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"model": req.Model, "data": data})
+}
+func TestKitCheckIndependentService(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(independentService))
+	t.Cleanup(server.Close)
+	assert.Empty(t, embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2}))
+}
+
+func TestKitCheckRejectsFaultyIndependentServices(t *testing.T) {
+	for _, kind := range []string{"batch encoding", "zero", "index", "size"} {
+		t.Run(kind, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body bytes.Buffer
+				_, _ = body.ReadFrom(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+				var req struct {
+					Encoding string            `json:"encoding_format"`
+					Inputs   []json.RawMessage `json:"inputs"`
+				}
+				_ = json.Unmarshal(body.Bytes(), &req)
+				response := httptest.NewRecorder()
+				independentService(response, r)
+				if response.Code != 200 {
+					for k, values := range response.Header() {
+						w.Header()[k] = values
+					}
+					w.WriteHeader(response.Code)
+					_, _ = w.Write(response.Body.Bytes())
+					return
+				}
+				var out struct {
+					Model string           `json:"model"`
+					Data  []map[string]any `json:"data"`
+				}
+				_ = json.Unmarshal(response.Body.Bytes(), &out)
+				switch kind {
+				case "batch encoding":
+					if req.Encoding == "base64" && len(req.Inputs) > 1 {
+						out.Data[1]["embedding"] = []float32{0.6, 0.8}
+					}
+				case "zero":
+					out.Data[0]["embedding"] = []float32{0, 0}
+				case "index":
+					out.Data[0]["index"] = 99
+				case "size":
+					out.Data[0]["embedding"] = []float32{1}
+				}
+				_ = json.NewEncoder(w).Encode(out)
+			}))
+			t.Cleanup(server.Close)
+			failures := embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2})
+			assert.NotEmpty(t, failures)
+		})
+	}
 }

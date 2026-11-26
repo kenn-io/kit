@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"math"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"go.kenn.io/kit/embedclient"
@@ -55,14 +53,10 @@ func (l *Local) Encode(ctx context.Context, dims int, inputs []embedclient.Input
 		if err := input.Validate(); err != nil {
 			return nil, err
 		}
-		var texts []string
-		for _, p := range input.Parts {
-			if p.MediaType != "" {
-				return nil, embedmodel.ErrUnsupportedContent
-			}
-			texts = append(texts, p.Text)
+		if input.MediaType != "" {
+			return nil, embedmodel.ErrUnsupportedContent
 		}
-		v, _, err := l.h.embedWith(ctx, strings.Join(texts, "\n"), true)
+		v, _, err := l.h.embedWith(ctx, input.Text, true)
 		if err != nil {
 			return nil, err
 		}
@@ -127,26 +121,6 @@ func Handler(backend embedclient.Backend, models []string) http.Handler {
 		if err := json.Unmarshal(body, &req, decodeOptions); err != nil || req.Model == "" || len(req.Inputs) == 0 || req.Dimensions < 0 || (req.Encoding != "" && req.Encoding != "float" && req.Encoding != "base64") {
 			fail(400, "invalid_request", "invalid request")
 			return
-		}
-		var shapes struct {
-			Inputs []struct {
-				Parts []map[string]jsontext.Value `json:"parts"`
-			} `json:"inputs"`
-		}
-		if err := json.Unmarshal(body, &shapes, decodeOptions); err != nil {
-			fail(400, "invalid_request", "invalid input")
-			return
-		}
-		for _, input := range shapes.Inputs {
-			for _, part := range input.Parts {
-				_, text := part["text"]
-				_, media := part["media_type"]
-				_, data := part["data"]
-				if (text && (media || data)) || (!text && (!media || !data)) {
-					fail(400, "invalid_request", "invalid part")
-					return
-				}
-			}
 		}
 		found := false
 		for _, name := range models {
@@ -221,11 +195,19 @@ func Handler(backend embedclient.Backend, models []string) http.Handler {
 				fail(500, "internal_error", "invalid backend response")
 				return
 			}
+			nonzero := false
 			for _, x := range v {
+				if x != 0 {
+					nonzero = true
+				}
 				if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
 					fail(500, "internal_error", "invalid backend response")
 					return
 				}
+			}
+			if !nonzero {
+				fail(500, "internal_error", "invalid backend response")
+				return
 			}
 		}
 		data := make([]item, len(vectors))

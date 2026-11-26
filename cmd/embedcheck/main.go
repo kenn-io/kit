@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"go.kenn.io/kit/embedclient"
+	"go.kenn.io/kit/embedconfig"
 )
 
 type paths []string
@@ -28,7 +29,6 @@ func run() int {
 	flag.IntVar(&opts.Dimensions, "dims", 0, "vector dimensions")
 	flag.StringVar(&keyEnv, "api-key-env", "", "environment variable containing the API key")
 	flag.Var(&media, "media", "media file the service must embed; repeat for each file")
-	flag.BoolVar(&opts.OpenAI, "openai", false, "also require {url}/embeddings to match {url}/embed for text")
 	flag.Parse()
 	if opts.BaseURL == "" || opts.Model == "" || opts.Dimensions <= 0 || flag.NArg() != 0 {
 		flag.Usage()
@@ -53,7 +53,7 @@ func run() int {
 			fmt.Fprintln(os.Stderr, "unknown media type:", path)
 			return 2
 		}
-		opts.Media = append(opts.Media, embedclient.Fixture{MediaType: typ, Data: data})
+		opts.Media = append(opts.Media, embedclient.Input{Role: embedconfig.RoleDocument, MediaType: typ, Data: data})
 	}
 	failures := embedclient.Check(context.Background(), opts)
 	for _, err := range failures {
