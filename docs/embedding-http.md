@@ -114,7 +114,7 @@ kennembed serves the built-in text model at `/v1/embed` through `embedserver.Han
 
 ## Run the check
 
-`embedcheck` sends requests to a running service and reports each rule the service breaks. It needs Go and network access to the service:
+`embedcheck` sends requests to a running service and checks the parts of this contract listed below. It needs Go and network access to the service:
 
 ```sh
 go run go.kenn.io/kit/cmd/embedcheck@latest -url https://embed.example.com/v1 -model example-model -dims 768
@@ -139,7 +139,7 @@ The check requires:
 - A malformed body, empty `inputs`, and an unknown role each return 400 `invalid_request`. So does an input with both text and media, an input with neither payload, a media type without data, and media with invalid base64.
 - `GET` returns 405 `method_not_allowed` with `Allow: POST`.
 
-It prints one line per broken rule to standard error. It exits 0 when every rule passes, 1 when any rule fails, and 2 when a flag is missing or invalid, the key variable is unset, or a media file cannot be read or has an unknown extension.
+It prints one line to standard error for each failure it detects. It exits 0 when every rule passes, 1 when any rule fails, and 2 when a flag is missing or invalid, the key variable is unset, or a media file cannot be read or has an unknown extension.
 
 The check covers the request and response shape, indexes, sizes, encodings, batching, declared media support, and the request errors above. It does not test vector quality, hidden changes to input text, input or body size limits, rate limits, or provider failures. The `/embeddings` route is optional, and the check does not call it.
 
