@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.kenn.io/kit/embedmodel"
 )
 
 // ErrInvalidVector reports that the provider returned a vector that failed
@@ -80,6 +82,7 @@ const (
 	ReasonRateLimited
 	// ReasonUnavailable is a timeout or server failure (408 or 5xx).
 	ReasonUnavailable
+	ReasonUnsupportedContent
 )
 
 func (r Reason) String() string {
@@ -94,6 +97,8 @@ func (r Reason) String() string {
 		return "credentials rejected"
 	case ReasonRateLimited:
 		return "rate limited"
+	case ReasonUnsupportedContent:
+		return "unsupported content"
 	case ReasonUnavailable:
 		return "unavailable"
 	default:
@@ -114,6 +119,10 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("embed endpoint returned %d (%s)", e.StatusCode, e.Reason)
 }
 
+func (e *APIError) Is(target error) bool {
+	return target == embedmodel.ErrUnsupportedContent && e.Reason == ReasonUnsupportedContent
+}
+
 // InputRejected reports that the endpoint refused this input itself: it is
 // too long or refused by policy. The same input will fail again, and other
 // inputs may succeed. A 400 Kit cannot attribute to the input is not an input
@@ -126,13 +135,13 @@ func (e *APIError) InputRejected() bool {
 // CredentialsRejected reports that the key or the permission was refused.
 // That is not a reason to skip one document.
 func (e *APIError) CredentialsRejected() bool {
-	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
+	return e.Reason != ReasonInvalidRequest && (e.Reason == ReasonCredentials || e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden)
 }
 
 // Retryable reports a response that may succeed later: 408, 429, or a 5xx.
 // Check RetryAfter for the delay the provider asked for.
 func (e *APIError) Retryable() bool {
-	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
+	return !e.CredentialsRejected() && (e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500)
 }
 
 // maxErrorBody bounds how much of a failed response Kit reads to classify it.

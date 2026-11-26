@@ -39,8 +39,12 @@ type vertexInstance struct {
 
 func (c *Client) vertexRequestBody(inputs []encoded) ([]byte, error) {
 	if strings.HasPrefix(c.model.Name, "gemini-embedding-2") {
+		part := map[string]any{"text": inputs[0].text}
+		if inputs[0].input.MediaType != "" {
+			part = map[string]any{"inlineData": map[string]any{"mimeType": inputs[0].input.MediaType, "data": inputs[0].input.Data}}
+		}
 		body, err := json.Marshal(map[string]any{
-			"content":            map[string]any{"parts": []any{map[string]any{"text": inputs[0].text}}},
+			"content":            map[string]any{"parts": []any{part}},
 			"embedContentConfig": map[string]any{"outputDimensionality": c.model.Dimensions},
 		})
 		if err != nil {

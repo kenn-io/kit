@@ -23,10 +23,10 @@
   `ReasonInputTooLong` and `ReasonContentPolicy` are `InputRejected`; a 400
   Kit cannot attribute to the input is `ReasonUnknown` or
   `ReasonInvalidRequest`, so a misconfigured endpoint never looks like a bad
-  document. A 401 or 403 is `CredentialsRejected` and is not a reason to
-  skip one document. 408, 429, and 5xx are `Retryable`.
-  `CredentialsRejected` and `Retryable` read the status, so they hold for an
-  `APIError` built from a status alone.
+  document. A 401 or 403 is `CredentialsRejected` unless the reason is
+  `ReasonInvalidRequest`; neither case is a reason to skip one document. 408, 429, and 5xx are `Retryable`.
+  `CredentialsRejected` and `Retryable` read the status and the reason, so
+  they also classify upstream credential failures reported through Kit.
 - A transport failure is a `*TransportError`, including a failure while
   reading a response body. Its message stays generic because the cause can
   name internal hosts; `Unwrap` keeps the cause, so a deadline or cancel

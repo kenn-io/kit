@@ -1,4 +1,4 @@
-// Package embedclient calls OpenAI-compatible and Vertex text embedding endpoints.
+// Package embedclient calls Kit, OpenAI-compatible, and Vertex embedding endpoints.
 //
 // Vertex predict requests use task type RETRIEVAL_DOCUMENT for document roles
 // and RETRIEVAL_QUERY for query roles. Gemini embedding 2 uses embedContent
@@ -66,7 +66,17 @@
 // EncodeFunc sends its strings unchanged, so text from embedfit.Prepared is
 // not wrapped a second time.
 //
-// Text is the only encoded form. Image and file content returns
-// embedmodel.ErrUnsupportedContent so those callers can keep their own path.
-// vector.EncodeFunc remains available through EncodeFunc.
+// A Kit client for Gemini embedding 2 requires a role prefix or formatter when
+// Embed or EmbedInputs formats text. Encode accepts preformatted text.
+//
+// An Input carries a role and one payload: Text, or MediaType with Data.
+// EmbedInputs adds role affixes to text inputs. Encode sends inputs as given
+// and implements Backend. Neither joins, trims, nor splits text. Kit services
+// receive inputs over the HTTP contract at
+// https://github.com/kenn-io/kit/blob/main/docs/embedding-http.md, and Check
+// tests a service against it. A media input goes in its own request to a Kit
+// service or to Vertex gemini-embedding-2. OpenAI-compatible services and
+// other Vertex models reject media with embedmodel.ErrUnsupportedContent. The
+// same error identifies a Kit service that reports unsupported content. Embed
+// remains text-only.
 package embedclient

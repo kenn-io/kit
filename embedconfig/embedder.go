@@ -19,7 +19,8 @@ type Embedder struct {
 	// API selects the provider protocol. Empty uses OpenAI-compatible requests.
 	API API `toml:"api"`
 	// BaseURL is the endpoint base. For OpenAI-compatible endpoints, the client
-	// appends /embeddings unless the path already ends with it. For Vertex, use
+	// appends /embeddings unless the path already ends with it. Kit appends
+	// /embed to a base ending in /v1. For Vertex, use
 	// VertexBaseURL to construct the publisher-model URL, or set base_url to
 	// https://us-central1-aiplatform.googleapis.com/v1/projects/project-a/locations/us-central1/publishers/google/models.
 	// The client appends the model name and its :predict or :embedContent method.

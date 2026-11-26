@@ -34,4 +34,18 @@ func TestVertexIdentity(t *testing.T) {
 	explicitOpenAI, err := desc.VectorIdentity()
 	require.NoError(t, err)
 	assert.Equal(t, openAI, explicitOpenAI)
+	t.Run("kit role protocol", func(t *testing.T) {
+		desc := embedmodel.Descriptor{Model: embedconfig.Model{Name: "model", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{API: embedconfig.APIKit}}
+		kit, err := desc.VectorIdentity()
+		require.NoError(t, err)
+		desc.Model.RequestDimensions = true
+		desc.Roles.InputType = embedconfig.InputTypeRetrieval
+		same, err := desc.VectorIdentity()
+		require.NoError(t, err)
+		assert.Equal(t, kit, same)
+		desc.Deployment.API = embedconfig.APIOpenAI
+		openai, err := desc.VectorIdentity()
+		require.NoError(t, err)
+		assert.NotEqual(t, kit, openai)
+	})
 }

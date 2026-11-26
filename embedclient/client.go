@@ -99,6 +99,9 @@ func New(opts Options) (*Client, error) {
 		}
 	}
 	endpoint := embeddingsURL(canonical)
+	if deployment.API == embedconfig.APIKit {
+		endpoint = canonical + "/embed"
+	}
 	if deployment.API == embedconfig.APIVertex {
 		method := ":predict"
 		limit := 1
@@ -160,16 +163,19 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 	if err != nil {
 		return nil, err
 	}
+	return c.embedPrepared(ctx, prepared)
+}
+
+func (c *Client) embedPrepared(ctx context.Context, prepared []encoded) ([][]float32, error) {
 	out := make([][]float32, len(prepared))
 	for start := 0; start < len(prepared); {
 		end := start + 1
-		for end < len(prepared) && (c.api == embedconfig.APIVertex || prepared[end].role == prepared[start].role) && end-start < c.batchItems {
+		for end < len(prepared) && (c.api == embedconfig.APIVertex || c.api == embedconfig.APIKit || prepared[end].role == prepared[start].role) && prepared[start].input.MediaType == "" && prepared[end].input.MediaType == "" && end-start < c.batchItems {
 			end++
 		}
 		vectors, err := c.postBatch(ctx, prepared[start:end])
 		if err != nil {
-			first := start
-			return nil, remapVectorIndex(err, func(i int) int { return prepared[first+i].index })
+			return nil, batchInputError(err, prepared[start:end])
 		}
 		for i, vec := range vectors {
 			out[prepared[start+i].index] = vec
@@ -202,8 +208,8 @@ func (c *Client) postBatch(ctx context.Context, inputs []encoded) ([][]float32, 
 		return c.post(ctx, inputs)
 	})
 	apiErr, isAPIError := errors.AsType[*APIError](err)
-	vertexInputTooLong := c.api == embedconfig.APIVertex && isAPIError && apiErr.Reason == ReasonInputTooLong
-	if (!splittableTimeout(err) && !vertexInputTooLong) || len(inputs) < 2 || ctx.Err() != nil {
+	splitInputTooLong := isAPIError && apiErr.Reason == ReasonInputTooLong && (c.api == embedconfig.APIVertex || c.api == embedconfig.APIKit && apiErr.StatusCode == http.StatusRequestEntityTooLarge)
+	if (!splittableTimeout(err) && !splitInputTooLong) || len(inputs) < 2 || ctx.Err() != nil {
 		return vectors, err
 	}
 	middle := len(inputs) / 2
@@ -258,6 +264,7 @@ type encoded struct {
 	index int
 	role  embedconfig.Role
 	text  string
+	input Input
 }
 
 func (c *Client) prepare(inputs []embedmodel.Content, format bool) ([]encoded, error) {
@@ -271,7 +278,7 @@ func (c *Client) prepare(inputs []embedmodel.Content, format bool) ([]encoded, e
 			return nil, fmt.Errorf("embed input %d: %w", i, vector.ErrEmptyEmbeddingInput)
 		}
 		if format {
-			text, err = embedmodel.Format(input.Role, text, c.roles)
+			text, err = c.formatText(input.Role, text)
 			if err != nil {
 				return nil, fmt.Errorf("embed input %d: %w", i, err)
 			}
@@ -291,9 +298,25 @@ func (c *Client) post(ctx context.Context, inputs []encoded) ([][]float32, error
 	}
 	var body []byte
 	var err error
-	if c.api == embedconfig.APIVertex {
+	switch c.api {
+	case embedconfig.APIVertex:
 		body, err = c.vertexRequestBody(inputs)
-	} else {
+	case embedconfig.APIKit:
+		in := make([]Input, len(inputs))
+		for i, input := range inputs {
+			in[i] = input.input
+			in[i].Role = input.role
+			if in[i].MediaType == "" {
+				in[i].Text = input.text
+			}
+		}
+		body, err = jsonv2.Marshal(struct {
+			Model      string  `json:"model"`
+			Dimensions int     `json:"dimensions"`
+			Encoding   string  `json:"encoding_format,omitempty"`
+			Inputs     []Input `json:"inputs"`
+		}{c.model.Name, c.model.Dimensions, c.model.EncodingFormat, in})
+	default:
 		body, err = c.requestBody(inputs[0].role, texts)
 	}
 	if err != nil {
@@ -383,4 +406,12 @@ func batchItemCap(batch embedconfig.Batch) (int, error) {
 		return 0, errors.New("embed batch items must be positive")
 	}
 	return items, nil
+}
+
+func batchInputError(err error, inputs []encoded) error {
+	err = remapVectorIndex(err, func(i int) int { return inputs[i].index })
+	if len(inputs) == 1 && inputs[0].input.MediaType != "" {
+		return fmt.Errorf("embed input %d: %w", inputs[0].index, err)
+	}
+	return err
 }

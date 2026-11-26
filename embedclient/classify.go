@@ -15,6 +15,12 @@ func classifyFailure(status int, body []byte) Reason {
 	code, message := errorDetail(body)
 	code, message = strings.ToLower(code), strings.ToLower(message)
 	switch {
+	case status == http.StatusBadGateway && code == "upstream_credentials":
+		return ReasonCredentials
+	case status == http.StatusFailedDependency && code == "model_unavailable":
+		return ReasonInvalidRequest
+	case status == http.StatusUnsupportedMediaType && code == "unsupported_content":
+		return ReasonUnsupportedContent
 	case status == http.StatusForbidden && code == "model_not_found":
 		return ReasonInvalidRequest
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
@@ -47,6 +53,8 @@ func classifyFailure(status int, body []byte) Reason {
 // Many servers send no code, a null code, or a numeric one, so the message
 // is the usual signal.
 var errorCodeReasons = map[string]Reason{
+	"input_too_long":           ReasonInputTooLong,
+	"invalid_request":          ReasonInvalidRequest,
 	"context_length_exceeded":  ReasonInputTooLong,
 	"content_policy_violation": ReasonContentPolicy,
 	"content_filter":           ReasonContentPolicy,
