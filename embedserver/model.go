@@ -3,11 +3,9 @@ package embedserver
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 
-	"go.kenn.io/kit/embedclient"
 	"go.kenn.io/kit/internal/embedassets"
 )
 
@@ -47,14 +45,4 @@ func (m *model) embed(ctx context.Context, text string) ([]float32, int, error) 
 	ids := m.tokenizer.encode(text)
 	vector, err := m.ort.infer(ctx, ids)
 	return vector, len(ids), err
-}
-
-// embedStrict rejects text beyond the model window before inference.
-func (m *model) embedStrict(ctx context.Context, text string) ([]float32, int, error) {
-	ids := m.tokenizer.encodeLimit(text, 2049)
-	if len(ids) > 2048 {
-		return nil, 0, &embedclient.APIError{StatusCode: http.StatusRequestEntityTooLarge, Reason: embedclient.ReasonInputTooLong}
-	}
-	v, err := m.ort.infer(ctx, ids)
-	return v, len(ids), err
 }

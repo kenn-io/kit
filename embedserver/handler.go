@@ -135,22 +135,11 @@ func (h *handler) embeddings(ctx context.Context, req request, inputs []string) 
 
 // embed holds the gate for one input, so other requests run between batch items.
 func (h *handler) embed(ctx context.Context, text string) ([]float32, int, error) {
-	return h.embedWith(ctx, text, false)
-}
-
-func (h *handler) embedWith(ctx context.Context, text string, strict bool) ([]float32, int, error) {
 	select {
 	case h.gate <- struct{}{}:
 	case <-ctx.Done():
 		return nil, 0, ctx.Err()
 	}
 	defer func() { <-h.gate }()
-	if strict {
-		if e, ok := h.engine.(interface {
-			embedStrict(context.Context, string) ([]float32, int, error)
-		}); ok {
-			return e.embedStrict(ctx, text)
-		}
-	}
 	return h.engine.embed(ctx, text)
 }

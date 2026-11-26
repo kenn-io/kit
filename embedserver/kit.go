@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -11,9 +12,11 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.kenn.io/kit/embedclient"
+	"go.kenn.io/kit/embedconfig"
 	"go.kenn.io/kit/embedmodel"
 )
 
@@ -56,7 +59,7 @@ func (l *Local) Encode(ctx context.Context, dims int, inputs []embedclient.Input
 		if input.MediaType != "" {
 			return nil, embedmodel.ErrUnsupportedContent
 		}
-		v, _, err := l.h.embedWith(ctx, input.Text, true)
+		v, _, err := l.h.embed(ctx, input.Text)
 		if err != nil {
 			return nil, err
 		}
@@ -93,6 +96,11 @@ func encodeEmbedding(v []float32, format string) any {
 // Handler serves the Kit embedding HTTP contract for the named models.
 func Handler(backend embedclient.Backend, models []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		openai := strings.HasSuffix(r.URL.Path, "/embeddings")
+		if !openai && !strings.HasSuffix(r.URL.Path, "/embed") {
+			http.NotFound(w, r)
+			return
+		}
 		fail := func(status int, code, message string) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
@@ -117,8 +125,42 @@ func Handler(backend embedclient.Backend, models []string) http.Handler {
 			Dimensions int                 `json:"dimensions"`
 			Encoding   string              `json:"encoding_format"`
 			Inputs     []embedclient.Input `json:"inputs"`
+			Input      jsonv1.RawMessage   `json:"input"`
+			InputType  string              `json:"input_type"`
 		}
-		if err := json.Unmarshal(body, &req, decodeOptions); err != nil || req.Model == "" || len(req.Inputs) == 0 || req.Dimensions < 0 || (req.Encoding != "" && req.Encoding != "float" && req.Encoding != "base64") {
+		if err := json.Unmarshal(body, &req, decodeOptions); err != nil {
+			fail(400, "invalid_request", "invalid request")
+			return
+		}
+		if openai {
+			req.Inputs = nil
+			var texts []string
+			var text *string
+			if json.Unmarshal(req.Input, &text, decodeOptions) == nil && text != nil {
+				texts = []string{*text}
+			} else {
+				var items []*string
+				if err := json.Unmarshal(req.Input, &items, decodeOptions); err != nil {
+					fail(400, "invalid_request", "invalid input")
+					return
+				}
+				for _, item := range items {
+					if item == nil {
+						fail(400, "invalid_request", "invalid input")
+						return
+					}
+					texts = append(texts, *item)
+				}
+			}
+			role := embedconfig.RoleDocument
+			if req.InputType == "query" {
+				role = embedconfig.RoleQuery
+			}
+			for _, text := range texts {
+				req.Inputs = append(req.Inputs, embedclient.Input{Role: role, Text: text})
+			}
+		}
+		if req.Model == "" || len(req.Inputs) == 0 || req.Dimensions < 0 || (req.Encoding != "" && req.Encoding != "float" && req.Encoding != "base64") {
 			fail(400, "invalid_request", "invalid request")
 			return
 		}
@@ -213,8 +255,15 @@ func Handler(backend embedclient.Backend, models []string) http.Handler {
 		data := make([]item, len(vectors))
 		for i, v := range vectors {
 			data[i] = item{Index: i, Embedding: encodeEmbedding(v, req.Encoding)}
+			if openai {
+				data[i].Object = "embedding"
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.MarshalWrite(w, map[string]any{"model": req.Model, "data": data})
+		out := map[string]any{"model": req.Model, "data": data}
+		if openai {
+			out["object"] = "list"
+		}
+		_ = json.MarshalWrite(w, out)
 	})
 }

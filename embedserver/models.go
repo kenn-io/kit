@@ -29,31 +29,15 @@ func loadModels(_ context.Context, dir, library string) (engine, error) {
 	return &models{dir: dir, library: path}, nil
 }
 
-func (m *models) textModel(ctx context.Context) (engine, error) {
+func (m *models) embed(ctx context.Context, text string) ([]float32, int, error) {
 	if m.text == nil {
 		model, err := loadModel(ctx, m.dir, m.library)
 		if err != nil {
-			return nil, &modelLoadError{err}
+			return nil, 0, &modelLoadError{err}
 		}
 		m.text = model
 	}
-	return m.text, nil
-}
-
-func (m *models) embed(ctx context.Context, text string) ([]float32, int, error) {
-	model, err := m.textModel(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
-	return model.embed(ctx, text)
-}
-
-func (m *models) embedStrict(ctx context.Context, text string) ([]float32, int, error) {
-	loaded, err := m.textModel(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
-	return loaded.(*model).embedStrict(ctx, text)
+	return m.text.embed(ctx, text)
 }
 
 func (m *models) face(ctx context.Context) (*faceModel, error) {
