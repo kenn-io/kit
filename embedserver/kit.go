@@ -51,14 +51,11 @@ func (l *Local) Encode(ctx context.Context, dims int, inputs []embedclient.Input
 	if dims < 1 || dims > 768 {
 		return nil, embedclient.ErrInvalidDimensions
 	}
+	if err := validateLocalInputs(inputs); err != nil {
+		return nil, err
+	}
 	out := make([][]float32, len(inputs))
 	for i, input := range inputs {
-		if err := input.Validate(); err != nil {
-			return nil, err
-		}
-		if input.MediaType != "" {
-			return nil, embedmodel.ErrUnsupportedContent
-		}
 		v, _, err := l.h.embed(ctx, input.Text)
 		if err != nil {
 			return nil, err
@@ -66,6 +63,18 @@ func (l *Local) Encode(ctx context.Context, dims int, inputs []embedclient.Input
 		out[i] = normalizeDimensions(v, dims)
 	}
 	return out, nil
+}
+
+func validateLocalInputs(inputs []embedclient.Input) error {
+	for _, input := range inputs {
+		if err := input.Validate(); err != nil {
+			return err
+		}
+		if input.MediaType != "" {
+			return embedmodel.ErrUnsupportedContent
+		}
+	}
+	return nil
 }
 
 func normalizeDimensions(v []float32, dims int) []float32 {

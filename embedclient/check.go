@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
-	"reflect"
 	"strings"
 
 	"go.kenn.io/kit/embedconfig"
@@ -25,7 +25,8 @@ type CheckOptions struct {
 
 func isUnsupported(err error) bool { return errors.Is(err, embedmodel.ErrUnsupportedContent) }
 
-// Check checks the HTTP contract. It cannot judge the quality of media vectors.
+// Check checks the HTTP contract. Vector comparisons allow 1e-5 absolute plus
+// 1e-5 relative error per component. It cannot judge media vector quality.
 func Check(ctx context.Context, opts CheckOptions) []error {
 	var failures []error
 	fail := func(rule string, err any) {
@@ -67,7 +68,7 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 			one, e := client.Encode(ctx, opts.Dimensions, inputs[i:i+1])
 			if e != nil {
 				fail("singleton", e)
-			} else if !reflect.DeepEqual(batch[i], one[0]) {
+			} else if !closeVector(batch[i], one[0]) {
 				fail("batch consistency", "singleton differs")
 			}
 		}
@@ -76,7 +77,7 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 			fail("base64 configuration", e)
 		} else if vectors, e := encoded.Encode(ctx, opts.Dimensions, inputs); e != nil {
 			fail("base64", e)
-		} else if !reflect.DeepEqual(batch, vectors) {
+		} else if !closeVectors(batch, vectors) {
 			fail("base64 consistency", "vectors differ")
 		}
 	}
@@ -233,4 +234,28 @@ func (t *checkTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	return resp, nil
+}
+
+func closeVector(a, b []float32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, x := range a {
+		y := b[i]
+		if math.Abs(float64(x)-float64(y)) > 1e-5+1e-5*math.Max(math.Abs(float64(x)), math.Abs(float64(y))) {
+			return false
+		}
+	}
+	return true
+}
+func closeVectors(a, b [][]float32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !closeVector(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }

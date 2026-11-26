@@ -56,7 +56,7 @@ func TestKitInputs(t *testing.T) {
 	assert.Equal(t, []any{map[string]any{"role": "query", "text": " text \n"}}, bodies[2]["inputs"])
 	noRoles, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
 	require.NoError(t, err)
-	_, err = noRoles.EmbedInputs(t.Context(), []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "as given"}})
+	_, err = noRoles.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "as given"}})
 	require.NoError(t, err)
 	assert.Equal(t, []any{map[string]any{"role": "query", "text": "as given"}}, bodies[3]["inputs"])
 }
@@ -92,4 +92,74 @@ func TestKitUnsupportedContent(t *testing.T) {
 	var api *embedclient.APIError
 	require.ErrorAs(t, err, &api)
 	assert.False(t, api.InputRejected())
+}
+
+func TestKitGeminiRoleGuard(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"data": []any{map[string]any{"index": 0, "embedding": []float64{3, 4}}}})
+	}))
+	t.Cleanup(server.Close)
+	model := unitModel()
+	model.Name = "gemini-embedding-2"
+	client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+	require.NoError(t, err)
+	input := []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "beach"}}
+	_, err = client.Encode(t.Context(), 2, input)
+	require.NoError(t, err)
+	_, err = client.EmbedInputs(t.Context(), input)
+	assert.ErrorContains(t, err, "needs its task")
+	_, err = client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"beach"})
+	assert.ErrorContains(t, err, "needs its task")
+	_, err = client.EmbedInputs(t.Context(), []embedclient.Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}})
+	require.NoError(t, err)
+}
+
+func TestKitMediaFailureIndex(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 3 {
+			w.WriteHeader(415)
+			_, _ = w.Write([]byte(`{"error":{"code":"unsupported_content"}}`))
+			return
+		}
+		writeJSON(t, w, map[string]any{"data": []any{map[string]any{"index": 0, "embedding": []float64{3, 4}}}})
+	}))
+	t.Cleanup(server.Close)
+	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+	require.NoError(t, err)
+	inputs := []embedclient.Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}, {Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{2}}, {Role: embedconfig.RoleDocument, MediaType: "video/mp4", Data: []byte{3}}}
+	vectors, err := client.EmbedInputs(t.Context(), inputs)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "input 2")
+	assert.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+	var api *embedclient.APIError
+	require.ErrorAs(t, err, &api)
+	assert.Equal(t, 415, api.StatusCode)
+	assert.Nil(t, vectors)
+	assert.Equal(t, 3, calls)
+}
+
+func TestKitBatchSingletonRejection(t *testing.T) {
+	var counts []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		inputs := body["inputs"].([]any)
+		counts = append(counts, len(inputs))
+		if len(inputs) > 1 || inputs[0].(map[string]any)["text"] == "large" {
+			w.WriteHeader(413)
+			_, _ = w.Write([]byte(`{"error":{"code":"input_too_long"}}`))
+			return
+		}
+		writeJSON(t, w, map[string]any{"data": []any{map[string]any{"index": 0, "embedding": []float64{3, 4}}}})
+	}))
+	t.Cleanup(server.Close)
+	client, err := embedclient.New(embedclient.Options{Model: unitModel(), Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+	require.NoError(t, err)
+	vectors, err := client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleDocument, Text: "short"}, {Role: embedconfig.RoleDocument, Text: "large"}})
+	var api *embedclient.APIError
+	require.ErrorAs(t, err, &api)
+	assert.True(t, api.InputRejected())
+	assert.Equal(t, []int{2, 1, 1}, counts)
+	assert.Nil(t, vectors)
 }

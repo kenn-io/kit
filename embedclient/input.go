@@ -68,7 +68,7 @@ func (c *Client) encodeInputs(ctx context.Context, dims int, inputs []Input, for
 		}
 		if format && in.MediaType == "" {
 			var err error
-			in.Text, err = embedmodel.Format(in.Role, in.Text, c.roles)
+			in.Text, err = c.formatText(in.Role, in.Text)
 			if err != nil {
 				return nil, err
 			}
@@ -79,4 +79,13 @@ func (c *Client) encodeInputs(ctx context.Context, dims int, inputs []Input, for
 		prepared[i] = encoded{index: i, role: in.Role, text: in.Text, input: in}
 	}
 	return c.embedPrepared(ctx, prepared)
+}
+
+func (c *Client) formatText(role embedconfig.Role, text string) (string, error) {
+	if c.api == embedconfig.APIKit && strings.HasPrefix(c.model.Name, "gemini-embedding-2") {
+		if err := validateGeminiEmbedding2Roles(c.roles); err != nil {
+			return "", err
+		}
+	}
+	return embedmodel.Format(role, text, c.roles)
 }

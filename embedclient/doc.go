@@ -66,6 +66,9 @@
 // EncodeFunc sends its strings unchanged, so text from embedfit.Prepared is
 // not wrapped a second time.
 //
+// A Kit client for Gemini embedding 2 requires a role prefix or formatter when
+// Embed or EmbedInputs formats text. Encode accepts preformatted text.
+//
 // An Input carries a role and one payload: Text, or MediaType with Data.
 // EmbedInputs adds role affixes to text inputs. Encode sends inputs as given
 // and implements Backend. Neither joins, trims, nor splits text. Kit services

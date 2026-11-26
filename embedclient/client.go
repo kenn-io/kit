@@ -175,8 +175,7 @@ func (c *Client) embedPrepared(ctx context.Context, prepared []encoded) ([][]flo
 		}
 		vectors, err := c.postBatch(ctx, prepared[start:end])
 		if err != nil {
-			first := start
-			return nil, remapVectorIndex(err, func(i int) int { return prepared[first+i].index })
+			return nil, batchInputError(err, prepared[start:end])
 		}
 		for i, vec := range vectors {
 			out[prepared[start+i].index] = vec
@@ -209,8 +208,8 @@ func (c *Client) postBatch(ctx context.Context, inputs []encoded) ([][]float32, 
 		return c.post(ctx, inputs)
 	})
 	apiErr, isAPIError := errors.AsType[*APIError](err)
-	vertexInputTooLong := c.api == embedconfig.APIVertex && isAPIError && apiErr.Reason == ReasonInputTooLong
-	if (!splittableTimeout(err) && !vertexInputTooLong) || len(inputs) < 2 || ctx.Err() != nil {
+	splitInputTooLong := isAPIError && apiErr.Reason == ReasonInputTooLong && (c.api == embedconfig.APIVertex || c.api == embedconfig.APIKit && apiErr.StatusCode == http.StatusRequestEntityTooLarge)
+	if (!splittableTimeout(err) && !splitInputTooLong) || len(inputs) < 2 || ctx.Err() != nil {
 		return vectors, err
 	}
 	middle := len(inputs) / 2
@@ -279,7 +278,7 @@ func (c *Client) prepare(inputs []embedmodel.Content, format bool) ([]encoded, e
 			return nil, fmt.Errorf("embed input %d: %w", i, vector.ErrEmptyEmbeddingInput)
 		}
 		if format {
-			text, err = embedmodel.Format(input.Role, text, c.roles)
+			text, err = c.formatText(input.Role, text)
 			if err != nil {
 				return nil, fmt.Errorf("embed input %d: %w", i, err)
 			}
@@ -406,4 +405,12 @@ func batchItemCap(batch embedconfig.Batch) (int, error) {
 		return 0, errors.New("embed batch items must be positive")
 	}
 	return items, nil
+}
+
+func batchInputError(err error, inputs []encoded) error {
+	err = remapVectorIndex(err, func(i int) int { return inputs[i].index })
+	if len(inputs) == 1 && inputs[0].input.MediaType != "" {
+		return fmt.Errorf("embed input %d: %w", inputs[0].index, err)
+	}
+	return err
 }

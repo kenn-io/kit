@@ -583,7 +583,7 @@ func TestKitCheckRejectsInvalidPayloadAcceptance(t *testing.T) {
 	}
 }
 
-func TestReviewCheckerRequiresIndexesAnd200(t *testing.T) {
+func TestKitCheckRequiresIndexesAnd200(t *testing.T) {
 	for _, kind := range []string{"missing-index", "missing-one-index", "duplicate-index", "out-of-range-index", "status-201", "singleton-index", "media-index", "singleton-201"} {
 		t.Run(kind, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -718,7 +718,7 @@ func (roleSensitiveBackend) Encode(_ context.Context, _ int, inputs []embedclien
 	}
 	return out, nil
 }
-func TestReviewRoleIdentity(t *testing.T) {
+func TestKitRoleSensitiveIdentity(t *testing.T) {
 	server := httptest.NewServer(Handler(roleSensitiveBackend{}, []string{"example"}))
 	t.Cleanup(server.Close)
 	model := embedconfig.Model{Name: "example", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone, RequestDimensions: true}
@@ -741,7 +741,7 @@ func TestReviewRoleIdentity(t *testing.T) {
 	assert.NotEqual(t, ids[0], ids[1])
 }
 
-func TestReviewCheckValidatingPNG(t *testing.T) {
+func TestKitCheckValidPNG(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
@@ -760,6 +760,63 @@ func TestReviewCheckValidatingPNG(t *testing.T) {
 			return
 		}
 		independentService(w, r)
+	}))
+	t.Cleanup(server.Close)
+	assert.Empty(t, embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2}))
+}
+
+func TestKitLocalMixedMediaPrevalidation(t *testing.T) {
+	engine := &fakeEngine{}
+	local := newLocal(engine)
+	_, err := local.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleDocument, Text: "text"}, {Role: embedconfig.RoleDocument, MediaType: "image/png", Data: []byte{1}}})
+	assert.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+	assert.Empty(t, engine.inputs)
+	_, err = local.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleDocument, Text: "text"}, {Role: embedconfig.RoleDocument}})
+	assert.Error(t, err)
+	assert.Empty(t, engine.inputs)
+}
+func TestKitBatchBodyLimit(t *testing.T) {
+	backend := &testBackend{}
+	server := httptest.NewServer(Handler(backend, []string{"example"}))
+	t.Cleanup(server.Close)
+	client, err := embedclient.New(embedclient.Options{Model: embedconfig.Model{Name: "example", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone, RequestDimensions: true}, Deployment: embedconfig.Deployment{API: embedconfig.APIKit, BaseURL: server.URL}})
+	require.NoError(t, err)
+	text := strings.Repeat("a", 33<<20)
+	inputs := []embedclient.Input{{Role: embedconfig.RoleDocument, Text: text}, {Role: embedconfig.RoleDocument, Text: text}}
+	vectors, err := client.Encode(t.Context(), 2, inputs)
+	require.NoError(t, err)
+	require.Len(t, vectors, 2)
+}
+
+func TestKitCheckToleratesFloatRounding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body bytes.Buffer
+		_, _ = body.ReadFrom(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+		var req struct {
+			Encoding string            `json:"encoding_format"`
+			Inputs   []json.RawMessage `json:"inputs"`
+		}
+		_ = json.Unmarshal(body.Bytes(), &req)
+		response := httptest.NewRecorder()
+		independentService(response, r)
+		if response.Code != 200 {
+			for key, values := range response.Header() {
+				w.Header()[key] = values
+			}
+			w.WriteHeader(response.Code)
+			_, _ = w.Write(response.Body.Bytes())
+			return
+		}
+		var result struct {
+			Model string           `json:"model"`
+			Data  []map[string]any `json:"data"`
+		}
+		_ = json.Unmarshal(response.Body.Bytes(), &result)
+		if len(req.Inputs) > 1 && req.Encoding == "float" {
+			result.Data[0]["embedding"] = []float32{0.600001, 0.8}
+		}
+		_ = json.NewEncoder(w).Encode(result)
 	}))
 	t.Cleanup(server.Close)
 	assert.Empty(t, embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2}))
