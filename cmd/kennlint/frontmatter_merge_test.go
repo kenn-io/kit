@@ -19,8 +19,8 @@ func TestFrontmatterMergedProvenance(t *testing.T) {
 		{"doc-root", "page.md", "x: &x {generated: " + provenance + "}\n<<: *x"},
 		{"doc-nested", "page.md", "x: &x " + provenance + "\ngenerated: {<<: *x}"},
 		{"doc-explicit", "page.md", "x: &x " + provenance + "\ngenerated: {by: human:explicit, <<: [*x, {at: invalid}]}"},
-		{"skill-metadata", "SKILL.md", "x: &x {metadata: {type: Skill, generated: " + provenance + "}}\n<<: *x"},
-		{"skill-generated", "SKILL.md", "x: &x {generated: " + provenance + "}\nmetadata: {type: Skill, <<: *x}"},
+		{"skill-metadata", "SKILL.md", "x: &x {metadata: {type: Skill, status: stable, generated: " + provenance + "}}\n<<: *x"},
+		{"skill-generated", "SKILL.md", "x: &x {generated: " + provenance + "}\nmetadata: {type: Skill, status: stable, <<: *x}"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()

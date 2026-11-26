@@ -21,9 +21,10 @@
   Fixes fill only absent fields, preserve bodies, and never bump
   timestamps. Meaningful edits require a changed
   timestamp against the merge base; formatting-only edits do not.
-  Opted-in skills use nested `metadata.generated` and own their tracked
-  bundle resources, including unlisted nested templates; no resource gets
-  a documentation header.
+  Opted-in skills use nested `metadata.type`, a required `metadata.status`
+  (`draft`, `stable` or `deprecated`), and `metadata.generated`, and own
+  their tracked bundle resources, including unlisted nested templates; no
+  resource gets a documentation header.
 
 See `docs/adopting-kennlint.md` for the consumer workflow.
 
