@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"math"
 	"net/http"
@@ -702,4 +703,64 @@ func (b *recordingBackend) Encode(_ context.Context, _ int, in []embedclient.Inp
 		out[i] = []float32{0.6, 0.8}
 	}
 	return out, nil
+}
+
+type roleSensitiveBackend struct{}
+
+func (roleSensitiveBackend) Encode(_ context.Context, _ int, inputs []embedclient.Input) ([][]float32, error) {
+	out := make([][]float32, len(inputs))
+	for i, in := range inputs {
+		if in.Role == embedconfig.RoleQuery {
+			out[i] = []float32{0, 1}
+		} else {
+			out[i] = []float32{1, 0}
+		}
+	}
+	return out, nil
+}
+func TestReviewRoleIdentity(t *testing.T) {
+	server := httptest.NewServer(Handler(roleSensitiveBackend{}, []string{"example"}))
+	t.Cleanup(server.Close)
+	model := embedconfig.Model{Name: "example", Dimensions: 2, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone, RequestDimensions: true}
+	inputs := []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "query"}, {Role: embedconfig.RoleDocument, Text: "document"}}
+	var vectors [][][]float32
+	var ids []string
+	for _, api := range []embedconfig.API{embedconfig.APIOpenAI, embedconfig.APIKit} {
+		deployment := embedconfig.Deployment{API: api, BaseURL: server.URL + "/v1"}
+		client, err := embedclient.New(embedclient.Options{Model: model, Deployment: deployment})
+		require.NoError(t, err)
+		encoded, err := client.Encode(t.Context(), 2, inputs)
+		require.NoError(t, err)
+		vectors = append(vectors, encoded)
+		id, err := (embedmodel.Descriptor{Model: model, Deployment: deployment}).VectorIdentity()
+		require.NoError(t, err)
+		ids = append(ids, id)
+	}
+	assert.NotEqual(t, vectors[0][0], vectors[1][0])
+	assert.Equal(t, vectors[0][1], vectors[1][1])
+	assert.NotEqual(t, ids[0], ids[1])
+}
+
+func TestReviewCheckValidatingPNG(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var req struct {
+			Inputs []embedclient.Input `json:"inputs"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if len(req.Inputs) == 1 && req.Inputs[0].MediaType == "image/png" && req.Inputs[0].Text == "" && len(req.Inputs[0].Data) > 0 {
+			_, err := png.Decode(bytes.NewReader(req.Inputs[0].Data))
+			if err != nil {
+				w.WriteHeader(503)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"model": "example", "data": []any{map[string]any{"index": 0, "embedding": []float32{0.6, 0.8}}}})
+			return
+		}
+		independentService(w, r)
+	}))
+	t.Cleanup(server.Close)
+	assert.Empty(t, embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2}))
 }

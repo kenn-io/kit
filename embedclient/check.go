@@ -83,7 +83,7 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 	fixtures := opts.Media
 	optional := len(fixtures) == 0
 	if optional {
-		png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=")
+		png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
 		fixtures = []Input{{Role: embedconfig.RoleDocument, MediaType: "image/png", Data: png}}
 	}
 	for _, f := range fixtures {
