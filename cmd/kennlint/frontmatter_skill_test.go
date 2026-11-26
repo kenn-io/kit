@@ -17,26 +17,30 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const skillHeader = "---\nname: example\ndescription: Example\nmetadata:\n  type: Skill\n  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"\n---\nBody text.\n"
+const skillHeader = "---\nname: example\ndescription: Example\nmetadata:\n  type: Skill\n  status: stable\n  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"\n---\nBody text.\n"
 
 func TestSkillProfileShapes(t *testing.T) {
 	cases := []struct {
 		name, src, want string
 	}{
 		{"valid", skillHeader, ""},
-		{"status", strings.Replace(skillHeader, "---\nBody", "  status: draft\n---\nBody", 1), ""},
+		{"draft", strings.Replace(skillHeader, "status: stable", "status: draft", 1), ""},
+		{"deprecated", strings.Replace(skillHeader, "status: stable", "status: deprecated", 1), ""},
+		{"missing status", strings.Replace(skillHeader, "  status: stable\n", "", 1), "metadata.status must be draft, stable, or deprecated; -fix fills a missing status with stable"},
 		{"generated extra", strings.Replace(skillHeader, "    by: human:test", "    source: changed\n    by: human:test", 1), ""},
 		{"metadata last edited", strings.Replace(skillHeader, "  type: Skill", "  last_edited: note\n  type: Skill", 1), ""},
 		{"missing metadata", "---\nname: x\n---\n", "metadata must be a mapping"},
-		{"flow metadata", "---\nname: example\ndescription: Example\nmetadata: {type: Skill, generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}}\n---\nBody text.\n", ""},
+		{"flow metadata", "---\nname: example\ndescription: Example\nmetadata: {type: Skill, status: stable, generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}}\n---\nBody text.\n", ""},
 		{"scalar metadata", "---\nmetadata: x\n---\n", "metadata must be a mapping"},
 		{"missing type", strings.Replace(skillHeader, "  type: Skill\n", "", 1), "metadata.type must be the string Skill"},
 		{"wrong type", strings.Replace(skillHeader, "type: Skill", "type: skill", 1), "metadata.type must be the string Skill"},
 		{"flow generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}", 1), ""},
 		{"scalar generated", strings.Replace(skillHeader, "  generated:\n    by: human:test\n    at: \"2026-11-17T12:00:00Z\"", "  generated: x", 1), "metadata.generated must be a mapping"},
 		{"bare at", strings.ReplaceAll(skillHeader, "\"", ""), ""},
-		{"status whitespace", strings.Replace(skillHeader, "---\nBody", "  status: '  '\n---\nBody", 1), "metadata.status must be a non-empty string"},
-		{"status unknown", strings.Replace(skillHeader, "---\nBody", "  status: retired\n---\nBody", 1), ""},
+		{"status whitespace", strings.Replace(skillHeader, "status: stable", "status: '  '", 1), "metadata.status must be draft, stable, or deprecated; -fix fills a missing status with stable"},
+		{"status unknown", strings.Replace(skillHeader, "status: stable", "status: retired", 1), "metadata.status must be draft, stable, or deprecated; -fix fills a missing status with stable"},
+		{"status capitalized", strings.Replace(skillHeader, "status: stable", "status: Stable", 1), "metadata.status must be draft, stable, or deprecated; -fix fills a missing status with stable"},
+		{"status list", strings.Replace(skillHeader, "status: stable", "status: [stable]", 1), "metadata.status must be draft, stable, or deprecated; -fix fills a missing status with stable"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -169,7 +173,7 @@ func TestSkillChangedAndImports(t *testing.T) {
 		{"body", strings.Replace(src, "Body text.", "Changed text.", 1), true},
 		{"inline HTML whitespace", strings.Replace(src, ">a b</span>", ">a  b</span>", 1), true},
 		{"timestamp", strings.Replace(strings.Replace(src, "Body text.", "Changed text.", 1), "12:00:00Z", "12:01:00Z", 1), false},
-		{"status", strings.Replace(src, "---\nBody", "  status: draft\n---\nBody", 1), true},
+		{"status", strings.Replace(src, "status: stable", "status: draft", 1), true},
 		{"generated extra", strings.Replace(src, "    by: human:test", "    source: changed\n    by: human:test", 1), true},
 		{"actor", strings.Replace(src, "human:test", "human:other", 1), false},
 	} {
@@ -198,28 +202,29 @@ func TestSkillChangedStatus(t *testing.T) {
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
 	const path = "skills/a/SKILL.md"
+	// "" is a legacy skill without status, which OKF reads as stable.
 	withStatus := func(status string) string {
 		if status == "" {
-			return skillHeader
+			return strings.Replace(skillHeader, "  status: stable\n", "", 1)
 		}
-		return strings.Replace(skillHeader, "  type: Skill", "  status: "+status+"\n  type: Skill", 1)
+		return strings.Replace(skillHeader, "status: stable", "status: "+status, 1)
 	}
+	const stale, invalid = "metadata.generated.at", "metadata.status must be draft, stable, or deprecated"
 	for _, tc := range []struct {
-		before, after string
-		stale         bool
+		before, after, want string
 	}{
-		{"", "stable", false},
-		{"stable", "", false},
-		{"", "null", false},
-		{"null", "", false},
-		{"", "''", false},
-		{"''", "stable", false},
-		{"stable", "[]", false},
-		{"[]", "", false},
-		{"null", "draft", true},
-		{"stable", "draft", true},
-		{"deprecated", "", true},
-		{"", "experimental", true},
+		// Writing out the default is not a meaningful edit, so backfilling a
+		// legacy skill needs no new timestamp.
+		{"", "stable", ""},
+		{"null", "stable", ""},
+		{"''", "stable", ""},
+		{"[]", "stable", ""},
+		{"stable", "draft", stale},
+		{"draft", "stable", stale},
+		{"stable", "deprecated", stale},
+		{"stable", "", invalid},
+		{"stable", "null", invalid},
+		{"stable", "experimental", invalid},
 	} {
 		t.Run(tc.before+"-to-"+tc.after, func(t *testing.T) {
 			repo.WriteFile(path, withStatus(tc.before))
@@ -229,11 +234,18 @@ func TestSkillChangedStatus(t *testing.T) {
 			var out, errs bytes.Buffer
 			n, err := runFrontmatter(t.Context(), []string{"-changed", "HEAD", "-managed-skill", path, path}, &out, &errs)
 			require.NoError(t, err)
-			if tc.stale {
-				assert.Equal(t, 1, n)
-				assert.Contains(t, errs.String(), "metadata.generated.at")
-			} else {
+			if tc.want == "" {
 				assert.Zero(t, n, errs.String())
+				return
+			}
+			assert.Contains(t, errs.String(), tc.want)
+			// An unknown value is both invalid and, unlike stable, a real
+			// change from the base, so it also needs a later timestamp.
+			if tc.after == "experimental" {
+				assert.Equal(t, 2, n)
+				assert.Contains(t, errs.String(), stale)
+			} else {
+				assert.Equal(t, 1, n)
 			}
 		})
 	}
@@ -302,6 +314,32 @@ func TestSkillFixFillsEmptyGeneratedMapping(t *testing.T) {
 	require.True(t, changed)
 	assert.Empty(t, skillProblems(b))
 	assertSkillNodeKinds(t, b, true)
+}
+
+func TestSkillFixFillsStatusAfterType(t *testing.T) {
+	legacy := strings.Replace(skillHeader, "  status: stable\n", "", 1)
+	for name, tc := range map[string]struct{ src, want string }{
+		"block": {legacy, skillHeader},
+		"flow": {
+			"---\nname: example\ndescription: Example\nmetadata: {type: Skill, generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}}\n---\nBody text.\n",
+			"---\nname: example\ndescription: Example\nmetadata: {type: Skill, status: stable, generated: {by: 'human:test', at: '2026-11-17T12:00:00Z'}}\n---\nBody text.\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b, err := okf.Parse([]byte(tc.src))
+			require.NoError(t, err)
+			changed, _ := fixSkill(b, "human:other")
+			require.True(t, changed)
+			assert.Empty(t, skillProblems(b))
+			out, err := b.Marshal()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(out))
+		})
+	}
+	b, err := okf.Parse([]byte(strings.Replace(skillHeader, "status: stable", "status: retired", 1)))
+	require.NoError(t, err)
+	changed, _ := fixSkill(b, "human:other")
+	assert.False(t, changed, "a present status is never rewritten")
 }
 
 func TestSkillFixRefusesIncompleteProfile(t *testing.T) {

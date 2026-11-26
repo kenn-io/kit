@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: codex/gpt-6, at: "2026-11-25T18:38:58Z" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-26T16:15:39Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -87,11 +87,27 @@ The Kenn extension lives under `metadata`:
 ```yaml
 metadata:
   type: Skill
+  status: stable
   generated: { by: human:editor, at: "2026-11-17T19:00:00Z" }
 ```
 
-An omitted `metadata.status` means stable. With `-fix -by ACTOR`, the checker
-fills missing metadata only when the resulting profile is complete.
+`metadata.status` is required on a managed skill, directly under `type`.
+OKF reads an absent `status` as stable, but a skill is instructions that an
+agent follows, so its standing must be visible. Use one of OKF's three values:
+
+- `draft`: not yet reviewed and possibly incomplete. Agents should use it
+  with care.
+- `stable`: ready to use.
+- `deprecated`: kept for links and history, but not current. Agents should
+  not follow it. When a replacement exists, also set `metadata.superseded_by`
+  to the replacing skill's path.
+
+`status` is lifecycle, not freshness: `metadata.generated.at` records the
+last meaningful change. Writing `status: stable` on a skill that had none is
+not a meaningful edit and needs no new timestamp; any other status change is.
+
+With `-fix -by ACTOR`, the checker fills missing metadata, including a missing
+`status` as `stable`, only when the resulting profile is complete.
 It preserves user fields and never advances an existing valid timestamp.
 
 A managed skill's timestamp covers its entire tracked bundle. Adding,

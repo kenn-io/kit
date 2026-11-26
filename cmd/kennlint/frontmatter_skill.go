@@ -11,6 +11,10 @@ import (
 
 var frontmatterNow = time.Now
 
+// skillStatuses are OKF's lifecycle values. OKF reads an absent status as
+// stable, but a managed skill must state it so its standing is visible.
+var skillStatuses = map[string]bool{"draft": true, "stable": true, "deprecated": true}
+
 func skillProblems(b *okf.Document) []string {
 	m := b.Field("metadata")
 	if m == nil || m.Kind != yaml.MappingNode {
@@ -20,10 +24,10 @@ func skillProblems(b *okf.Document) []string {
 	if n := mappingField(m, "type"); n == nil || !nonEmptyString(n) || n.Value != "Skill" {
 		p = append(p, "metadata.type must be the string Skill")
 	}
-	p = append(p, generatedProblems(mappingField(m, "generated"), "metadata.generated")...)
-	if n := mappingField(m, "status"); !emptyOptional(n) && !nonEmptyString(n) {
-		p = append(p, "metadata.status must be a non-empty string")
+	if n := mappingField(m, "status"); n == nil || n.Kind != yaml.ScalarNode || n.Tag != "!!str" || !skillStatuses[n.Value] {
+		p = append(p, "metadata.status must be draft, stable, or deprecated; -fix fills a missing status with stable")
 	}
+	p = append(p, generatedProblems(mappingField(m, "generated"), "metadata.generated")...)
 	return p
 }
 
@@ -47,6 +51,9 @@ func fixSkill(b *okf.Document, by string) (bool, map[string]string) {
 	}
 	if mappingField(m, "type") == nil {
 		appendField(m, "type", stringNode("Skill"))
+	}
+	if mappingField(m, "status") == nil {
+		insertFieldAfter(m, "type", "status", stringNode("stable"))
 	}
 	notes := fillGenerated(m, by, "metadata.generated")
 	return len(skillProblems(b)) == 0, notes
@@ -101,8 +108,17 @@ func appendField(n *yaml.Node, key string, value *yaml.Node) {
 	n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value)
 }
 
-func emptyOptional(n *yaml.Node) bool {
-	return n == nil || n.Tag == "!!null" || (n.Kind == yaml.ScalarNode && n.Tag == "!!str" && n.Value == "") || (n.Kind == yaml.SequenceNode && len(n.Content) == 0)
+// insertFieldAfter places key right after the mapping's own after key, or at
+// the end when after is absent or comes from a merge key.
+func insertFieldAfter(n *yaml.Node, after, key string, value *yaml.Node) {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == after {
+			field := []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value}
+			n.Content = append(n.Content[:i+2], append(field, n.Content[i+2:]...)...)
+			return
+		}
+	}
+	appendField(n, key, value)
 }
 
 // materializeYAMLAliases keeps each alias use independent before a fixer can
