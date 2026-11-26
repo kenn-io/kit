@@ -90,6 +90,9 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 		{"empty inputs", "POST", fmt.Sprintf(`{"model":%q,"inputs":[]}`, opts.Model), 400, "invalid_request"},
 		{"bad role", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"wrong","text":"a"}]}`, opts.Model), 400, "invalid_request"},
 		{"bad base64", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query","media_type":"image/png","data":"!"}]}`, opts.Model), 400, "invalid_request"},
+		{"both payloads", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query","text":"a","media_type":"image/png","data":"AQ=="}]}`, opts.Model), 400, "invalid_request"},
+		{"missing payload", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query"}]}`, opts.Model), 400, "invalid_request"},
+		{"missing media data", "POST", fmt.Sprintf(`{"model":%q,"inputs":[{"role":"query","media_type":"image/png"}]}`, opts.Model), 400, "invalid_request"},
 		{"method", "GET", "", 405, "method_not_allowed"},
 	}
 	for _, tc := range cases {

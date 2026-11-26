@@ -447,12 +447,12 @@ func independentService(w http.ResponseWriter, r *http.Request) {
 			fail(400, "invalid_request")
 			return
 		}
-		if in.MediaType != "" {
-			fail(415, "unsupported_content")
+		if (in.Text != "" && (in.MediaType != "" || len(in.Data) > 0)) || (in.Text == "" && (in.MediaType == "" || len(in.Data) == 0)) {
+			fail(400, "invalid_request")
 			return
 		}
-		if in.Text == "" {
-			fail(400, "invalid_request")
+		if in.MediaType != "" {
+			fail(415, "unsupported_content")
 			return
 		}
 	}
@@ -519,6 +519,43 @@ func TestKitCheckRejectsFaultyIndependentServices(t *testing.T) {
 			t.Cleanup(server.Close)
 			failures := embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2})
 			assert.NotEmpty(t, failures)
+		})
+	}
+}
+
+func TestKitCheckRejectsInvalidPayloadAcceptance(t *testing.T) {
+	for _, tc := range []struct {
+		name, rule string
+		accepts    func(map[string]any) bool
+	}{
+		{"both payloads", "both payloads", func(in map[string]any) bool { return in["text"] != nil && in["media_type"] != nil && in["data"] != nil }},
+		{"neither payload", "missing payload", func(in map[string]any) bool { return in["text"] == nil && in["media_type"] == nil && in["data"] == nil }},
+		{"media without data", "missing media data", func(in map[string]any) bool { return in["media_type"] != nil && in["data"] == nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body bytes.Buffer
+				_, _ = body.ReadFrom(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+				var req struct {
+					Model  string           `json:"model"`
+					Inputs []map[string]any `json:"inputs"`
+				}
+				if json.Unmarshal(body.Bytes(), &req) == nil && req.Model == "example" && len(req.Inputs) == 1 && tc.accepts(req.Inputs[0]) {
+					_ = json.NewEncoder(w).Encode(map[string]any{"model": "example", "data": []any{map[string]any{"index": 0, "embedding": []float32{0.6, 0.8}}}})
+					return
+				}
+				independentService(w, r)
+			}))
+			t.Cleanup(server.Close)
+			failures := embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2})
+			found := false
+			for _, err := range failures {
+				if strings.Contains(err.Error(), tc.rule) {
+					found = true
+				}
+			}
+			assert.True(t, found, "failures: %v", failures)
 		})
 	}
 }
