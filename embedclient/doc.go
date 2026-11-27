@@ -56,9 +56,11 @@
 //
 // Failures are typed. APIError reports the status, a Reason derived from the
 // status and the provider's error code or message, and whether a retry may
-// help. The provider body itself is never kept. TransportError keeps the
-// network cause behind a generic message: "embed request timed out" for a
-// timeout and "embed request failed" for other transport failures.
+// help. The provider body itself is never kept. For Kit services, Message
+// holds guidance for input_too_long, unsupported_content, and model_not_found.
+// TransportError keeps the network cause behind a generic message: "embed
+// request timed out" for a timeout and "embed request failed" for other
+// transport failures.
 // VectorError names the input whose vector failed validation, and matches
 // ErrInvalidVector.
 //

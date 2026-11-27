@@ -13,7 +13,7 @@ import (
 // accepts, and a 403 naming a missing model is a configuration problem.
 func classifyFailure(status int, body []byte) Reason {
 	code, message := errorDetail(body)
-	code, message = strings.ToLower(code), strings.ToLower(message)
+	message = strings.ToLower(message)
 	switch {
 	case status == http.StatusBadGateway && code == "upstream_credentials":
 		return ReasonCredentials
@@ -134,7 +134,7 @@ func errorDetail(body []byte) (code, message string) {
 	case jsonv2.Unmarshal(envelope.Error, &text) == nil && text != "":
 		message = text
 	}
-	return code, message
+	return strings.ToLower(code), message
 }
 
 // stringCode returns a string error code. Some servers send a numeric code,

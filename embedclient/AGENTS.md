@@ -19,7 +19,9 @@
 - `Embed` applies role prefixes to raw content. `EncodeFunc` sends the
   strings it is given, because fitted text already includes them.
 - Every non-2xx response is an `APIError` with a `Reason`. Kit reads at
-  most 4 KiB of the body to classify it and keeps none of it. Only
+  most 4 KiB of the body to classify it. It keeps normalized guidance from
+  complete Kit responses of at most 4 KiB only for matching statuses and codes
+  `input_too_long`, `unsupported_content`, and `model_not_found`. Only
   `ReasonInputTooLong` and `ReasonContentPolicy` are `InputRejected`; a 400
   Kit cannot attribute to the input is `ReasonUnknown` or
   `ReasonInvalidRequest`, so a misconfigured endpoint never looks like a bad
