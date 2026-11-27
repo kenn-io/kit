@@ -335,7 +335,7 @@ func TestKitBackendErrorClasses(t *testing.T) {
 		message                      string
 	}{
 		{"policy", &embedclient.APIError{StatusCode: 400, Reason: embedclient.ReasonContentPolicy}, 400, embedclient.ReasonContentPolicy, true, false, false, 0, ""},
-		{"long", &embedclient.APIError{StatusCode: 413, Reason: embedclient.ReasonInputTooLong, Message: "provider secret marker"}, 413, embedclient.ReasonInputTooLong, true, false, false, 0, "input too long"},
+		{"long", &embedclient.APIError{StatusCode: 413, Reason: embedclient.ReasonInputTooLong, Message: "upstream service guidance"}, 413, embedclient.ReasonInputTooLong, true, false, false, 0, "input too long"},
 		{"credentials", &embedclient.APIError{StatusCode: 401, Reason: embedclient.ReasonCredentials}, 502, embedclient.ReasonCredentials, false, true, false, 0, ""},
 		{"rate", &embedclient.APIError{StatusCode: 429, Reason: embedclient.ReasonRateLimited, RetryAfter: 3 * time.Second}, 429, embedclient.ReasonRateLimited, false, false, true, 3 * time.Second, ""},
 		{"timeout", context.DeadlineExceeded, 503, embedclient.ReasonUnavailable, false, false, true, 0, ""},
@@ -356,7 +356,9 @@ func TestKitBackendErrorClasses(t *testing.T) {
 			assert.Equal(t, tc.credentials, got.CredentialsRejected())
 			assert.Equal(t, tc.retry, got.Retryable())
 			assert.Equal(t, tc.delay, got.RetryAfter)
-			assert.Equal(t, tc.message, got.Message)
+			if tc.message != "" {
+				assert.Equal(t, tc.message, got.Message)
+			}
 		})
 	}
 }

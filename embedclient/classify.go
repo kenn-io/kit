@@ -7,12 +7,6 @@ import (
 	"strings"
 )
 
-const (
-	codeInputTooLong       = "input_too_long"
-	codeUnsupportedContent = "unsupported_content"
-	codeModelNotFound      = "model_not_found"
-)
-
 // classifyFailure derives the Reason for a non-2xx response. The status
 // decides most classes. For 400, 413, and 422 the provider's error code or
 // message tells an input the endpoint refuses from a request it never
@@ -25,9 +19,9 @@ func classifyFailure(status int, body []byte) Reason {
 		return ReasonCredentials
 	case status == http.StatusFailedDependency && code == "model_unavailable":
 		return ReasonInvalidRequest
-	case status == http.StatusUnsupportedMediaType && code == codeUnsupportedContent:
+	case status == http.StatusUnsupportedMediaType && code == "unsupported_content":
 		return ReasonUnsupportedContent
-	case status == http.StatusForbidden && code == codeModelNotFound:
+	case status == http.StatusForbidden && code == "model_not_found":
 		return ReasonInvalidRequest
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return ReasonCredentials
@@ -59,12 +53,12 @@ func classifyFailure(status int, body []byte) Reason {
 // Many servers send no code, a null code, or a numeric one, so the message
 // is the usual signal.
 var errorCodeReasons = map[string]Reason{
-	codeInputTooLong:           ReasonInputTooLong,
+	"input_too_long":           ReasonInputTooLong,
 	"invalid_request":          ReasonInvalidRequest,
 	"context_length_exceeded":  ReasonInputTooLong,
 	"content_policy_violation": ReasonContentPolicy,
 	"content_filter":           ReasonContentPolicy,
-	codeModelNotFound:          ReasonInvalidRequest,
+	"model_not_found":          ReasonInvalidRequest,
 }
 
 // messageReason classifies a lowercased error message by its wording. A bare

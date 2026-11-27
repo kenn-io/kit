@@ -161,10 +161,10 @@ type statusCode struct {
 }
 
 var guidanceStatusCodes = map[statusCode]struct{}{
-	{http.StatusRequestEntityTooLarge, codeInputTooLong}:      {},
-	{http.StatusUnsupportedMediaType, codeUnsupportedContent}: {},
-	{http.StatusNotFound, codeModelNotFound}:                  {},
-	{http.StatusForbidden, codeModelNotFound}:                 {},
+	{http.StatusRequestEntityTooLarge, "input_too_long"}:     {},
+	{http.StatusUnsupportedMediaType, "unsupported_content"}: {},
+	{http.StatusNotFound, "model_not_found"}:                 {},
+	{http.StatusForbidden, "model_not_found"}:                {},
 }
 
 // newAPIError reads one byte past maxErrorBody to detect oversized responses.
@@ -193,7 +193,8 @@ func newAPIError(resp *http.Response, api embedconfig.API) *APIError {
 
 func guidanceText(message string) string {
 	message = strings.Map(func(r rune) rune {
-		if (unicode.IsControl(r) && !unicode.IsSpace(r)) || (unicode.Is(unicode.Cf, r) && r != '\u200c' && r != '\u200d') {
+		directional := r >= '\u2066' && r <= '\u2069'
+		if (unicode.IsControl(r) && !unicode.IsSpace(r)) || (unicode.Is(unicode.Cf, r) && r != '\u200c' && r != '\u200d' && !directional) {
 			return -1
 		}
 		return r

@@ -2,7 +2,7 @@
 type: Guide
 title: "Embedding HTTP contract"
 description: "Implement and check a Kit embedding service."
-generated: { by: unattributed, at: "2026-11-27T00:06:23Z" }
+generated: { by: unattributed, at: "2026-11-27T01:16:53Z" }
 ---
 
 # Embedding HTTP contract
@@ -67,7 +67,7 @@ Every error response has a JSON body:
 {"error": {"code": "invalid_request", "message": "invalid request"}}
 ```
 
-For `input_too_long`, `unsupported_content`, and `model_not_found`, `message` must contain service-authored guidance and must not include a provider response body. These error bodies must fit within 4,096 bytes. Kit clients retain guidance for 413 `input_too_long`, 415 `unsupported_content`, 404 `model_not_found`, and 403 `model_not_found`. They remove non-whitespace controls and Unicode format characters except U+200C and U+200D, and collapse whitespace. Kit's handler returns fixed messages; a route in front of it can supply guidance such as when a model will be available after a restart. `Check` verifies guidance for `model_not_found` and `unsupported_content`. A text-only service that returns 415 to the optional media probe must include guidance to pass the check. `Check` does not check `input_too_long`.
+For `input_too_long`, `unsupported_content`, and `model_not_found`, `message` must contain service-authored guidance and must not include a provider response body. These error bodies must fit within 4,096 bytes. Kit clients retain guidance for 413 `input_too_long`, 415 `unsupported_content`, 404 `model_not_found`, and 403 `model_not_found`. They remove non-whitespace controls and Unicode format characters except U+200C, U+200D, and directional isolates U+2066 through U+2069, and collapse whitespace. Kit's handler returns fixed messages; a route in front of it can supply guidance such as when a model will be available after a restart. `Check` verifies guidance for `model_not_found` and `unsupported_content`. A text-only service that returns 415 to the optional media probe must include guidance to pass the check. `Check` does not check `input_too_long`.
 
 Use these statuses and codes. Kit clients classify errors by them. "Retryable" means a Kit client retries only when the caller's retry settings allow it; by default it does not retry.
 

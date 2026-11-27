@@ -138,8 +138,7 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 		}
 		if len(body) > maxErrorBody {
 			body = body[:maxErrorBody]
-			code, _ := errorDetail(body)
-			if _, ok := guidanceStatusCodes[statusCode{resp.StatusCode, code}]; ok {
+			if _, ok := guidanceStatusCodes[statusCode{resp.StatusCode, tc.code}]; ok && resp.StatusCode == tc.status {
 				fail(tc.name, "error body exceeds 4096 bytes")
 				continue
 			}
@@ -154,7 +153,7 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 		if e != nil || resp.StatusCode != tc.status || envelope.Error.Code != tc.code {
 			fail(tc.name, fmt.Sprintf("got status %d and code %q", resp.StatusCode, envelope.Error.Code))
 		}
-		if tc.code == codeModelNotFound && guidanceText(envelope.Error.Message) == "" {
+		if tc.code == "model_not_found" && guidanceText(envelope.Error.Message) == "" {
 			fail(tc.name, "model not found requires guidance")
 		}
 		if tc.status == 405 && resp.Header.Get("Allow") != "POST" {
