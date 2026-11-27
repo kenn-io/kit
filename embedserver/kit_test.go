@@ -332,13 +332,14 @@ func TestKitBackendErrorClasses(t *testing.T) {
 		reason                       embedclient.Reason
 		rejected, credentials, retry bool
 		delay                        time.Duration
+		message                      string
 	}{
-		{"policy", &embedclient.APIError{StatusCode: 400, Reason: embedclient.ReasonContentPolicy}, 400, embedclient.ReasonContentPolicy, true, false, false, 0},
-		{"long", &embedclient.APIError{StatusCode: 413, Reason: embedclient.ReasonInputTooLong}, 413, embedclient.ReasonInputTooLong, true, false, false, 0},
-		{"credentials", &embedclient.APIError{StatusCode: 401, Reason: embedclient.ReasonCredentials}, 502, embedclient.ReasonCredentials, false, true, false, 0},
-		{"rate", &embedclient.APIError{StatusCode: 429, Reason: embedclient.ReasonRateLimited, RetryAfter: 3 * time.Second}, 429, embedclient.ReasonRateLimited, false, false, true, 3 * time.Second},
-		{"timeout", context.DeadlineExceeded, 503, embedclient.ReasonUnavailable, false, false, true, 0},
-		{"load", &modelLoadError{errors.New("missing model")}, 424, embedclient.ReasonInvalidRequest, false, false, false, 0},
+		{"policy", &embedclient.APIError{StatusCode: 400, Reason: embedclient.ReasonContentPolicy}, 400, embedclient.ReasonContentPolicy, true, false, false, 0, ""},
+		{"long", &embedclient.APIError{StatusCode: 413, Reason: embedclient.ReasonInputTooLong, Message: "provider secret marker"}, 413, embedclient.ReasonInputTooLong, true, false, false, 0, "input too long"},
+		{"credentials", &embedclient.APIError{StatusCode: 401, Reason: embedclient.ReasonCredentials}, 502, embedclient.ReasonCredentials, false, true, false, 0, ""},
+		{"rate", &embedclient.APIError{StatusCode: 429, Reason: embedclient.ReasonRateLimited, RetryAfter: 3 * time.Second}, 429, embedclient.ReasonRateLimited, false, false, true, 3 * time.Second, ""},
+		{"timeout", context.DeadlineExceeded, 503, embedclient.ReasonUnavailable, false, false, true, 0, ""},
+		{"load", &modelLoadError{errors.New("missing model")}, 424, embedclient.ReasonInvalidRequest, false, false, false, 0, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -355,6 +356,7 @@ func TestKitBackendErrorClasses(t *testing.T) {
 			assert.Equal(t, tc.credentials, got.CredentialsRejected())
 			assert.Equal(t, tc.retry, got.Retryable())
 			assert.Equal(t, tc.delay, got.RetryAfter)
+			assert.Equal(t, tc.message, got.Message)
 		})
 	}
 }
@@ -475,7 +477,7 @@ func TestKitRejectsInvalidVectors(t *testing.T) {
 func independentService(w http.ResponseWriter, r *http.Request) {
 	fail := func(status int, code string) {
 		w.WriteHeader(status)
-		if err := json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}}); err != nil {
+		if err := json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": code}}); err != nil {
 			return
 		}
 	}
@@ -537,6 +539,51 @@ func TestKitCheckIndependentService(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(independentService))
 	t.Cleanup(server.Close)
 	assert.Empty(t, embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2}))
+}
+
+func TestKitCheckRequiresGuidance(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		clear     bool
+		oversized bool
+		want      string
+	}{
+		{"missing model", http.StatusNotFound, true, false, "model not found requires guidance"},
+		{"missing media", http.StatusUnsupportedMediaType, true, false, "unsupported content requires usable guidance"},
+		{"oversized model", http.StatusNotFound, false, true, "error body exceeds 4096 bytes"},
+		{"oversized unrelated", http.StatusBadRequest, false, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				recorded := httptest.NewRecorder()
+				independentService(recorded, r)
+				for key, values := range recorded.Header() {
+					w.Header()[key] = values
+				}
+				w.WriteHeader(recorded.Code)
+				body := recorded.Body.String()
+				if recorded.Code == tc.status {
+					if tc.clear {
+						body = strings.ReplaceAll(body, `"message":"model_not_found"`, `"message":""`)
+						body = strings.ReplaceAll(body, `"message":"unsupported_content"`, `"message":""`)
+					}
+					if tc.oversized {
+						body += strings.Repeat(" ", 4096)
+					}
+				}
+				_, _ = io.WriteString(w, body)
+			}))
+			t.Cleanup(server.Close)
+			failures := embedclient.Check(t.Context(), embedclient.CheckOptions{BaseURL: server.URL, Model: "example", Dimensions: 2})
+			if tc.want == "" {
+				assert.Empty(t, failures)
+			} else {
+				require.NotEmpty(t, failures)
+				assert.ErrorContains(t, errors.Join(failures...), tc.want)
+			}
+		})
+	}
 }
 
 func TestKitCheckRejectsFaultyIndependentServices(t *testing.T) {

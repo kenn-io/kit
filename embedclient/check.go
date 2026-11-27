@@ -92,6 +92,11 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 		_, e := client.Encode(ctx, opts.Dimensions, []Input{f})
 		if e != nil && (!optional || !isUnsupported(e)) {
 			fail("media", e)
+		} else if e != nil {
+			apiErr, ok := errors.AsType[*APIError](e)
+			if !ok || apiErr.Message == "" {
+				fail("media", "unsupported content requires usable guidance")
+			}
 		}
 	}
 	type badCase struct {
@@ -125,20 +130,32 @@ func Check(ctx context.Context, opts CheckOptions) []error {
 			fail(tc.name, e)
 			continue
 		}
-		body, e := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, e := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
 		_ = resp.Body.Close()
 		if e != nil {
 			fail(tc.name, e)
 			continue
 		}
+		if len(body) > maxErrorBody {
+			body = body[:maxErrorBody]
+			code, _ := errorDetail(body)
+			if _, ok := guidanceStatusCodes[statusCode{resp.StatusCode, code}]; ok {
+				fail(tc.name, "error body exceeds 4096 bytes")
+				continue
+			}
+		}
 		var envelope struct {
 			Error struct {
-				Code string `json:"code"`
+				Code    string `json:"code"`
+				Message string `json:"message"`
 			} `json:"error"`
 		}
 		e = json.Unmarshal(body, &envelope)
 		if e != nil || resp.StatusCode != tc.status || envelope.Error.Code != tc.code {
 			fail(tc.name, fmt.Sprintf("got status %d and code %q", resp.StatusCode, envelope.Error.Code))
+		}
+		if tc.code == codeModelNotFound && guidanceText(envelope.Error.Message) == "" {
+			fail(tc.name, "model not found requires guidance")
 		}
 		if tc.status == 405 && resp.Header.Get("Allow") != "POST" {
 			fail(tc.name, "Allow must be POST")

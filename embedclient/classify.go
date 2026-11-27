@@ -7,21 +7,27 @@ import (
 	"strings"
 )
 
+const (
+	codeInputTooLong       = "input_too_long"
+	codeUnsupportedContent = "unsupported_content"
+	codeModelNotFound      = "model_not_found"
+)
+
 // classifyFailure derives the Reason for a non-2xx response. The status
 // decides most classes. For 400, 413, and 422 the provider's error code or
 // message tells an input the endpoint refuses from a request it never
 // accepts, and a 403 naming a missing model is a configuration problem.
 func classifyFailure(status int, body []byte) Reason {
 	code, message := errorDetail(body)
-	code, message = strings.ToLower(code), strings.ToLower(message)
+	message = strings.ToLower(message)
 	switch {
 	case status == http.StatusBadGateway && code == "upstream_credentials":
 		return ReasonCredentials
 	case status == http.StatusFailedDependency && code == "model_unavailable":
 		return ReasonInvalidRequest
-	case status == http.StatusUnsupportedMediaType && code == "unsupported_content":
+	case status == http.StatusUnsupportedMediaType && code == codeUnsupportedContent:
 		return ReasonUnsupportedContent
-	case status == http.StatusForbidden && code == "model_not_found":
+	case status == http.StatusForbidden && code == codeModelNotFound:
 		return ReasonInvalidRequest
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return ReasonCredentials
@@ -53,12 +59,12 @@ func classifyFailure(status int, body []byte) Reason {
 // Many servers send no code, a null code, or a numeric one, so the message
 // is the usual signal.
 var errorCodeReasons = map[string]Reason{
-	"input_too_long":           ReasonInputTooLong,
+	codeInputTooLong:           ReasonInputTooLong,
 	"invalid_request":          ReasonInvalidRequest,
 	"context_length_exceeded":  ReasonInputTooLong,
 	"content_policy_violation": ReasonContentPolicy,
 	"content_filter":           ReasonContentPolicy,
-	"model_not_found":          ReasonInvalidRequest,
+	codeModelNotFound:          ReasonInvalidRequest,
 }
 
 // messageReason classifies a lowercased error message by its wording. A bare
@@ -134,7 +140,7 @@ func errorDetail(body []byte) (code, message string) {
 	case jsonv2.Unmarshal(envelope.Error, &text) == nil && text != "":
 		message = text
 	}
-	return code, message
+	return strings.ToLower(code), message
 }
 
 // stringCode returns a string error code. Some servers send a numeric code,

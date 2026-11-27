@@ -1,8 +1,10 @@
 package embedclient_test
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -92,6 +94,66 @@ func TestKitUnsupportedContent(t *testing.T) {
 	var api *embedclient.APIError
 	require.ErrorAs(t, err, &api)
 	assert.False(t, api.InputRejected())
+}
+
+func TestErrorGuidanceClassification(t *testing.T) {
+	const message = "service guidance"
+	prefix := `{"error":{"code":"model_not_found","message":`
+	suffix := `}}`
+	exact := prefix + `"ok"` + suffix + strings.Repeat(" ", 4096-len(prefix)-len(`"ok"`)-len(suffix))
+	cases := []struct {
+		name    string
+		api     embedconfig.API
+		status  int
+		body    string
+		message string
+		reason  embedclient.Reason
+	}{
+		{"long", embedconfig.APIKit, 413, `{"error":{"code":"input_too_long","message":"service guidance"}}`, message, embedclient.ReasonInputTooLong},
+		{"media", embedconfig.APIKit, 415, `{"error":{"code":"unsupported_content","message":"service guidance"}}`, message, embedclient.ReasonUnsupportedContent},
+		{"missing", embedconfig.APIKit, 404, `{"error":{"code":"model_not_found","message":"service guidance"}}`, message, embedclient.ReasonInvalidRequest},
+		{"forbidden missing", embedconfig.APIKit, 403, `{"error":{"code":"model_not_found","message":"service guidance"}}`, message, embedclient.ReasonInvalidRequest},
+		{"case", embedconfig.APIKit, 403, `{"error":{"code":"MODEL_NOT_FOUND","message":"service guidance"}}`, message, embedclient.ReasonInvalidRequest},
+		{"wrong status", embedconfig.APIKit, 500, `{"error":{"code":"model_not_found","message":"service guidance"}}`, "", embedclient.ReasonUnavailable},
+		{"wrong reason", embedconfig.APIKit, 413, `{"error":{"code":"model_not_found","message":"service guidance"}}`, "", embedclient.ReasonInvalidRequest},
+		{"malformed", embedconfig.APIKit, 404, `{`, "", embedclient.ReasonInvalidRequest},
+		{"openai", embedconfig.APIOpenAI, 404, `{"error":{"code":"model_not_found","message":"service guidance"}}`, "", embedclient.ReasonInvalidRequest},
+		{"vertex", embedconfig.APIVertex, 404, `{"error":{"code":"model_not_found","message":"service guidance"}}`, "", embedclient.ReasonInvalidRequest},
+		{"controls and whitespace", embedconfig.APIKit, 404, prefix + `"  hello\n\tworld\u001b!  "` + suffix, "hello world!", embedclient.ReasonInvalidRequest},
+		{"format characters", embedconfig.APIKit, 404, prefix + `"he\u200bllo\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2060\u2066\u2067\u2068\u2069\ufeff!"` + suffix, "hello!", embedclient.ReasonInvalidRequest},
+		{"Persian joiners", embedconfig.APIKit, 404, prefix + `"می\u200cشود و می\u200dشود"` + suffix, "می\u200cشود و می\u200dشود", embedclient.ReasonInvalidRequest},
+		{"unicode whitespace", embedconfig.APIKit, 404, prefix + `"  one\u0085two\u00a0three\u2003four\u2028five\u3000six  "` + suffix, "one two three four five six", embedclient.ReasonInvalidRequest},
+		{"exact body limit", embedconfig.APIKit, 404, exact, "ok", embedclient.ReasonInvalidRequest},
+		{"over body limit", embedconfig.APIKit, 404, exact + " ", "", embedclient.ReasonInvalidRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			t.Cleanup(server.Close)
+			model := unitModel()
+			base := server.URL
+			if tc.api == embedconfig.APIVertex {
+				model.Name = "text-embedding-005"
+				base += "/publishers/google/models"
+			}
+			client, err := embedclient.New(embedclient.Options{Model: model, Deployment: embedconfig.Deployment{API: tc.api, BaseURL: base}})
+			require.NoError(t, err)
+			_, err = client.Encode(t.Context(), 2, []embedclient.Input{{Role: embedconfig.RoleQuery, Text: "hello"}})
+			var got *embedclient.APIError
+			require.ErrorAs(t, err, &got)
+			assert.Equal(t, tc.status, got.StatusCode)
+			assert.Equal(t, tc.reason, got.Reason)
+			assert.Equal(t, tc.message, got.Message)
+			if tc.message != "" {
+				assert.Contains(t, got.Error(), tc.message)
+			} else {
+				assert.NotContains(t, got.Error(), message)
+			}
+		})
+	}
 }
 
 func TestKitGeminiRoleGuard(t *testing.T) {

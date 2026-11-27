@@ -60,7 +60,7 @@ func (c *Client) postJSON(ctx context.Context, endpoint string, body []byte) ([]
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newAPIError(resp, c.api == embedconfig.APIVertex)
+		return nil, newAPIError(resp, c.api)
 	}
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
 	if err != nil {
