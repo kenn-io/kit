@@ -12,6 +12,8 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-go@v7.0.0'
         - 'actions/upload-artifact@v7.0.2'
+    '.github/workflows/delete-waiting-runs.yml':
+        - 'kenn-io/actions@main'
     '.github/workflows/kennembed-pr.yml': []
     '.github/workflows/kennembed.yml':
         - 'actions/cache@v6.1.0'
@@ -62,3 +64,8 @@ dependencies:
         commit: 'sha1-7c6bc770dae815cd3e89ee6cdf493a5fab2cc093'
         owner_id: 71461757
         repo_id: 407242578
+    'kenn-io/actions@main':
+        ref: 'main'
+        commit: 'sha1-0275b7bfe16ba7d0d7c086e00598fb315a7f32ca'
+        owner_id: 259885253
+        repo_id: 1427332808
