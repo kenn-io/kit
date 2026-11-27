@@ -558,9 +558,7 @@ func TestKitCheckRequiresGuidance(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				recorded := httptest.NewRecorder()
 				independentService(recorded, r)
-				for key, values := range recorded.Header() {
-					w.Header()[key] = values
-				}
+				maps.Copy(w.Header(), recorded.Header())
 				w.WriteHeader(recorded.Code)
 				body := recorded.Body.String()
 				if recorded.Code == tc.status {
