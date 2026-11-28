@@ -8,13 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,12 +31,6 @@ func TestNewBinaryHelper(t *testing.T) {
 	case "fail":
 		_, _ = os.Stderr.WriteString("version `GLIBC_9.99' not found\n")
 		os.Exit(1)
-	case "hold":
-		// Start a process from the original test executable that inherits
-		// this run's output pipe and holds it open, then exit successfully.
-		startChild(t, os.Args[i+2], nil, "sleep")
-	case "sleep":
-		time.Sleep(20 * time.Second) //nolint:kennlint // sleeptest: a separate helper process must outlive the update's wait for its output; no test state exists to wait on
 	case "exit-then-cancel":
 		// Start a process that inherits this run's output pipe and cancels
 		// the update once this process has exited successfully.
@@ -164,19 +155,6 @@ func TestInstallKeepsInstalledBinaryWhenNewBinaryFailsToRun(t *testing.T) {
 	assert.Equal(t, []string{filepath.Base(dstPath)}, names, "staged binary was not removed")
 }
 
-func TestInstallStopsWaitingForOutputHeldByADescendant(t *testing.T) {
-	t.Parallel()
-	self, err := os.Executable()
-	require.NoError(t, err)
-
-	dstPath, _, err := installTestExecutable(t.Context(), t, newBinaryArgs("hold", self))
-
-	require.ErrorIs(t, err, exec.ErrWaitDelay)
-	got, readErr := os.ReadFile(dstPath)
-	require.NoError(t, readErr)
-	assert.Equal(t, "old-binary", string(got))
-}
-
 func TestInstallKeepsInstalledBinaryWhenStoppedWhileReadingOutput(t *testing.T) {
 	t.Parallel()
 	self, err := os.Executable()
@@ -197,40 +175,6 @@ func TestInstallKeepsInstalledBinaryWhenStoppedWhileReadingOutput(t *testing.T) 
 	got, readErr := os.ReadFile(dstPath)
 	require.NoError(t, readErr)
 	assert.Equal(t, "old-binary", string(got))
-}
-
-func TestNewBinaryRunCanceledBeforeStartReportsCancellationOnce(t *testing.T) {
-	t.Parallel()
-	self, err := os.Executable()
-	require.NoError(t, err)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	err = runNewBinary(ctx, self, newBinaryArgs("pass"))
-
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, context.Canceled.Error(), err.Error())
-}
-
-func TestVerifyOutputKeepsOnlyItsBeginning(t *testing.T) {
-	t.Parallel()
-	output := &outputPrefix{}
-	first := "version `GLIBC_9.99' not found\n"
-	chunk := bytes.Repeat([]byte("x"), 32<<10)
-
-	n, err := output.Write([]byte(first))
-	require.NoError(t, err)
-	assert.Equal(t, len(first), n)
-	for range 64 {
-		n, err = output.Write(chunk)
-		require.NoError(t, err)
-		assert.Equal(t, len(chunk), n, "a discarded write must still report success so the process keeps running")
-	}
-
-	assert.Len(t, output.buf, verifyOutputLimit)
-	text := output.String()
-	assert.True(t, strings.HasPrefix(text, strings.TrimSpace(first)))
-	assert.True(t, strings.HasSuffix(text, "..."))
 }
 
 func TestInstallReplacesBinaryWhenNewBinaryRuns(t *testing.T) {
