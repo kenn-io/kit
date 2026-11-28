@@ -4,7 +4,7 @@
 //	kennlint run [analysis flags] ./...
 //	kennlint workflow-retries [path ...]
 //	kennlint sql [path ...]
-//	kennlint frontmatter [-changed REF] [-fix] [-type-rule GLOB=TYPE] [-by ACTOR] [-description TEXT] [-exclude GLOB] [path ...]
+//	kennlint frontmatter [-changed REF] [-fix] [-type-rule GLOB=TYPE] [-by ACTOR] [-description TEXT] [-exclude GLOB] [-managed-skill GLOB] [path ...]
 //	kennlint config [-overlay FILE] [-out FILE] [-check]
 //	kennlint profile [-tags LIST] [-disable LIST] [-parallel] [-cpuprofile FILE] [packages]
 //	kennlint analyzers

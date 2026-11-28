@@ -2,7 +2,7 @@
 type: Guide
 title: Adopting the Kenn documentation profile
 description: Use the Kenn OKF metadata profile and check meaningful documentation edits.
-generated: { by: claude-code/claude-opus-5.5, at: "2026-11-25T15:44:30Z" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-26T16:11:19Z" }
 ---
 
 # Adopting the Kenn documentation profile
@@ -38,8 +38,8 @@ preserved.
 
 ## What is checked
 
-`README.md`, `AGENTS.md`, `CLAUDE.md` and `SKILL.md` files never take
-frontmatter at any depth. The check also skips Markdown inside skill bundles,
+`README.md`, `AGENTS.md` and `CLAUDE.md` never take Kenn frontmatter.
+The check skips unlisted skills and Markdown inside skill bundles,
 changelogs, release notes, `docs/releases`, `.github`, `testdata`, `vendor`,
 and `node_modules`. Add `-exclude GLOB` for other exceptions; `**` matches
 any number of directories. `index.md` files are OKF indexes, not concepts:
@@ -69,3 +69,51 @@ SHA and full Git history. When a page's metadata or rendered content changes,
 `generated.at` must move later; the same actor may edit again. Formatting-only
 edits (rewrapping, list markers, table padding) and changes to
 `generated.by`, `generated.at`, or `verified` alone do not count. `-fix` never bumps an existing timestamp.
+
+## Managed skills
+
+Kenn metadata for an Agent Skill is opt-in. First verify that the skill’s
+loader and sync targets preserve nested YAML. Pass a repeatable
+`-managed-skill 'skills/*/SKILL.md'` to checks and fixes to name tracked
+skills. A pattern that matches no eligible skill is an error. Imported
+symlinks, portable skills, and unlisted skills are never rewritten.
+
+Keep the skill's native `name` and `description`. Do not add a document title.
+The Kenn extension lives under `metadata`:
+
+```yaml
+metadata:
+  type: Skill
+  status: stable
+  generated: { by: human:editor, at: "2026-11-17T19:00:00Z" }
+```
+
+`metadata.status` is required on a managed skill, directly under `type`.
+OKF reads an absent `status` as stable, but a skill is instructions that an
+agent follows, so its standing must be visible. Use one of OKF's three values:
+
+- `draft`: not yet reviewed and possibly incomplete. Agents should use it
+  with care.
+- `stable`: ready to use.
+- `deprecated`: kept for links and history, but not current. Agents should
+  not follow it. When a replacement exists, also set `metadata.superseded_by`
+  to the replacing skill's path.
+
+`status` is lifecycle, not freshness: `metadata.generated.at` records the
+last meaningful change. Writing `status: stable` on a skill that had none is
+not a meaningful edit and needs no new timestamp; any other status change is.
+
+With `-fix -by ACTOR`, the checker fills missing metadata, including a missing
+`status` as `stable`, only when the resulting profile is complete.
+It preserves user fields and never advances an existing valid timestamp.
+
+A managed skill's timestamp covers its entire tracked bundle. Adding,
+deleting, or meaningfully changing a resource requires a later
+`metadata.generated.at` and the actual editor in `metadata.generated.by`.
+Mode-only changes and Markdown formatting changes that render the same do
+not count. An unmanaged nested `SKILL.md` and its resources belong to the
+enclosing managed skill. Do not add Kenn frontmatter to bundle resources.
+
+When a live tracked `SKILL.md` is at the repository root, unscoped checks
+require explicitly opting in the root skill. Select ordinary document paths
+for read-only checks; `-fix` does not rewrite root-bundle descendants.

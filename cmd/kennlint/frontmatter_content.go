@@ -19,32 +19,42 @@ import (
 // frontmatterMeaningful reports whether metadata other than provenance, or
 // the rendered body, differs.
 func frontmatterMeaningful(a, b *okf.Document) (bool, error) {
-	x, err := metadataWithoutProvenance(a)
+	return profileMeaningful(a, b, false)
+}
+
+func profileMeaningful(a, b *okf.Document, skill bool) (bool, error) {
+	x, err := metadataWithoutProvenance(a, skill)
 	if err != nil {
 		return false, err
 	}
-	y, err := metadataWithoutProvenance(b)
+	y, err := metadataWithoutProvenance(b, skill)
 	if err != nil {
 		return false, err
 	}
 	return !reflect.DeepEqual(x, y) || (!bytes.Equal(a.Body, b.Body) && canonicalHTML(a.Body) != canonicalHTML(b.Body)), nil
 }
 
-func metadataWithoutProvenance(d *okf.Document) (map[string]any, error) {
+func metadataWithoutProvenance(d *okf.Document, skill bool) (map[string]any, error) {
 	fields := map[string]any{}
 	if err := d.Metadata.Decode(&fields); err != nil {
 		return nil, err
 	}
-	// Omitted status and explicit stable are equivalent under the Kenn profile.
-	if fields["status"] == "stable" {
-		delete(fields, "status")
+	header := fields
+	if skill {
+		header, _ = fields["metadata"].(map[string]any)
 	}
-	delete(fields, "verified")
-	if generated, ok := fields["generated"].(map[string]any); ok {
+	// Omitted status and explicit stable are equivalent under the Kenn profile.
+	status := header["status"]
+	emptyList, list := status.([]any)
+	if status == "stable" || (skill && (status == nil || status == "" || (list && len(emptyList) == 0))) {
+		delete(header, "status")
+	}
+	delete(header, "verified")
+	if generated, ok := header["generated"].(map[string]any); ok {
 		delete(generated, "by")
 		delete(generated, "at")
 		if len(generated) == 0 {
-			delete(fields, "generated")
+			delete(header, "generated")
 		}
 	}
 	return fields, nil

@@ -2,7 +2,7 @@
 type: Guide
 title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
-generated: { by: codex/gpt-6, at: "2026-11-23T18:13:35Z" }
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-25T18:37:19Z" }
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -134,7 +134,9 @@ it after adding rule labels and reasons to their suppressions.
    Actions, `github.event.pull_request.base.sha`) and use a checkout with full
    history. A meaningful edit to an existing file must set `generated.at` to a
    later time, including edits within the same day; `-fix` never bumps it. New files only need valid metadata.
-   Deletions are skipped. Findings print as `path: problem` on stderr and return a
+   To opt in compatible skills, pass the same repeatable `-managed-skill GLOB`
+   to checks and fixes. Deleting a tracked resource from a managed skill is
+   an edit to that skill's bundle. Other file deletions are skipped. Findings print as `path: problem` on stderr and return a
    nonzero exit status; success prints a short summary.
 
 ## Overlay semantics
