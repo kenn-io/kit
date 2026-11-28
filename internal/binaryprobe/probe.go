@@ -37,8 +37,12 @@ func run(ctx context.Context, path string, args []string, requireStdout bool) ([
 	// Descendants may hold the pipes open after the binary exits.
 	cmd.WaitDelay = waitDelay
 	diagnostic := &outputPrefix{limit: outputLimit}
-	stdout := &outputPrefix{limit: stdoutLimit}
-	cmd.Stdout = &stdoutWriter{stdout: stdout, diagnostic: diagnostic}
+	var stdout *outputPrefix
+	cmd.Stdout = diagnostic
+	if requireStdout {
+		stdout = &outputPrefix{limit: stdoutLimit}
+		cmd.Stdout = &stdoutWriter{stdout: stdout, diagnostic: diagnostic}
+	}
 	cmd.Stderr = diagnostic
 	err := cmd.Run()
 	// Wait can report success if cancellation occurs after exit while reading.
@@ -55,7 +59,10 @@ func run(ctx context.Context, path string, args []string, requireStdout bool) ([
 		}
 		return nil, err
 	}
-	if requireStdout && stdout.truncated {
+	if !requireStdout {
+		return nil, nil
+	}
+	if stdout.truncated {
 		return nil, errors.New("stdout exceeds 16 KiB limit")
 	}
 	return stdout.buf, nil

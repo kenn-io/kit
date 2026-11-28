@@ -1,4 +1,3 @@
-// Package provenance defines a release binary's version record and checks it.
 package provenance
 
 import (
@@ -6,19 +5,25 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"go.kenn.io/kit/internal/binaryprobe"
 )
 
+// SchemaVersion is the supported version of the JSON provenance record.
+const SchemaVersion = 1
+
 // Info is the machine-readable provenance reported by a binary.
 type Info struct {
-	Version      string    `json:"version,omitzero"`
-	Commit       string    `json:"commit,omitzero"`
-	BuildTime    time.Time `json:"build_time,omitzero"`
-	SourceTime   time.Time `json:"source_time,omitzero"`
-	Distribution string    `json:"distribution,omitzero"`
+	SchemaVersion int       `json:"schema_version,omitzero"`
+	Version       string    `json:"version,omitzero"`
+	Commit        string    `json:"commit,omitzero"`
+	BuildTime     time.Time `json:"build_time,omitzero"`
+	SourceTime    time.Time `json:"source_time,omitzero"`
+	Distribution  string    `json:"distribution,omitzero"`
 }
 
 // TimeKind selects the timestamp required by Check.
@@ -35,21 +40,20 @@ const (
 type Want struct {
 	Version, Commit, Distribution string
 	Time                          TimeKind
+	// ExpectedTime is the nonzero expected instant for the selected Time.
+	ExpectedTime time.Time
 }
 
 // Check runs the binary and compares its JSON provenance with want.
 func Check(ctx context.Context, path string, args []string, want Want) error {
+	if !filepath.IsAbs(path) && filepath.Dir(path) == "." {
+		path = "." + string(os.PathSeparator) + path
+	}
 	out, err := binaryprobe.Run(ctx, path, args)
 	if err != nil {
 		return fmt.Errorf("run provenance command: %w", err)
 	}
-	var raw struct {
-		Version      string          `json:"version"`
-		Commit       string          `json:"commit"`
-		BuildTime    json.RawMessage `json:"build_time"`
-		SourceTime   json.RawMessage `json:"source_time"`
-		Distribution string          `json:"distribution"`
-	}
+	var raw Info
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return fmt.Errorf("decode provenance JSON: %w", err)
 	}
@@ -61,35 +65,34 @@ func Check(ctx context.Context, path string, args []string, want Want) error {
 	if (len(want.Commit) != 40 && len(want.Commit) != 64) || hexErr != nil || raw.Commit != want.Commit {
 		problems = append(problems, "commit must match the full expected hash")
 	}
-	if raw.Distribution != want.Distribution {
+	if raw.SchemaVersion != SchemaVersion {
+		problems = append(problems, "schema_version must be 1")
+	}
+	if want.Distribution == "" {
+		problems = append(problems, "expected distribution is required")
+	} else if raw.Distribution != want.Distribution {
 		problems = append(problems, "distribution mismatch")
 	}
-	parseTime := func(name string, value json.RawMessage, required bool) time.Time {
-		if len(value) == 0 || string(value) == "null" {
-			if required {
-				problems = append(problems, name+" is missing")
-			}
-			return time.Time{}
-		}
-		var text string
-		if json.Unmarshal(value, &text) != nil || !strings.HasSuffix(text, "Z") {
-			problems = append(problems, name+" must be UTC RFC 3339")
-			return time.Time{}
-		}
-		parsed, err := time.Parse(time.RFC3339Nano, text)
-		if err != nil || parsed.IsZero() {
-			problems = append(problems, name+" must be UTC RFC 3339")
-			return time.Time{}
-		}
-		return parsed
+	var selected time.Time
+	var name string
+	switch want.Time {
+	case BuildTime:
+		name, selected = "build_time", raw.BuildTime
+	case SourceTime:
+		name, selected = "source_time", raw.SourceTime
+	default:
+		problems = append(problems, "time kind must select build_time or source_time")
 	}
-	if want.Time != BuildTime && want.Time != SourceTime {
-		problems = append(problems, "invalid time kind")
+	if want.ExpectedTime.IsZero() {
+		problems = append(problems, "expected time is required")
 	}
-	build := parseTime("build_time", raw.BuildTime, want.Time == BuildTime)
-	source := parseTime("source_time", raw.SourceTime, want.Time == SourceTime)
-	if !build.IsZero() && !source.IsZero() && build.Equal(source) {
-		problems = append(problems, "build_time and source_time must differ")
+	if name != "" {
+		switch {
+		case selected.IsZero():
+			problems = append(problems, name+" is missing or zero")
+		case !want.ExpectedTime.IsZero() && !selected.Equal(want.ExpectedTime):
+			problems = append(problems, name+" does not match expected time")
+		}
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid provenance: %s", strings.Join(problems, "; "))
