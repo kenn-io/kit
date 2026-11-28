@@ -68,3 +68,41 @@ try {
  assert.equal(captured.deref() === undefined, true, "completed command retained stdout chunks");
 } finally { Buffer.concat = concat; process.kill(Number(readFileSync(pidfile, "utf8"))); }
 `
+
+func TestScriptRuntimeOmpControls(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node unavailable")
+	}
+	runtime, err := os.ReadFile("script_runtime.js")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	driver := filepath.Join(dir, "controls.mjs")
+	require.NoError(t, os.WriteFile(driver, append(runtime, []byte(scriptOmpControlsDriver)...), 0o600))
+	cmd := exec.CommandContext(t.Context(), node, driver, dir)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
+const scriptOmpControlsDriver = `
+import assert from "node:assert/strict";
+import {existsSync} from "node:fs";
+const dir=process.argv[2], marker=dir+"/marker";
+const command=(script,matcher)=>({matcher,hooks:[{command:process.execPath,args:["-e",script,marker]}]});
+const write='require("fs").appendFileSync(process.argv[1],"spawned")';
+const config={hooks:{test:[command(write,"bash")]}};
+const abort=new AbortController();abort.abort();
+let result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",signal:abort.signal});
+assert.equal(existsSync(marker),false);assert.match(result.failures.join(" "),/cancel/i);
+result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",budgetMs:0});
+assert.equal(existsSync(marker),false);assert.match(result.failures.join(" "),/budget/i);
+config.hooks.test=[command(write,"other"),command('process.stdout.write(JSON.stringify({block:true}))',"bash"),command(write,"bash")];
+result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",budgetMs:3000,stop:r=>r.block===true});
+assert.deepEqual(result.responses,[{block:true}]);assert.equal(existsSync(marker),false);
+config.hooks.test=[command('setTimeout(()=>{},10000)',"bash"),command(write,"bash")];
+const live = new AbortController(); setTimeout(()=>live.abort(),100);
+result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",signal:live.signal});
+assert.match(result.failures.join(" "),/cancel/i);assert.equal(existsSync(marker),false);
+result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",budgetMs:100});
+assert.match(result.failures.join(" "),/budget/i);assert.equal(existsSync(marker),false);
+`

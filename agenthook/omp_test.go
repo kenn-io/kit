@@ -188,6 +188,7 @@ func TestOmpToolFailuresAndDecision(t *testing.T) {
 		matcher        string
 	}{
 		{"bad-marker", `process.stdin.resume();process.stdin.on("end",()=>{process.stdout.write('{"block":"yes"}')})`, ""},
+		{"failure-marker", `process.stdin.resume();process.stdin.on("end",()=>{process.stderr.write("fixture failure");process.exitCode=1})`, ""},
 		{"deny-marker", `process.stdin.resume();process.stdin.on("end",()=>{process.stdout.write('{"block":true,"reason":"denied"}')})`, ToolBash},
 	} {
 		_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", tc.script, tc.marker}, Marker: tc.marker, Hooks: []Hook{{Event: EventPreToolUse, Matcher: tc.matcher}}})
@@ -201,6 +202,7 @@ func TestOmpToolFailuresAndDecision(t *testing.T) {
 	require.Len(t, lines, 2)
 	assert.JSONEq(t, `{"block":true,"reason":"denied"}`, lines[0])
 	assert.Contains(t, lines[1], "invalid PreToolUse response")
+	assert.Contains(t, lines[1], "fixture failure")
 }
 
 func TestOmpSessionAndToolLifecycle(t *testing.T) {

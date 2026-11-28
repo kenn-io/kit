@@ -20,6 +20,10 @@ const exitFailure = (code, signal) => {
 // block later commands or the harness.
 function runCommand(handler, payload, options = {}) {
 	return new Promise((resolve) => {
+		if (options.signal?.aborted) {
+			resolve({ failure: options.signal.reason?.message ?? "cancelled" });
+			return;
+		}
 		let child;
 		try {
 			// Pi changes ctx.cwd on a cross-project resume without changing the process directory.
@@ -39,11 +43,13 @@ function runCommand(handler, payload, options = {}) {
 			child.kill("SIGKILL");
 			finish(`timed out after ${seconds}s`);
 		}, seconds * 1000);
+		const abort = () => { child.kill("SIGKILL"); finish(options.signal.reason?.message ?? "cancelled"); };
 		const finish = (failure) => {
 			if (done) return;
 			done = true;
 			clearTimeout(timer);
 			clearTimeout(grace);
+			options.signal?.removeEventListener("abort", abort);
 			// Keep draining pipes so a process still writing to them never blocks,
 			// without holding the harness open.
 			child.stderr.unref();
@@ -70,6 +76,8 @@ function runCommand(handler, payload, options = {}) {
 			if (stdoutBytes > stdoutLimit) { overflow = true; stdout = []; }
 			else stdout.push(chunk);
 		});
+		options.signal?.addEventListener("abort", abort, { once: true });
+		if (options.signal?.aborted) abort();
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (chunk) => {
 			if (!done) stderr = (stderr + chunk).slice(-stderrTailLength);
@@ -86,17 +94,41 @@ function runCommand(handler, payload, options = {}) {
 	});
 }
 
-// Runs commands in order. By default, throws an aggregate error; collect returns
-// { responses, failures } so successful responses survive sibling failures.
+// Runs commands in order. Collection preserves successful sibling responses.
+// OMP supplies an exact matcher, an aggregate budget, cancellation and a
+// predicate that stops on a validated decision.
 async function runHooks(event, payload, options = {}) {
 	const failures = [];
 	const responses = [];
-	for (const entry of config.hooks?.[event] ?? []) {
-		for (const handler of entry.hooks) {
-			const { failure, response } = await runCommand(handler, payload, options);
-			if (failure) failures.push(`${[handler.command, ...handler.args].join(" ")}: ${failure}`);
-			if (response !== undefined) responses.push(response);
+	const controller = new AbortController();
+	const cancel = () => controller.abort(new Error("cancelled"));
+	options.signal?.addEventListener("abort", cancel, { once: true });
+	if (options.signal?.aborted) cancel();
+	let budget;
+	if (options.budgetMs != null) {
+		if (options.budgetMs <= 0) controller.abort(new Error("callback budget exceeded"));
+		else budget = setTimeout(() => controller.abort(new Error("callback budget exceeded")), options.budgetMs);
+	}
+	try {
+		for (const entry of config.hooks?.[event] ?? []) {
+			if (options.collect && entry.matcher && entry.matcher !== options.matcher) continue;
+			for (const handler of entry.hooks) {
+				if (controller.signal.aborted) break;
+				const { failure, response } = await runCommand(handler, payload, { ...options, signal: controller.signal });
+				if (failure) failures.push(`${[handler.command, ...handler.args].join(" ")}: ${failure}`);
+				if (response !== undefined) {
+					responses.push(response);
+					if (options.stop?.(response)) return { responses, failures };
+				}
+			}
+			if (controller.signal.aborted) break;
 		}
+		if (controller.signal.aborted && !failures.some((failure) => failure.includes(controller.signal.reason.message))) {
+			failures.push(controller.signal.reason.message);
+		}
+	} finally {
+		clearTimeout(budget);
+		options.signal?.removeEventListener("abort", cancel);
 	}
 	if (options.collect) return { responses, failures };
 	if (failures.length > 0) throw new Error(`agenthook ${event} commands failed: ${failures.join("; ")}`);
