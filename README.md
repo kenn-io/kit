@@ -52,7 +52,8 @@ behavior, or provider workflows live here.
   `spill` moves oversized in-memory lists to a temporary file, and
   [`provenance`](provenance/) defines the `version --json` record a release
   binary prints and checks an extracted or installed binary against the
-  version, full commit, timestamp, and distribution its pipeline expects.
+  version, full commit, reported timestamps, and distribution its pipeline
+  expects.
 
 ## Installation
 
