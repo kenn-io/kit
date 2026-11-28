@@ -85,13 +85,37 @@ func (d *Document) Field(keys ...string) *yaml.Node {
 	return n
 }
 
+func resolveYAML(n *yaml.Node) *yaml.Node {
+	for n != nil && n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+	return n
+}
+
 func mappingField(n *yaml.Node, key string) *yaml.Node {
-	if n != nil && n.Kind == yaml.MappingNode {
-		for i := 0; i < len(n.Content); i += 2 {
-			if n.Content[i].Value == key {
-				return n.Content[i+1]
+	n = resolveYAML(n)
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	var merge *yaml.Node
+	for i := 0; i < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.ShortTag() == "!!merge" {
+			merge = resolveYAML(v)
+		} else if k.Value == key {
+			return resolveYAML(v)
+		}
+	}
+	// Explicit fields (even nulls) win regardless of order. In a merge
+	// sequence, the first mapping that supplies the field wins.
+	if merge != nil && merge.Kind == yaml.SequenceNode {
+		for _, source := range merge.Content {
+			if v := mappingField(source, key); v != nil {
+				return v
 			}
 		}
+	} else if merge != nil {
+		return mappingField(merge, key)
 	}
 	return nil
 }

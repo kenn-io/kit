@@ -48,7 +48,8 @@ provider workflows to this repo unless the package already owns that concern.
 - Never name private downstream projects or other private codebases in public
   artifacts. Describe reusable requirements generically and scrub public
   surfaces before publishing.
-- When creating or meaningfully updating [Kenn documentation](docs/adopting-docs.md), set `generated: { by, at }` to the actual editor (coding tool/model for agent edits) and current UTC time; leave formatting-only edits alone.
+- When creating or meaningfully updating [Kenn documentation](docs/guides/adopting-docs.md), set `generated: { by, at }` to the actual editor (coding tool/model for agent edits) and current UTC time; leave formatting-only edits alone.
+- For an opted-in Kenn skill, keep `metadata.type: Skill` and `metadata.status` (`draft`, `stable` or `deprecated`), and restamp `metadata.generated` for meaningful edits to the skill or its tracked bundle. Do not add Kenn frontmatter to bundle resources or unlisted skills.
 - Mark retained retired docs `status: deprecated` and link replacements when available.
 
 ## Go Conventions
