@@ -71,7 +71,7 @@ func denyWindowsDirectoryListing(t *testing.T, path string) {
 	trustee := windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: windows.TRUSTEE_IS_USER, TrusteeValue: windows.TrusteeValueFromSID(user.User.Sid)}
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
 		{AccessPermissions: windows.FILE_LIST_DIRECTORY, AccessMode: windows.DENY_ACCESS, Inheritance: windows.NO_INHERITANCE, Trustee: trustee},
-		{AccessPermissions: windows.GENERIC_READ | windows.GENERIC_WRITE | windows.GENERIC_EXECUTE | windows.READ_CONTROL | windows.WRITE_DAC | windows.DELETE, AccessMode: windows.GRANT_ACCESS, Inheritance: windows.NO_INHERITANCE, Trustee: trustee},
+		{AccessPermissions: windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.FILE_GENERIC_EXECUTE | windows.READ_CONTROL | windows.WRITE_DAC | windows.DELETE, AccessMode: windows.GRANT_ACCESS, Inheritance: windows.NO_INHERITANCE, Trustee: trustee},
 	}, nil)
 	require.NoError(err)
 	require.NoError(windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil))
