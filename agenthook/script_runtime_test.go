@@ -91,6 +91,8 @@ const dir=process.argv[2], marker=dir+"/marker";
 const command=(script,matcher)=>({matcher,hooks:[{command:process.execPath,args:["-e",script,marker]}]});
 const write='require("fs").appendFileSync(process.argv[1],"spawned")';
 const config={hooks:{test:[command(write,"bash")]}};
+await runHooks("test",{cwd:dir},{matcher:"read"});
+assert.equal(existsSync(marker),false);
 const abort=new AbortController();abort.abort();
 let result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",signal:abort.signal});
 assert.equal(existsSync(marker),false);assert.match(result.failures.join(" "),/cancel/i);

@@ -52,12 +52,13 @@
   SessionStart and interactive input submissions including local commands
   immediately, even before a transcript exists;
   validate native outputs, report failures in the TUI, return the first valid
-  block, and join distinct nonblank tool contexts. Share a 25-second budget
+  block, and join nonblank tool contexts. Share a 25-second budget
   across callback batches and honor Stop cancellation. Separate Pi and omp
-  filenames allow a shared directory; omp installation refuses a co-located
-  legacy Kit Pi module until its registrations are reinstalled with the guard.
+  filenames allow a shared directory; the omp module checks for a co-located
+  legacy Kit Pi module on its first TUI callback and disables reporting for that
+  session with an actionable warning.
   Keep the Pi glue marker `// agenthook:omp-guarded` when retaining that guard;
-  it lets the omp preflight recognize refreshed modules without parsing code.
+  it lets the omp module recognize refreshed Pi glue without parsing code.
   The OpenCode module retires its reported root with SessionEnd as soon as
   its terminal shows a session with another root or that root is deleted,
   and never from cleanup, which also runs on hot reload and reinstall. Setup

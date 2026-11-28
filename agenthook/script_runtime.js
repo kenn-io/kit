@@ -111,7 +111,7 @@ async function runHooks(event, payload, options = {}) {
 	}
 	try {
 		for (const entry of config.hooks?.[event] ?? []) {
-			if (options.collect && entry.matcher && entry.matcher !== options.matcher) continue;
+			if ("matcher" in options && entry.matcher && entry.matcher !== options.matcher) continue;
 			for (const handler of entry.hooks) {
 				if (controller.signal.aborted) break;
 				const { failure, response } = await runCommand(handler, payload, { ...options, signal: controller.signal });
