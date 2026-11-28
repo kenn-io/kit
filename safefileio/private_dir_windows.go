@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -334,23 +335,28 @@ func privateWindowsACL(userSID *windows.SID, inheritance uint32) (*windows.ACL, 
 	if err != nil {
 		return nil, err
 	}
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
 	entries := []windows.EXPLICIT_ACCESS{
-		allowFullControl(userSID, windows.TRUSTEE_IS_USER, inheritance),
+		allowFullControl(&pinner, userSID, windows.TRUSTEE_IS_USER, inheritance),
 	}
 	if !userSID.Equals(system) {
-		entries = append(entries, allowFullControl(system, windows.TRUSTEE_IS_USER, inheritance))
+		entries = append(entries, allowFullControl(&pinner, system, windows.TRUSTEE_IS_USER, inheritance))
 	}
 	if !userSID.Equals(admins) {
-		entries = append(entries, allowFullControl(admins, windows.TRUSTEE_IS_GROUP, inheritance))
+		entries = append(entries, allowFullControl(&pinner, admins, windows.TRUSTEE_IS_GROUP, inheritance))
 	}
 	return windows.ACLFromEntries(entries, nil)
 }
 
 func allowFullControl(
+	pinner *runtime.Pinner,
 	sid *windows.SID,
 	trusteeType windows.TRUSTEE_TYPE,
 	inheritance uint32,
 ) windows.EXPLICIT_ACCESS {
+	// TrusteeValue stores sid as a uintptr outside Go GC visibility.
+	pinner.Pin(sid)
 	// FILE_ALL_ACCESS (0x1F01FF) avoids Windows splitting generic inheritable ACEs.
 	const fileAllAccess = 0x1F01FF
 	return windows.EXPLICIT_ACCESS{

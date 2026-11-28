@@ -43,6 +43,12 @@ callers responsible for their own file formats and higher-level policy.
   user and trusted administrative principals. Callers recovering a broad or
   inheritable file must create a private replacement rather than repair it in
   place.
+- On Windows, pin every Go-heap `*windows.SID` with `runtime.Pinner` for the
+  lifetime of any `windows.TrusteeValue` (`uintptr`) passed to Win32 ACL
+  builders. When populating an absolute `SECURITY_DESCRIPTOR` via `SetDACL`,
+  pin the ACL and convert the descriptor to self-relative form
+  (`ToSelfRelative`) before returning it so Go's GC cannot reclaim memory
+  referenced only through Win32 pointers.
 - `CreatePrivateFile` (and `CreatePrivateTemp`, which retries it under
   random names) is the sanctioned way to make a private file. It creates the
   file exclusively without following links, private from the moment it exists

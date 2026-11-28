@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 
 	"golang.org/x/sys/windows"
 
@@ -57,6 +58,7 @@ func ValidateCurrentUserFile(file *os.File) error {
 	if file == nil {
 		return errors.New("file is nil")
 	}
+	defer runtime.KeepAlive(file)
 	return validateWindowsFileHandle(file.Name(), windows.Handle(file.Fd()))
 }
 

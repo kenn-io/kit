@@ -4,6 +4,7 @@ package safefileio
 
 import (
 	"errors"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -18,7 +19,12 @@ func currentWindowsUserSID() (*windows.SID, error) {
 	if err != nil {
 		return nil, err
 	}
-	return user.User.Sid, nil
+	if user.User.Sid == nil {
+		return nil, errors.New("current token user is missing")
+	}
+	sid, err := user.User.Sid.Copy()
+	runtime.KeepAlive(user)
+	return sid, err
 }
 
 func currentWindowsOwnerSID() (*windows.SID, error) {
@@ -32,7 +38,9 @@ func currentWindowsOwnerSID() (*windows.SID, error) {
 			if owner.Owner == nil {
 				return nil, errors.New("current token owner is missing")
 			}
-			return owner.Owner.Copy()
+			sid, err := owner.Owner.Copy()
+			runtime.KeepAlive(buf)
+			return sid, err
 		}
 		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
 			return nil, err
