@@ -7,7 +7,7 @@
 // of lifecycle hooks while support for new agents stays centralized in kit.
 // Profiles are provided for Antigravity CLI (agy), Claude Code, Codex, GitHub
 // Copilot CLI, Cursor, Factory Droid, Gemini CLI, Hermes Agent, Muse Code,
-// OpenCode, Pi, and Qwen Code. The agy profile maps UserPromptSubmit to
+// omp, OpenCode, Pi, and Qwen Code. The agy profile maps UserPromptSubmit to
 // PreInvocation, which agy runs before every model call in a turn, and has no
 // SessionEnd or PostToolUse. Pi and
 // OpenCode have no command-hook config, so their profiles write a kit-owned
@@ -25,6 +25,21 @@
 // Pi's extensions directory stops Pi from loading the module. It needs Pi
 // 0.80.4 or later. The OpenCode 2.x TUI plugin reports the root session its
 // terminal shows and that session's lifecycle events.
+// The omp profile installs extensions/agenthook-omp.js in the selected agent
+// directory. Set ConfigPath explicitly when using omp's CLI-only --profile.
+// Its main interactive session reports submissions at the input boundary,
+// including local commands, and uses the session-manager ID throughout. It
+// reports SessionStart and input before the transcript is saved.
+// SessionEnd reports replacement, not quit. Tool decisions and Stop blocks
+// return promptly; failures appear in the TUI and do not override valid sibling
+// decisions. Nonblank tool contexts join in registration order. Each
+// lifecycle callback has a 25-second deadline; replacement reserves half for
+// SessionStart. Each decision command is
+// capped at 25 seconds against omp's default 30-second handler timeout; omp
+// does not expose a lower custom tool-call timeout to the extension. Stop
+// honors cancellation. In a shared directory, a Pi module predating the omp
+// guard can duplicate SessionStart and UserPromptSubmit until Pi hooks are
+// reinstalled. The omp mappings follow omp v19.2.1; session_stop needs v16.1.0.
 // Several terminals can report the same session_id, so hosts should keep one
 // record per terminal.
 //

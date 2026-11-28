@@ -44,6 +44,7 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 		AgentGemini,
 		AgentHermes,
 		AgentMuse,
+		AgentOmp,
 		AgentOpenCode,
 		AgentPi,
 		AgentQwen,
@@ -54,13 +55,13 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 	)
 	assert.Contains(profiles[7].SupportedEvents, EventPreToolUse)
 	assert.NotContains(profiles[7].SupportedEvents, EventNotification)
-	for _, profile := range profiles[9:11] {
+	for _, profile := range profiles[10:12] {
 		assert.Equal(
 			[]Event{EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd},
 			profile.SupportedEvents,
 		)
 	}
-	assert.Contains(profiles[11].SupportedEvents, EventPermissionRequest)
+	assert.Contains(profiles[12].SupportedEvents, EventPermissionRequest)
 }
 
 func TestPlanInstallDefaultsToEveryProfileEvent(t *testing.T) {

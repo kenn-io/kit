@@ -30,18 +30,34 @@
   timeout units, timeout fields, failure policy, and cross-platform command
   fields. Decision-bearing Cursor registrations are fail-closed because Cursor
   otherwise allows the operation when a hook crashes or emits invalid JSON.
-- Script profiles (Pi, OpenCode) own one kit-named module. Edit only its delimited
+- Script profiles (Pi, OpenCode, omp) own one kit-named module. Edit only its delimited
   registration block, refuse a file without that block, rewrite the runtime
   on every write, delete the module when uninstall removes its last hook, and
   spawn registered argv without a shell on every OS. The runtime stops waiting
   for a command shortly after it exits even when a process it started still
-  holds stderr, and keeps draining that pipe without holding the harness open.
+  holds stdout or stderr, and keeps draining both pipes without holding the
+  harness open. Response collection is opt-in: retain ordered JSON objects from
+  successful commands, treat blank stdout as no response, report failures
+  separately, reject invalid UTF-8, cap stdout at 16 MiB, and release captured
+  buffers on completion even if a descendant holds a pipe open.
   The Pi module reports only from Pi's interactive terminal (`ctx.mode` is
   `tui`), so print, json, and rpc runs, subagents included, stay silent. It
   needs Pi 0.80.4 or later (`ctx.mode` 0.78.1, `agent_settled` 0.80.4).
   A script profile must run its hook commands from the process the user's
   terminal started, never from a shared server, so each report carries that
   terminal's environment.
+  The omp module handles only TUI main-agent callbacks, uses the session
+  manager's transcript identity even for Stop, and retires only an announced
+  identity upon replacement, preserving the ended session's cwd. It reports
+  SessionStart and interactive input submissions including local commands
+  immediately, even before a transcript exists;
+  validate native outputs and report failures in the TUI. omp aggregates decision
+  handlers in registration order. Lifecycle callbacks share a 25-second deadline
+  across both replacement phases, reserving half for SessionStart; Stop honors
+  cancellation. Each decision command has a 25-second cap (omp defaults to 30
+  seconds per handler). Pi and omp use separate files; in a shared directory, a
+  Pi module predating its omp guard can duplicate SessionStart and
+  UserPromptSubmit until Pi hooks are reinstalled.
   The OpenCode module retires its reported root with SessionEnd as soon as
   its terminal shows a session with another root or that root is deleted,
   and never from cleanup, which also runs on hot reload and reinstall. Setup
