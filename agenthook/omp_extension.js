@@ -24,8 +24,9 @@ export default function (omp) {
 	const on = (name, fn) => omp.on(name, async (event, ctx) => {
 		if (ctx.mode !== "tui" || ctx.agent?.kind !== "main") return;
 		const deadline = Date.now() + 25000;
-		const run = async (eventName, data) => {
-			try { await runHooks(eventName, data, { budgetMs: Math.max(0, deadline - Date.now()) }); }
+		const run = async (eventName, data, reserveStart = false) => {
+			const remaining = Math.max(0, deadline - Date.now());
+			try { await runHooks(eventName, data, { budgetMs: reserveStart ? remaining / 2 : remaining }); }
 			catch (error) { ctx.ui.notify("agenthook: " + error.message, "error"); }
 		};
 		try { return await fn(event, ctx, run); }
@@ -59,10 +60,13 @@ export default function (omp) {
 		if (announced?.id === now.id) return;
 		const ended = announced;
 		announced = now;
+		const hasCommands = (name) => (config.hooks?.[name] ?? []).some((entry) => entry.hooks.length > 0);
+		// Reserve half the remaining callback time for Start when both phases have work.
+		const reserveStart = ended && hasCommands("SessionEnd") && hasCommands("SessionStart");
 		if (ended) {
-			await run("SessionEnd", { hook_event_name: "SessionEnd", session_id: ended.id, ...(ended.file ? { transcript_path: ended.file } : {}), cwd: ended.cwd, reason: event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "other" });
+			await run("SessionEnd", { hook_event_name: "SessionEnd", session_id: ended.id, ...(ended.file ? { transcript_path: ended.file } : {}), cwd: ended.cwd, reason: event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "other" }, reserveStart);
 		}
-		await run("SessionStart", payload("SessionStart", ctx, { source: event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "fork" }));
+		await run("SessionStart", { hook_event_name: "SessionStart", session_id: now.id, ...(now.file ? { transcript_path: now.file } : {}), cwd: now.cwd, source: event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "fork" });
 	};
 	on("session_switch", replace);
 	on("session_branch", replace);

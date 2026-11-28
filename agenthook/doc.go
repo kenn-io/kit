@@ -33,7 +33,8 @@
 // SessionEnd reports replacement, not quit. Tool decisions and Stop blocks
 // return promptly; failures appear in the TUI and do not override valid sibling
 // decisions. Nonblank tool contexts join in registration order. Each
-// lifecycle callback has a 25-second deadline, and each decision command is
+// lifecycle callback has a 25-second deadline; replacement reserves half for
+// SessionStart when both phases have commands. Each decision command is
 // capped at 25 seconds against omp's default 30-second handler timeout; omp
 // does not expose a lower custom tool-call timeout to the extension. Stop
 // honors cancellation. In a shared directory, a Pi module predating the omp

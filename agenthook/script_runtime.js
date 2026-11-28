@@ -77,7 +77,6 @@ function runCommand(handler, payload, options = {}) {
 			else stdout.push(chunk);
 		});
 		options.signal?.addEventListener("abort", abort, { once: true });
-		if (options.signal?.aborted) abort();
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (chunk) => {
 			if (!done) stderr = (stderr + chunk).slice(-stderrTailLength);
@@ -100,9 +99,6 @@ async function runHooks(event, payload, options = {}) {
 	const failures = [];
 	const responses = [];
 	const controller = new AbortController();
-	const cancel = () => controller.abort(new Error("cancelled"));
-	options.signal?.addEventListener("abort", cancel, { once: true });
-	if (options.signal?.aborted) cancel();
 	let budget;
 	if (options.budgetMs != null) {
 		if (options.budgetMs <= 0) controller.abort(new Error("callback budget exceeded"));
@@ -125,7 +121,6 @@ async function runHooks(event, payload, options = {}) {
 		}
 	} finally {
 		clearTimeout(budget);
-		options.signal?.removeEventListener("abort", cancel);
 	}
 	if (options.collect) return { responses, failures };
 	if (failures.length > 0) throw new Error(`agenthook ${event} commands failed: ${failures.join("; ")}`);

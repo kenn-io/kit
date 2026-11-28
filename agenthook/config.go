@@ -16,8 +16,10 @@ import (
 
 // Hook describes one command registration using Claude Code event and matcher
 // names. An empty matcher observes every invocation of the event. A zero timeout
-// omits the timeout field and lets the harness use its default. OMP accepts
-// only the Bash matcher on its three tool events; Pi and OpenCode accept none.
+// omits the timeout field. Script profiles default to 60 seconds per command;
+// omp also applies its callback and decision-command limits. Other harnesses
+// use their own defaults. OMP accepts only the Bash matcher on its three tool
+// events; Pi and OpenCode accept none.
 type Hook struct {
 	Event   Event
 	Matcher string

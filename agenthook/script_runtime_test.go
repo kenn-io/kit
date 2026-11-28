@@ -88,18 +88,12 @@ const scriptOmpControlsDriver = `
 import assert from "node:assert/strict";
 import {existsSync} from "node:fs";
 const dir=process.argv[2], marker=dir+"/marker";
-const command=(script,matcher)=>({matcher,hooks:[{command:process.execPath,args:["-e",script,marker]}]});
+const command=(script)=>({hooks:[{command:process.execPath,args:["-e",script,marker]}]});
 const write='require("fs").appendFileSync(process.argv[1],"spawned")';
-const config={hooks:{test:[command(write,"bash")]}};
-const abort=new AbortController();abort.abort();
-let result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",signal:abort.signal});
-assert.equal(existsSync(marker),false);assert.match(result.failures.join(" "),/cancel/i);
-result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",budgetMs:0});
+const config={hooks:{test:[command(write)]}};
+let result=await runHooks("test",{cwd:dir},{collect:true,budgetMs:0});
 assert.equal(existsSync(marker),false);assert.match(result.failures.join(" "),/budget/i);
-config.hooks.test=[command('setTimeout(()=>{},10000)',"bash"),command(write,"bash")];
-const live = new AbortController(); setTimeout(()=>live.abort(),100);
-result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",signal:live.signal});
-assert.match(result.failures.join(" "),/cancel/i);assert.equal(existsSync(marker),false);
-result=await runHooks("test",{cwd:dir},{collect:true,matcher:"bash",budgetMs:100});
+config.hooks.test=[command('setTimeout(()=>{},10000)'),command(write)];
+result=await runHooks("test",{cwd:dir},{collect:true,budgetMs:100});
 assert.match(result.failures.join(" "),/budget/i);assert.equal(existsSync(marker),false);
 `

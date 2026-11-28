@@ -53,7 +53,7 @@
   immediately, even before a transcript exists;
   validate native outputs and report failures in the TUI. omp aggregates decision
   handlers in registration order. Lifecycle callbacks share a 25-second deadline
-  across both replacement phases; Stop honors cancellation. Each decision command
+  across both replacement phases, reserving half for SessionStart when both phases have commands; Stop honors cancellation. Each decision command
   has a 25-second cap (omp defaults to 30 seconds per handler). Pi and omp use
   separate files; in a shared directory, a Pi module predating its omp guard can
   duplicate SessionStart and UserPromptSubmit until Pi hooks are reinstalled.
