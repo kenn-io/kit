@@ -28,7 +28,8 @@
 // The omp profile installs extensions/agenthook-omp.js in the selected agent
 // directory. Set ConfigPath explicitly when using omp's CLI-only --profile.
 // Its main interactive session reports submissions at the input boundary,
-// including local commands, and uses the transcript session ID throughout.
+// including local commands, and uses the session-manager ID throughout. It
+// reports SessionStart and input before the transcript is saved.
 // SessionEnd reports replacement, not quit. Tool decisions and Stop blocks
 // return promptly; failures appear in the TUI and do not override valid sibling
 // decisions. Nonblank distinct tool contexts join in registration order. Each

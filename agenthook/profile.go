@@ -211,6 +211,8 @@ func ConfigPath(agent Agent) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unsupported agent hook integration %q", agent)
 	}
+	// OMP publishes PI_CODING_AGENT_DIR in its metadata but named profiles
+	// and the inherited-profile exception must be resolved before that override.
 	if agent == AgentOmp {
 		dir, err := ompAgentDir()
 		if err != nil {

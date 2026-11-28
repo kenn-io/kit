@@ -48,8 +48,9 @@
   terminal's environment.
   The omp module handles only TUI main-agent callbacks, uses the session
   manager's transcript identity even for Stop, and retires only an announced
-  identity upon replacement. It reports interactive input submissions including
-  local commands. Its decision callbacks do not wait for a transcript save;
+  identity upon replacement, preserving the ended session's cwd. It reports
+  SessionStart and interactive input submissions including local commands
+  immediately, even before a transcript exists;
   validate native outputs, report failures in the TUI, return the first valid
   block, and join distinct nonblank tool contexts. Share a 25-second budget
   across callback batches and honor Stop cancellation. Separate Pi and omp
