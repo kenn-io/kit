@@ -1,29 +1,36 @@
 // Package provenance defines the JSON version record a release binary prints
 // and checks the final executable against values its caller expects.
 //
-// [Info] encodes with encoding/json and omits zero-valued fields. Set its
-// SchemaVersion field to the [SchemaVersion] constant, the only record version
-// [Check] accepts.
-// Commit is the full SHA-1 or SHA-256 hash. BuildTime and SourceTime are
-// separate UTC timestamps; never report a source revision's time as the build
-// time. Distribution names the channel the binary was packaged for.
+// The encoding of [Info] is the contract. It writes the supported
+// [SchemaVersion], encodes both timestamps in UTC, and omits zero-valued
+// fields. Commit is the full SHA-1 or SHA-256 hash. BuildTime and SourceTime
+// are separate timestamps: BuildTime is when the binary was built, and
+// SourceTime is the time of the source revision it was built from.
+// Distribution names the channel the binary was packaged for.
 //
 // Adoption is backward compatible: keep the CLI's existing plain version
 // output and flags, and add a flag, such as version --json, that writes only
-// an encoded [Info] to stdout. Stamp the commit from the release pipeline's
-// trusted commit input, here $RELEASE_COMMIT, not from the local checkout.
+// an encoded [Info] to stdout. Stamp every field from the release pipeline's
+// trusted inputs, such as $RELEASE_COMMIT for the commit, rather than from the
+// local checkout.
 //
-// [Check] establishes that the executable reports the supported schema
-// version, the expected version and full commit, the explicitly expected
-// distribution, and the timestamp of the selected [TimeKind] equal to an
-// independently known ExpectedTime. Every expectation in [Want] comes from the
-// caller; which channels exist and which timestamp to stamp stay policy of each
-// caller. After packaging, test the extracted or installed executable:
+// [Check] runs the executable and compares the record it prints with the whole
+// record the pipeline stamped, which the pipeline supplies independently of
+// the binary. The expected record names the version, the full commit, the
+// distribution and at least one timestamp. Every defined field must match.
+// Timestamps match as instants, so equivalent RFC 3339 offsets agree, and a
+// zero expected time requires the binary to report no such timestamp: a
+// pipeline that stamps only a source time passes no BuildTime. Key order and
+// additional schema 1 keys leave the result unchanged. A mismatch reports what
+// the binary printed alongside the expected record.
+//
+// Which channels exist and which timestamps to stamp stay policy of each
+// pipeline, as do extracting the archive or installing the package. Check the
+// resulting release executable after packaging:
 //
 //	func TestReleaseBinary(t *testing.T) {
-//		err := provenance.Check(t.Context(), bin, []string{"version", "--json"}, provenance.Want{
-//			Version: tag, Commit: releaseCommit, Distribution: "tap",
-//			Time: provenance.BuildTime, ExpectedTime: buildTime,
+//		err := provenance.Check(t.Context(), bin, []string{"version", "--json"}, provenance.Info{
+//			Version: tag, Commit: releaseCommit, BuildTime: buildTime, Distribution: "tap",
 //		})
 //		if err != nil {
 //			t.Fatal(err)
