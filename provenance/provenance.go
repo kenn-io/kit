@@ -26,19 +26,12 @@ type Info struct {
 	Distribution  string    `json:"distribution,omitzero"`
 }
 
-// MarshalJSON stamps the supported schema and encodes timestamps in UTC.
-func (i Info) MarshalJSON() ([]byte, error) {
-	type record Info
-	i.SchemaVersion = SchemaVersion
-	i.BuildTime = i.BuildTime.UTC()
-	i.SourceTime = i.SourceTime.UTC()
-	return json.Marshal(record(i))
-}
-
 // Check runs the binary and compares its JSON provenance with want.
 func Check(ctx context.Context, path string, args []string, want Info) error {
 	_, hexErr := hex.DecodeString(want.Commit)
 	switch {
+	case want.SchemaVersion != SchemaVersion:
+		return fmt.Errorf("invalid expectation: unsupported schema_version: %d (want %d)", want.SchemaVersion, SchemaVersion)
 	case want.Version == "":
 		return errors.New("invalid expectation: version is required")
 	case (len(want.Commit) != 40 && len(want.Commit) != 64) || hexErr != nil:
@@ -60,7 +53,9 @@ func Check(ctx context.Context, path string, args []string, want Info) error {
 		prefix := out[:min(len(out), 200)]
 		return fmt.Errorf("decode provenance JSON: %w; got: %q", err, prefix)
 	}
-	want.SchemaVersion = SchemaVersion
+	if got.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("unsupported observed schema_version: %d (want %d)", got.SchemaVersion, SchemaVersion)
+	}
 	got.BuildTime, got.SourceTime = got.BuildTime.UTC(), got.SourceTime.UTC()
 	want.BuildTime, want.SourceTime = want.BuildTime.UTC(), want.SourceTime.UTC()
 	if got != want {

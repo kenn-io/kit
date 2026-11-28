@@ -37,5 +37,5 @@ func main() {
 		}
 		return t
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(provenance.Info{Version: version, Commit: commit, BuildTime: parse(buildTime), SourceTime: parse(sourceTime), Distribution: distribution})
+	_ = json.NewEncoder(os.Stdout).Encode(provenance.Info{SchemaVersion: provenance.SchemaVersion, Version: version, Commit: commit, BuildTime: parse(buildTime), SourceTime: parse(sourceTime), Distribution: distribution})
 }

@@ -40,7 +40,7 @@ func fixture(t *testing.T, stamps map[string]string) string {
 func expected() Info {
 	build, _ := time.Parse(time.RFC3339, buildStamp)
 	source, _ := time.Parse(time.RFC3339, sourceStamp)
-	return Info{Version: "1.2.3", Commit: commit, Distribution: "tap", BuildTime: build, SourceTime: source}
+	return Info{SchemaVersion: SchemaVersion, Version: "1.2.3", Commit: commit, Distribution: "tap", BuildTime: build, SourceTime: source}
 }
 
 func TestCheckRejectsWrongSecondaryTimestamp(t *testing.T) {
@@ -54,7 +54,19 @@ func TestCheckRejectsWrongSecondaryTimestamp(t *testing.T) {
 func TestInfoJSON(t *testing.T) {
 	data, err := json.Marshal(Info{SchemaVersion: 42, BuildTime: expected().BuildTime.In(time.FixedZone("offset", 3600))})
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"schema_version":1,"build_time":"2026-01-02T03:04:05Z"}`, string(data))
+	assert.JSONEq(t, `{"schema_version":42,"build_time":"2026-01-02T04:04:05+01:00"}`, string(data))
+}
+
+func TestFutureSchemaRoundTripRemainsUnsupported(t *testing.T) {
+	input := `{"schema_version":2,"version":"1.2.3","commit":"` + commit + `","distribution":"tap","build_time":"` + buildStamp + `","source_time":"` + sourceStamp + `","future_field":true}`
+	var info Info
+	require.NoError(t, json.Unmarshal([]byte(input), &info))
+	output, err := json.Marshal(info)
+	require.NoError(t, err)
+	assert.Contains(t, string(output), `"schema_version":2`)
+	want := expected()
+	path := fixture(t, nil)
+	require.ErrorContains(t, Check(t.Context(), path, []string{"output", string(output)}, want), "unsupported observed schema_version: 2")
 }
 
 func TestCheckFinalBinary(t *testing.T) {
@@ -88,8 +100,8 @@ func TestCheckFinalBinary(t *testing.T) {
 		{"reordered offset additive", valid, ""},
 		{"case variant", strings.Replace(valid, `"version"`, `"Version"`, 1), ""},
 		{"malformed", "{", "decode provenance JSON"},
-		{"missing schema", strings.Replace(valid, `"schema_version":1,`, "", 1), `"schema_version":1`},
-		{"future schema", strings.Replace(valid, `"schema_version":1`, `"schema_version":2`, 1), `"schema_version":2`},
+		{"missing schema", strings.Replace(valid, `"schema_version":1,`, "", 1), "unsupported observed schema_version: 0"},
+		{"future schema", strings.Replace(valid, `"schema_version":1`, `"schema_version":2`, 1), "unsupported observed schema_version: 2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := Check(t.Context(), path, []string{"output", tc.output}, want)
@@ -134,6 +146,11 @@ func TestLinkedArtifacts(t *testing.T) {
 }
 
 func TestInvalidExpectations(t *testing.T) {
+	for _, schema := range []int{0, 2} {
+		want := expected()
+		want.SchemaVersion = schema
+		require.ErrorContains(t, Check(t.Context(), "nonexistent", nil, want), "invalid expectation: unsupported schema_version")
+	}
 	for _, change := range []func(*Info){func(i *Info) { i.Version = "" }, func(i *Info) { i.Commit = "short" }, func(i *Info) { i.Distribution = "" }, func(i *Info) { i.BuildTime = time.Time{}; i.SourceTime = time.Time{} }} {
 		want := expected()
 		change(&want)
