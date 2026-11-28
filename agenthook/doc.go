@@ -7,7 +7,7 @@
 // of lifecycle hooks while support for new agents stays centralized in kit.
 // Profiles are provided for Antigravity CLI (agy), Claude Code, Codex, GitHub
 // Copilot CLI, Cursor, Factory Droid, Gemini CLI, Hermes Agent, Muse Code,
-// OpenCode, Pi, and Qwen Code. The agy profile maps UserPromptSubmit to
+// omp, OpenCode, Pi, and Qwen Code. The agy profile maps UserPromptSubmit to
 // PreInvocation, which agy runs before every model call in a turn, and has no
 // SessionEnd or PostToolUse. Pi and
 // OpenCode have no command-hook config, so their profiles write a kit-owned
@@ -25,6 +25,16 @@
 // Pi's extensions directory stops Pi from loading the module. It needs Pi
 // 0.80.4 or later. The OpenCode 2.x TUI plugin reports the root session its
 // terminal shows and that session's lifecycle events.
+// The omp profile installs extensions/agenthook-omp.js in the selected agent
+// directory. Set ConfigPath explicitly when using omp's CLI-only --profile.
+// Its main interactive session reports submissions at the input boundary,
+// including local commands, and uses the transcript session ID throughout.
+// SessionEnd reports replacement, not quit. Tool decisions and Stop blocks
+// return promptly; failures appear in the TUI and do not override valid sibling
+// decisions. Nonblank distinct tool contexts join in registration order. Each
+// callback has a 25-second shared budget; Stop also honors its cancellation.
+// Reinstall Pi's module to prevent duplicate Pi reports in a directory shared
+// with omp. The omp mappings follow omp v19.2.1; session_stop needs v16.1.0.
 // Several terminals can report the same session_id, so hosts should keep one
 // record per terminal.
 //

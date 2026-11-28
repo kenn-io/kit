@@ -51,7 +51,10 @@ export default function (pi) {
 	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/extensions/types.ts#L323-L335
 	const on = (name, handler) =>
 		pi.on(name, async (event, ctx) => {
-			if (ctx.mode !== "tui") return;
+			// OMP v19.2.1 supplies agent identity; Pi's pinned context does not:
+			// https://github.com/can1357/oh-my-pi/blob/v19.2.1/packages/coding-agent/src/extensibility/extensions/types.ts#L891-L893
+			// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/extensions/types.ts#L325-L335
+			if (ctx.mode !== "tui" || ctx.agent?.kind) return;
 			const failures = [];
 			await handler(event, ctx, failures);
 			if (failures.length > 0) throw new Error(failures.join("; "));

@@ -317,6 +317,8 @@ func encodeResponse(spec profileSpec, event Event, output handledOutput) ([]byte
 		response, err = encodeGeminiResponse(event, output.value)
 	case responseHermes:
 		response, err = encodeHermesResponse(event, output.value)
+	case responseOmp:
+		response, err = encodeOmpResponse(event, output.value)
 	case responseObservational:
 		if !isZeroOutput(output.value) {
 			return nil, fmt.Errorf(

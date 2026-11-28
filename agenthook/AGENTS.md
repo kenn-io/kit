@@ -30,7 +30,7 @@
   timeout units, timeout fields, failure policy, and cross-platform command
   fields. Decision-bearing Cursor registrations are fail-closed because Cursor
   otherwise allows the operation when a hook crashes or emits invalid JSON.
-- Script profiles (Pi, OpenCode) own one kit-named module. Edit only its delimited
+- Script profiles (Pi, OpenCode, omp) own one kit-named module. Edit only its delimited
   registration block, refuse a file without that block, rewrite the runtime
   on every write, delete the module when uninstall removes its last hook, and
   spawn registered argv without a shell on every OS. The runtime stops waiting
@@ -46,6 +46,14 @@
   A script profile must run its hook commands from the process the user's
   terminal started, never from a shared server, so each report carries that
   terminal's environment.
+  The omp module handles only TUI main-agent callbacks, uses the session
+  manager's transcript identity even for Stop, and retires only an announced
+  identity upon replacement. It reports interactive input submissions including
+  local commands. Its decision callbacks do not wait for a transcript save;
+  validate native outputs, report failures in the TUI, return the first valid
+  block, and join distinct nonblank tool contexts. Share a 25-second budget
+  across callback batches and honor Stop cancellation. Separate Pi and omp
+  filenames allow a shared directory; reinstall Pi to upgrade its omp guard.
   The OpenCode module retires its reported root with SessionEnd as soon as
   its terminal shows a session with another root or that root is deleted,
   and never from cleanup, which also runs on hot reload and reinstall. Setup

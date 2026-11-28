@@ -16,7 +16,8 @@ import (
 
 // Hook describes one command registration using Claude Code event and matcher
 // names. An empty matcher observes every invocation of the event. A zero timeout
-// omits the timeout field and lets the harness use its default.
+// omits the timeout field and lets the harness use its default. OMP accepts
+// only the Bash matcher on its three tool events; Pi and OpenCode accept none.
 type Hook struct {
 	Event   Event
 	Matcher string
@@ -245,8 +246,13 @@ func prepareInstall(agent Agent, opts InstallOptions) (profileSpec, string, []na
 		if spec.format == formatHermesYAML && hook.Timeout > 300*time.Second {
 			return profileSpec{}, "", nil, errors.New("Hermes hook timeout must not exceed 300 seconds")
 		}
-		// The generated module runs every command for its event, so a matcher would be dropped silently.
-		if spec.format == formatScript && strings.TrimSpace(hook.Matcher) != "" {
+		// OMP filters exact native shell names; other script matchers would be dropped.
+		if spec.format == formatScript && strings.TrimSpace(hook.Matcher) != "" &&
+			!(agent == AgentOmp && strings.TrimSpace(hook.Matcher) == ToolBash &&
+				(hook.Event == EventPreToolUse || hook.Event == EventPostToolUse || hook.Event == EventPostToolUseFailure)) {
+			if agent == AgentOmp {
+				return profileSpec{}, "", nil, errors.New("omp supports only the Bash matcher on tool events")
+			}
 			return profileSpec{}, "", nil, fmt.Errorf("%s hooks do not support matchers", spec.profile.DisplayName)
 		}
 		matcher := nativeMatcher(spec, strings.TrimSpace(hook.Matcher))

@@ -520,3 +520,50 @@ func encodeAgyResponse(event Event, value any) (map[string]any, error) {
 	}
 	return response, nil
 }
+
+// OMP's extension result shapes: https://github.com/can1357/oh-my-pi/blob/v19.2.1/packages/coding-agent/src/extensibility/shared-events.ts#L345-L411
+func encodeOmpResponse(event Event, value any) (map[string]any, error) {
+	response := map[string]any{}
+	if isZeroOutput(value) {
+		return response, nil
+	}
+	switch output := value.(type) {
+	case PreToolUseOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if len(output.UpdatedInput) > 0 || (output.PermissionDecision != "" && output.PermissionDecision != PermissionDecisionDeny) || (output.PermissionDecision == "" && output.PermissionDecisionReason != "") {
+			return nil, errors.New("unsupported PreToolUse output fields")
+		}
+		if output.PermissionDecision == PermissionDecisionDeny {
+			response["block"] = true
+			addValue(response, "reason", output.PermissionDecisionReason)
+		}
+		addValue(response, "additionalContext", output.AdditionalContext)
+	case PostToolUseOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.Decision != "" || output.Reason != "" || len(output.UpdatedToolOutput) > 0 || len(output.UpdatedMCPToolOutput) > 0 {
+			return nil, errors.New("unsupported PostToolUse output fields")
+		}
+		addValue(response, "additionalContext", output.AdditionalContext)
+	case PostToolUseFailureOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		addValue(response, "additionalContext", output.AdditionalContext)
+	case StopOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.Decision != DecisionBlock || output.AdditionalContext != "" {
+			return nil, errors.New("unsupported Stop output fields")
+		}
+		response["decision"] = "block"
+		addValue(response, "reason", output.Reason)
+	default:
+		return nil, fmt.Errorf("omp does not support %s control output", event)
+	}
+	return response, nil
+}
