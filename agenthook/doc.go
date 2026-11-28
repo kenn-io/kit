@@ -34,8 +34,8 @@
 // return promptly; failures appear in the TUI and do not override valid sibling
 // decisions. Nonblank distinct tool contexts join in registration order. Each
 // callback has a 25-second shared budget; Stop also honors its cancellation.
-// Reinstall Pi's module to prevent duplicate Pi reports in a directory shared
-// with omp. The omp mappings follow omp v19.2.1; session_stop needs v16.1.0.
+// When a shared directory contains a legacy Kit Pi module, omp installation
+// requires reinstalling its existing Pi registrations with updated Kit first. The omp mappings follow omp v19.2.1; session_stop needs v16.1.0.
 // Several terminals can report the same session_id, so hosts should keep one
 // record per terminal.
 //

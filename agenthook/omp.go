@@ -2,6 +2,7 @@ package agenthook
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,4 +69,30 @@ func ompAgentDir() (string, error) {
 		return filepath.Abs(override)
 	}
 	return filepath.Join(root, "agent"), nil
+}
+
+// checkOmpPiModule prevents duplicate reports from an older Kit-generated Pi
+// module in the same extension directory. It never changes Pi registrations.
+func checkOmpPiModule(ompPath string) error {
+	piPath := filepath.Join(filepath.Dir(ompPath), filepath.Base(piProfile().profile.ConfigFilename))
+	data, err := os.ReadFile(piPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read Pi extension %s: %w", piPath, err)
+	}
+	if !strings.HasPrefix(string(data), scriptGeneratedHeader) {
+		return nil
+	}
+	if _, err := scriptBlock(data, piPath); err != nil {
+		return nil
+	}
+	_, module, found := strings.Cut(string(data), "\n"+scriptBlockEnd+"\n")
+	// Look outside the registration block so an argument cannot impersonate the guard.
+	if found && strings.Contains(module, "export default function (pi) {") &&
+		!strings.Contains(module, "// agenthook:omp-guarded") {
+		return fmt.Errorf("legacy Kit Pi extension %s can duplicate omp events; reinstall existing Pi registrations with updated Kit, then install omp", piPath)
+	}
+	return nil
 }

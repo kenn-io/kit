@@ -72,6 +72,11 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if agent == AgentOmp {
+		if err := checkOmpPiModule(path); err != nil {
+			return Result{}, err
+		}
+	}
 	data, changed, err := planConfig(
 		spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false, opts.WorkspaceDir, opts.ReplaceMoved,
 	)

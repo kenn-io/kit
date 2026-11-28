@@ -324,3 +324,88 @@ func TestOmpStopHonorsCancellation(t *testing.T) {
 	_, err = os.Stat(marker)
 	assert.True(t, os.IsNotExist(err))
 }
+
+func TestOmpInstallRefusesLegacyPiModule(t *testing.T) {
+	dir := t.TempDir()
+	piPath := filepath.Join(dir, filepath.Base(piProfile().profile.ConfigFilename))
+	ompPath := filepath.Join(dir, "agenthook-omp.js")
+	piOpts := InstallOptions{ConfigPath: piPath, Executable: os.Args[0], Arguments: []string{"pi-fixture-marker", "// agenthook:omp-guarded"}, Marker: "pi-fixture-marker", Hooks: []Hook{{Event: EventSessionStart}}}
+	_, err := Install(AgentPi, piOpts)
+	require.NoError(t, err)
+	modern, err := os.ReadFile(piPath)
+	require.NoError(t, err)
+	legacy := strings.Replace(string(modern), "\t\t\t// agenthook:omp-guarded\n", "", 1)
+	legacy = strings.Replace(legacy, `if (ctx.mode !== "tui" || ctx.agent?.kind) return;`, `if (ctx.mode !== "tui") return;`, 1)
+	require.NotEqual(t, string(modern), legacy)
+	require.NoError(t, os.WriteFile(piPath, []byte(legacy), 0o600))
+	opts := InstallOptions{ConfigPath: ompPath, Executable: os.Args[0], Arguments: []string{"omp-fixture-marker"}, Marker: "omp-fixture-marker", Hooks: []Hook{{Event: EventSessionStart}}}
+	_, err = PlanInstall(AgentOmp, opts)
+	require.ErrorContains(t, err, "reinstall")
+	_, err = Install(AgentOmp, opts)
+	require.ErrorContains(t, err, "reinstall")
+	_, err = os.Stat(ompPath)
+	assert.True(t, os.IsNotExist(err))
+	after, err := os.ReadFile(piPath)
+	require.NoError(t, err)
+	assert.Equal(t, legacy, string(after))
+	_, err = Install(AgentPi, piOpts)
+	require.NoError(t, err)
+	refreshed, err := os.ReadFile(piPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(modern), string(refreshed))
+	_, err = Install(AgentOmp, opts)
+	require.NoError(t, err)
+	after, err = os.ReadFile(piPath)
+	require.NoError(t, err)
+	assert.Equal(t, refreshed, after)
+	originalOMP, err := os.ReadFile(ompPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(piPath, []byte(legacy), 0o600))
+	opts.Arguments = append(opts.Arguments, "changed")
+	_, err = Install(AgentOmp, opts)
+	require.ErrorContains(t, err, "reinstall")
+	afterOMP, err := os.ReadFile(ompPath)
+	require.NoError(t, err)
+	assert.Equal(t, originalOMP, afterOMP)
+}
+
+func TestOmpInstallIgnoresCustomPiModule(t *testing.T) {
+	dir := t.TempDir()
+	piPath := filepath.Join(dir, filepath.Base(piProfile().profile.ConfigFilename))
+	opts := InstallOptions{ConfigPath: filepath.Join(dir, "omp.js"), Executable: os.Args[0], Arguments: []string{"fixture-marker"}, Marker: "fixture-marker", Hooks: []Hook{{Event: EventStop}}}
+	for _, content := range []string{
+		"// custom module\n",
+		scriptGeneratedHeader + scriptBlockBegin + "\nconst config = {};\n" + scriptBlockEnd + "\nexport default function (custom) {}\n",
+	} {
+		require.NoError(t, os.WriteFile(piPath, []byte(content), 0o600))
+		_, err := PlanInstall(AgentOmp, opts)
+		require.NoError(t, err)
+	}
+}
+
+func TestOmpAndRefreshedPiCoexist(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node unavailable")
+	}
+	dir := t.TempDir()
+	piPath := filepath.Join(dir, filepath.Base(piProfile().profile.ConfigFilename))
+	ompPath := filepath.Join(dir, "agenthook-omp.js")
+	log := filepath.Join(dir, "events")
+	for _, tc := range []struct {
+		agent        Agent
+		path, marker string
+	}{{AgentPi, piPath, "pi-marker"}, {AgentOmp, ompPath, "omp-marker"}} {
+		script := fmt.Sprintf(`process.stdin.resume();process.stdin.on("end",()=>require("fs").appendFileSync(process.env.OMP_TEST_LOG,%q+"\n"))`, tc.marker)
+		_, err = Install(tc.agent, InstallOptions{ConfigPath: tc.path, Executable: node, Arguments: []string{"-e", script, tc.marker}, Marker: tc.marker, Hooks: []Hook{{Event: EventSessionStart}}})
+		require.NoError(t, err)
+	}
+	driver := `import {pathToFileURL} from "node:url";import {writeFileSync} from "node:fs";let pi={},omp={};(await import(pathToFileURL(process.argv[1]))).default({on:(n,f)=>pi[n]=f});(await import(pathToFileURL(process.argv[2]))).default({on:(n,f)=>omp[n]=f});let f=process.argv[3]+"/session";writeFileSync(f,"fixture");let c={mode:"tui",cwd:process.argv[3],ui:{notify:console.error},sessionManager:{getSessionId:()=>"id",getSessionFile:()=>f}};await pi.session_start({reason:"startup"},c);await omp.session_start({},c);let o={...c,agent:{kind:"main"}};await pi.session_start({reason:"startup"},o);await omp.session_start({},o);`
+	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, piPath, ompPath, dir)
+	cmd.Env = append(os.Environ(), "OMP_TEST_LOG="+log)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	data, err := os.ReadFile(log)
+	require.NoError(t, err)
+	assert.Equal(t, "pi-marker\nomp-marker\n", string(data))
+}
