@@ -409,3 +409,28 @@ func TestOmpIgnoresCustomSiblingModule(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "event\nevent\n", string(data))
 }
+
+func TestOmpReportsWhenSiblingCannotBeRead(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node unavailable")
+	}
+	dir := t.TempDir()
+	ompPath := filepath.Join(dir, "agenthook-omp.js")
+	log := filepath.Join(dir, "events")
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "agenthook.js"), 0o700))
+	_, err = Install(AgentOmp, InstallOptions{ConfigPath: ompPath, Executable: node, Arguments: []string{"-e", `process.stdin.resume();process.stdin.on("end",()=>require("fs").appendFileSync(process.env.OMP_TEST_LOG,"event\n"))`, "omp-marker"}, Marker: "omp-marker", Hooks: []Hook{{Event: EventSessionStart}}})
+	require.NoError(t, err)
+	driver := `import {pathToFileURL} from "node:url";let warnings=[],h={};(await import(pathToFileURL(process.argv[1]))).default({on:(n,f)=>h[n]=f});let c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:x=>warnings.push(x)},sessionManager:{getSessionId:()=>"id",getSessionFile:()=>undefined}};await h.session_start({},c);await h.session_start({},c);console.log(JSON.stringify(warnings));`
+	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, ompPath, dir)
+	cmd.Env = append(os.Environ(), "OMP_TEST_LOG="+log)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	var warnings []string
+	require.NoError(t, json.Unmarshal(out, &warnings))
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "cannot inspect")
+	data, err := os.ReadFile(log)
+	require.NoError(t, err)
+	assert.Equal(t, "event\nevent\n", string(data))
+}

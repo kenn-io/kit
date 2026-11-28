@@ -50,7 +50,6 @@ export default function (omp) {
 				incompatible = legacyPiModule();
 				if (incompatible) ctx.ui.notify(`agenthook: legacy Pi extension ${piModulePath} can duplicate omp events; reinstall existing Pi registrations with updated Kit, then restart omp`, "error");
 			} catch (error) {
-				incompatible = true;
 				ctx.ui.notify(`agenthook: cannot inspect Pi extension ${piModulePath}: ${error.message}`, "error");
 			}
 		}
