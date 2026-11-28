@@ -1,7 +1,8 @@
 ---
+type: Guide
 title: "Adopting Bombadil for UI property tests"
 description: "Add bounded, isolated browser property testing to Kenn applications without replacing deterministic regression tests."
-last_edited: 2026-11-19
+generated: { by: codex/gpt-6.2-sol, at: "2026-11-28T16:24:49Z" }
 ---
 
 # Adopting Bombadil for UI property tests
@@ -12,7 +13,7 @@ that have a browser UI, alongside the unit and integration tests that exercise
 their Go packages. Kit itself has no application UI to explore, so this guide
 adds no browser dependency to Kit's Go module or default test targets.
 
-This is a different layer from Go property testing with Rapid or Hegel. Bombadil
+This is a different layer from Go property testing with Rapid. Bombadil
 is useful for finding unexpected navigation, input and viewport interactions;
 it does not prove that every workflow works or that a layout matches a design.
 Keep deterministic regressions, accessibility checks and visual comparisons.
@@ -45,9 +46,8 @@ npm install --save-dev --save-exact @antithesishq/bombadil@0.8.0
 ./node_modules/.bin/bombadil browser test --help
 ```
 
-Use the application's existing package manager if it is not npm. Upstream
-supports local macOS and Linux execution and publishes platform binaries and
-an npm package. See the [installation manual](https://antithesishq.github.io/bombadil/browser/2.1-installation.html)
+Use the application's existing package manager if it is not npm. Upstream publishes binaries for
+Apple silicon macOS and x86-64 Linux, plus the npm package. See the [installation manual](https://antithesishq.github.io/bombadil/browser/2.1-installation.html)
 for current platform requirements. Do not invent a Homebrew dependency or
 silently disable the browser sandbox to make a test launch.
 
@@ -122,7 +122,7 @@ Inspect a failure and reproduce it against reset fixture state:
 
 ```sh
 ./node_modules/.bin/bombadil browser inspect "$trace_file"
-# After inspecting, press Ctrl-C to stop the server before replaying.
+# Stop the inspector before replaying. Pass --no-open to inspect on a headless host.
 replay_dir=$(mktemp -d .bombadil/replay.XXXXXX) || exit 1
 ./node_modules/.bin/bombadil browser test \
   --headless --reproduce "$trace_file" \
