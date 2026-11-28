@@ -26,7 +26,8 @@ func TestScriptRuntimeResponses(t *testing.T) {
 
 const scriptResponseDriver = `
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 const dir = process.argv[2];
 const marker = dir + "/marker";
 const command = (script, matcher) => ({ matcher, hooks: [{ command: process.execPath, args: ["-e", script] }] });
@@ -50,20 +51,64 @@ config.hooks.test = [command('process.stdout.write("{\\"stop\\":true}")'), comma
 const stopped = await runHooks("test", {cwd:dir}, {collect:true, stop: r => r.stop});
 assert.deepEqual(stopped.responses, [{stop:true}]);
 assert.deepEqual(stopped.failures, []);
-config.hooks.test = [command('process.stdout.write("{\\"first\\":true}")'), command('setTimeout(()=>{}, 10000)'), command('throw Error("should not run")')];
-const budget = await runHooks("test", {cwd:dir}, {collect:true, budgetMs:500});
+// Synchronize on the second child actually starting before firing either
+// deadline. A fake budget clock makes the shared timer deterministic even on
+// a loaded runner; the command timeout remains a real timer.
+const waitFor = async (path) => {
+ const deadline = Date.now() + 30000;
+ while (!existsSync(path)) {
+  if (Date.now() >= deadline) throw new Error("child did not start: " + path);
+  await delay(20);
+ }
+};
+const entries = () => [
+ command('process.stdout.write("{\\"first\\":true}")'),
+ command('require("fs").writeFileSync(process.argv[1], "started"); setTimeout(()=>{}, 60000)'),
+ command('require("fs").writeFileSync(process.argv[1], "unexpected")'),
+];
+const budgetStarted = dir + "/budget-started";
+const budgetLater = dir + "/budget-later";
+config.hooks.test = entries();
+config.hooks.test[1].hooks[0].args.push(budgetStarted);
+config.hooks.test[2].hooks[0].args.push(budgetLater);
+const realSetTimeout = globalThis.setTimeout;
+let expireBudget, budgetTimers = 0;
+globalThis.setTimeout = (callback, ms, ...args) => {
+ if (ms === 43210) { budgetTimers++; expireBudget = callback; return realSetTimeout(callback, 30000); }
+ return realSetTimeout(callback, ms, ...args);
+};
+let budget;
+try {
+ const running = runHooks("test", {cwd:dir}, {collect:true, budgetMs:43210});
+ await waitFor(budgetStarted);
+ expireBudget();
+ budget = await running;
+} finally {
+ if (expireBudget) expireBudget();
+ globalThis.setTimeout = realSetTimeout;
+}
+assert.equal(budgetTimers, 1);
 assert.deepEqual(budget.responses, [{first:true}]);
 assert.equal(budget.failures.length, 1);
+assert.match(budget.failures[0], /callback budget exceeded/);
+assert.equal(existsSync(budgetLater), false);
 config.hooks.test = [command('setTimeout(()=>{}, 10000)')];
 config.hooks.test[0].hooks[0].timeout = 0.1;
 const timed = await runHooks("test", {cwd:dir}, {collect:true});
 assert.match(timed.failures[0], /timed out/);
-config.hooks.test = [command('process.stdout.write("{\\"first\\":true}")'), command('setTimeout(()=>{}, 10000)'), command('throw Error("should not run")')];
+const cancelStarted = dir + "/cancel-started";
+const cancelLater = dir + "/cancel-later";
+config.hooks.test = entries();
+config.hooks.test[1].hooks[0].args.push(cancelStarted);
+config.hooks.test[2].hooks[0].args.push(cancelLater);
 const controller = new AbortController();
-setTimeout(() => controller.abort(), 300);
-const cancelled = await runHooks("test", {cwd:dir}, {collect:true, signal:controller.signal});
+const running = runHooks("test", {cwd:dir}, {collect:true, signal:controller.signal});
+try { await waitFor(cancelStarted); } finally { controller.abort(); }
+const cancelled = await running;
 assert.deepEqual(cancelled.responses, [{first:true}]);
 assert.equal(cancelled.failures.length, 1);
+assert.match(cancelled.failures[0], /cancelled/);
+assert.equal(existsSync(cancelLater), false);
 // A descendant holds stdout open after the parent writes a complete response.
 config.hooks.test = [command(` + "`" + `const {spawn} = require("node:child_process");
 const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},10000)"], {stdio:["ignore", "inherit", "ignore"]});
