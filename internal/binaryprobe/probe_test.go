@@ -2,9 +2,12 @@ package binaryprobe
 
 import (
 	"bytes"
+	"context"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,6 +16,19 @@ import (
 func TestProbeHelper(t *testing.T) {
 	if os.Getenv("BINARYPROBE_HELPER") == "" {
 		return
+	}
+	if os.Getenv("BINARYPROBE_HELPER") == "hold" {
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProbeHelper$")
+		cmd.Env = append(os.Environ(), "BINARYPROBE_HELPER=sleep")
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if cmd.Start() != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	if os.Getenv("BINARYPROBE_HELPER") == "sleep" {
+		time.Sleep(7 * time.Second) //nolint:kennlint // sleeptest: the descendant must hold the pipe beyond WaitDelay
+		os.Exit(0)
 	}
 	if os.Getenv("BINARYPROBE_HELPER") == "large" {
 		_, _ = os.Stdout.WriteString(strings.Repeat("x", 17<<10))
@@ -44,8 +60,16 @@ func TestRun(t *testing.T) {
 	assert.Contains(t, err.Error(), "stderr message")
 	t.Setenv("BINARYPROBE_HELPER", "large")
 	_, err = Run(t.Context(), binary, []string{"-test.run=^TestProbeHelper$"})
-	require.ErrorContains(t, err, "stdout")
+	require.ErrorContains(t, err, "stdout exceeds")
 	require.NoError(t, RunDiscard(t.Context(), binary, []string{"-test.run=^TestProbeHelper$"}))
+	t.Setenv("BINARYPROBE_HELPER", "hold")
+	err = RunDiscard(t.Context(), binary, []string{"-test.run=^TestProbeHelper$"})
+	require.ErrorIs(t, err, exec.ErrWaitDelay)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err = RunDiscard(ctx, binary, []string{"-test.run=^TestProbeHelper$"})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, context.Canceled.Error(), err.Error())
 }
 
 func TestOutputPrefix(t *testing.T) {

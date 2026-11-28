@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"go.kenn.io/kit/provenance"
@@ -17,9 +16,6 @@ func main() {
 		switch os.Args[1] {
 		case "output":
 			fmt.Print(os.Args[2])
-			return
-		case "large":
-			fmt.Print(os.Args[2], strings.Repeat(" ", 17<<10), "junk")
 			return
 		case "fail":
 			fmt.Fprint(os.Stderr, "fixture failed")
