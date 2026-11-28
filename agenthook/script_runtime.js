@@ -51,13 +51,12 @@ function runCommand(handler, payload, options = {}) {
 			const detail = stderr.trim();
 			if (!failure && overflow) failure = `stdout exceeds ${stdoutLimit} bytes`;
 			let response;
-			if (!failure && options.collect && stdoutBytes > 0) {
+			if (!failure && options.collect) {
 				const text = Buffer.concat(stdout).toString("utf8").trim();
 				if (text) {
 					try {
 						response = JSON.parse(text);
 						if (!response || typeof response !== "object" || Array.isArray(response)) throw new Error("expected an object");
-						if (Object.keys(response).length === 0) response = undefined;
 					} catch (error) { response = undefined; failure = `invalid stdout JSON object: ${error.message}`; }
 				}
 			}

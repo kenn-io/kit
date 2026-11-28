@@ -43,7 +43,7 @@ const config = { hooks: { test: [
 // Supply the marker path to the two commands which use it.
 for (const entry of config.hooks.test.slice(-2)) entry.hooks[0].args.push(marker);
 const result = await runHooks("test", {cwd: dir}, {collect: true});
-assert.deepEqual(result.responses, [{n:1, text:"é"}, {n:2}]);
+assert.deepEqual(result.responses, [{n:1, text:"é"}, {}, {n:2}]);
 assert.equal(result.failures.length, 4);
 assert.equal(readFileSync(marker, "utf8"), "firstsecond");
 config.hooks.test = [command('setTimeout(()=>{}, 10000)')];

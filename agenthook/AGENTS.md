@@ -36,9 +36,9 @@
   spawn registered argv without a shell on every OS. The runtime stops waiting
   for a command shortly after it exits even when a process it started still
   holds stdout or stderr, and keeps draining both pipes without holding the
-  harness open. Response collection is opt-in: retain ordered nonempty JSON
-  objects from successful commands, report failures separately, and cap stdout
-  at 16 MiB.
+  harness open. Response collection is opt-in: retain ordered JSON objects from
+  successful commands, treat blank stdout as no response, report failures
+  separately, and cap stdout at 16 MiB.
   The Pi module reports only from Pi's interactive terminal (`ctx.mode` is
   `tui`), so print, json, and rpc runs, subagents included, stay silent. It
   needs Pi 0.80.4 or later (`ctx.mode` 0.78.1, `agent_settled` 0.80.4).
