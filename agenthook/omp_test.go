@@ -56,35 +56,6 @@ func TestOmpResponse(t *testing.T) {
 	}
 }
 
-func TestOmpExtensionStopUsesTranscriptIdentity(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node unavailable")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agenthook.mjs")
-	log := filepath.Join(dir, "events")
-	_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", `let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{require("fs").appendFileSync(process.env.OMP_TEST_LOG,s+"\n");if(JSON.parse(s).hook_event_name==="Stop")process.stdout.write('{"decision":"block","reason":"continue"}')})`, "fixture-marker"}, Marker: "fixture-marker", Hooks: []Hook{{Event: EventSessionStart}, {Event: EventStop}}})
-	require.NoError(t, err)
-	_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", "process.exit(1)", "other-marker"}, Marker: "other-marker", Hooks: []Hook{{Event: EventStop}}})
-	require.NoError(t, err)
-	_, err = Uninstall(AgentOmp, path, "other-marker")
-	require.NoError(t, err)
-	driver := ompHost + `import {writeFileSync} from "node:fs";
- let f=process.argv[2]+"/session";writeFileSync(f,"fixture");let c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>"transcript",getSessionFile:()=>f}};
- await h.session_start({reason:"startup"},c); let r=await h.session_stop({session_id:"provider",session_file:f,stop_hook_active:true},c); console.log(JSON.stringify(r));`
-	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
-	cmd.Env = append(os.Environ(), "OMP_TEST_LOG="+log)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	assert.JSONEq(t, `{"decision":"block","reason":"continue"}`, strings.TrimSpace(string(out)))
-	data, err := os.ReadFile(log)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), `"session_id":"transcript"`)
-	assert.NotContains(t, string(data), `"session_id":"provider"`)
-	assert.Contains(t, string(data), `"stop_hook_active":true`)
-}
-
 func TestOmpConfigPathProfiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -98,6 +69,11 @@ func TestOmpConfigPathProfiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(home, ".omp", "agent", tail), got)
 	t.Setenv("PI_PROFILE", "work")
+	require.NoError(t, os.Unsetenv("OMP_PROFILE"))
+	got, err = ConfigPath(AgentOmp)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".omp", "profiles", "work", "agent", tail), got)
+	t.Setenv("OMP_PROFILE", "")
 	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(home, ".omp", "profiles", "work", "agent"))
 	got, err = ConfigPath(AgentOmp)
 	require.NoError(t, err)
@@ -207,6 +183,28 @@ func TestOmpToolFailuresAndDecision(t *testing.T) {
 	assert.JSONEq(t, `{"block":true,"reason":"denied"}`, lines[0])
 	assert.Contains(t, lines[1], "invalid PreToolUse response")
 	assert.Contains(t, lines[1], "fixture failure")
+	t.Run("context and matcher", func(t *testing.T) {
+		node, err := exec.LookPath("node")
+		if err != nil {
+			t.Skip("node unavailable")
+		}
+		dir := t.TempDir()
+		path := filepath.Join(dir, "omp.mjs")
+		for _, tc := range []struct{ marker, output, matcher string }{{"first", `{"additionalContext":" first "}`, ""}, {"second", `{"additionalContext":"second"}`, ""}, {"bash", `{"additionalContext":"bash only"}`, ToolBash}} {
+			script := fmt.Sprintf(`process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(%q))`, tc.output)
+			_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", script, tc.marker}, Marker: tc.marker, Hooks: []Hook{{Event: EventPreToolUse, Matcher: tc.matcher}}})
+			require.NoError(t, err)
+		}
+		driver := ompHost + `let c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>"id",getSessionFile:()=>undefined}};let e={toolName:"read",toolCallId:"1",input:{}};for(const fn of handlers.tool_call)console.log(JSON.stringify((await fn(e,c)) ?? null));`
+		cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		require.Len(t, lines, 3)
+		assert.JSONEq(t, `{"additionalContext":" first "}`, lines[0])
+		assert.JSONEq(t, `{"additionalContext":"second"}`, lines[1])
+		assert.JSONEq(t, `null`, lines[2])
+	})
 }
 
 func TestOmpSessionAndToolLifecycle(t *testing.T) {
@@ -218,14 +216,14 @@ func TestOmpSessionAndToolLifecycle(t *testing.T) {
 	path := filepath.Join(dir, "omp.mjs")
 	log := filepath.Join(dir, "events")
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "other"), 0o700))
-	events := []Event{EventSessionStart, EventUserPromptSubmit, EventPreToolUse, EventPostToolUse, EventPostToolUseFailure, EventSessionEnd}
+	events := []Event{EventSessionStart, EventUserPromptSubmit, EventPreToolUse, EventPostToolUse, EventPostToolUseFailure, EventSessionEnd, EventStop}
 	hooks := make([]Hook, 0, len(events))
 	for _, event := range events {
 		hooks = append(hooks, Hook{Event: event})
 	}
 	_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", `let s="";process.stdin.on("data",x=>s+=x).on("end",()=>require("fs").appendFileSync(process.env.OMP_TEST_LOG,s+"\n"))`, "lifecycle-marker"}, Marker: "lifecycle-marker", Hooks: hooks})
 	require.NoError(t, err)
-	driver := ompHost + `import {writeFileSync} from "node:fs";let id="a",f=process.argv[2]+"/a",c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>id,getSessionFile:()=>f}};await h.session_start({},c);await h.input({source:"interactive",text:"/local"},c);await h.input({source:"extension",text:"hidden"},c);await h.tool_call({toolName:"bash",toolCallId:"1",input:{command:"git commit"}},c);writeFileSync(f,"saved");await h.tool_result({toolName:"bash",toolCallId:"1",input:{command:"git commit"},content:[{type:"text",text:"done"}],isError:false},c);await h.tool_result({toolName:"bash",toolCallId:"2",input:{command:"git commit"},content:[{type:"text",text:"failed"}],isError:true},c);await h.session_switch({reason:"resume"},c);f=process.argv[2]+"/other/a-moved";c.cwd=process.argv[2]+"/other";writeFileSync(f,"saved");await h.session_before_switch?.({reason:"resume"},c);id="b";f=process.argv[2]+"/b";c.cwd=process.argv[2];writeFileSync(f,"saved");await h.session_switch({reason:"resume"},c);await h.input({source:"interactive",text:"skip"},{...c,agent:{kind:"subagent"}});`
+	driver := ompHost + `import {writeFileSync} from "node:fs";let id="a",f=process.argv[2]+"/a",c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>id,getSessionFile:()=>f}};await h.session_start({},c);await h.input({source:"interactive",text:"/local"},c);await h.input({source:"extension",text:"hidden"},c);await h.tool_call({toolName:"bash",toolCallId:"1",input:{command:"git commit"}},c);writeFileSync(f,"saved");await h.tool_result({toolName:"bash",toolCallId:"1",input:{command:"git commit"},content:[{type:"text",text:"done"}],isError:false},c);await h.tool_result({toolName:"bash",toolCallId:"2",input:{command:"git commit"},content:[{type:"text",text:"failed"}],isError:true},c);await h.session_switch({reason:"resume"},c);f=process.argv[2]+"/other/a-moved";c.cwd=process.argv[2]+"/other";writeFileSync(f,"saved");await h.session_before_switch?.({reason:"resume"},c);id="b";f=process.argv[2]+"/b";c.cwd=process.argv[2];writeFileSync(f,"saved");await h.session_switch({reason:"resume"},c);await h.input({source:"interactive",text:"skip"},{...c,agent:{kind:"subagent"}});id="unsaved";f=undefined;await h.session_switch({reason:"new"},c);await h.input({source:"interactive",text:"/help"},c);await h.session_stop({stop_hook_active:false},c);`
 	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
 	cmd.Env = append(os.Environ(), "OMP_TEST_LOG="+log)
 	out, err := cmd.CombinedOutput()
@@ -239,7 +237,7 @@ func TestOmpSessionAndToolLifecycle(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(line), &e))
 		entries = append(entries, e)
 	}
-	require.Len(t, entries, 7)
+	require.Len(t, entries, 11)
 	assert.Equal(t, "SessionStart", entries[0]["hook_event_name"])
 	assert.Equal(t, "/local", entries[1]["prompt"])
 	assert.Equal(t, "PreToolUse", entries[2]["hook_event_name"])
@@ -253,6 +251,15 @@ func TestOmpSessionAndToolLifecycle(t *testing.T) {
 	assert.Equal(t, "b", entries[6]["session_id"])
 	assert.Equal(t, dir, entries[6]["cwd"])
 	assert.Equal(t, filepath.Join(dir, "b"), entries[6]["transcript_path"])
+	assert.Equal(t, "SessionEnd", entries[7]["hook_event_name"])
+	for _, entry := range entries[8:] {
+		assert.Equal(t, "unsaved", entry["session_id"])
+		assert.NotContains(t, entry, "transcript_path")
+	}
+	assert.Equal(t, "SessionStart", entries[8]["hook_event_name"])
+	assert.Equal(t, "UserPromptSubmit", entries[9]["hook_event_name"])
+	assert.Equal(t, "/help", entries[9]["prompt"])
+	assert.Equal(t, "Stop", entries[10]["hook_event_name"])
 }
 
 func TestOmpImageOnlyInteractiveInput(t *testing.T) {
@@ -294,65 +301,7 @@ func TestOmpHandleEmptyPrompt(t *testing.T) {
 	assert.JSONEq(t, `{}`, output.String())
 }
 
-func TestOmpUnsavedLocalInputBeforeBlockedStop(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node unavailable")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "omp.mjs")
-	log := filepath.Join(dir, "events")
-	_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", `let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{const e=JSON.parse(s);require("fs").appendFileSync(process.env.OMP_TEST_LOG,s+"\n");if(e.hook_event_name==="Stop")process.stdout.write('{"decision":"block","reason":"continue"}')})`, "local-marker"}, Marker: "local-marker", Hooks: []Hook{{Event: EventSessionStart}, {Event: EventUserPromptSubmit}, {Event: EventStop}}})
-	require.NoError(t, err)
-	driver := ompHost + `let c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>"unsaved",getSessionFile:()=>undefined}};await h.session_start({},c);await h.input({source:"interactive",text:"/help"},c);await h.input({source:"interactive",text:"/quit"},c);console.log(JSON.stringify(await h.session_stop({session_id:"provider",stop_hook_active:false},c)));`
-	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
-	cmd.Env = append(os.Environ(), "OMP_TEST_LOG="+log)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	assert.JSONEq(t, `{"decision":"block","reason":"continue"}`, strings.TrimSpace(string(out)))
-	data, err := os.ReadFile(log)
-	require.NoError(t, err)
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	require.Len(t, lines, 4)
-	for i, want := range []string{"SessionStart", "UserPromptSubmit", "UserPromptSubmit", "Stop"} {
-		var e map[string]any
-		require.NoError(t, json.Unmarshal([]byte(lines[i]), &e))
-		assert.Equal(t, want, e["hook_event_name"])
-		assert.Equal(t, "unsaved", e["session_id"])
-		assert.NotContains(t, e, "transcript_path")
-		if i == 1 {
-			assert.Equal(t, "/help", e["prompt"])
-		}
-		if i == 2 {
-			assert.Equal(t, "/quit", e["prompt"])
-		}
-	}
-}
-
-const ompHost = `import {pathToFileURL} from "node:url";let h={},handlers={};(await import(pathToFileURL(process.argv[1]))).default({on:(n,f)=>{(handlers[n]??=[]).push(f);h[n]=async(e,c)=>{let xs=[],seen=new Set(),result;for(const fn of handlers[n]){const r=await fn(e,c);if(r?.block||r?.decision==="block")return r;if(r){result=r;const x=r.additionalContext;if(typeof x==="string"&&x.trim()&&!seen.has(x.trim())){seen.add(x.trim());xs.push(x)}}}return xs.length?{additionalContext:xs.join("\n\n")}:result}}});`
-
-func TestOmpContextMergeAndMatcher(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node unavailable")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "omp.mjs")
-	for _, tc := range []struct{ marker, output, matcher string }{{"first", `{"additionalContext":" first "}`, ""}, {"duplicate", `{"additionalContext":"first"}`, ""}, {"second", `{"additionalContext":"second"}`, ""}, {"bash", `{"additionalContext":"bash only"}`, ToolBash}} {
-		script := fmt.Sprintf(`process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(%q))`, tc.output)
-		_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", script, tc.marker}, Marker: tc.marker, Hooks: []Hook{{Event: EventPreToolUse, Matcher: tc.matcher}, {Event: EventPostToolUse, Matcher: tc.matcher}, {Event: EventPostToolUseFailure, Matcher: tc.matcher}}})
-		require.NoError(t, err)
-	}
-	driver := ompHost + `let c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>"id",getSessionFile:()=>undefined}};let e={toolName:"read",toolCallId:"1",input:{},content:[],isError:false};for (const [name,event] of [["tool_call",e],["tool_result",e],["tool_result",{...e,isError:true}]]) console.log(JSON.stringify(await h[name](event,c)));`
-	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.Len(t, lines, 3)
-	for _, line := range lines {
-		assert.JSONEq(t, `{"additionalContext":" first \n\nsecond"}`, line)
-	}
-}
+const ompHost = `import {pathToFileURL} from "node:url";let h={},handlers={};(await import(pathToFileURL(process.argv[1]))).default({on:(n,f)=>{(handlers[n]??=[]).push(f);h[n]=async(e,c)=>{let result;for(const fn of handlers[n]){const r=await fn(e,c);if(r?.block||r?.decision==="block")return r;if(r)result=r}return result}}});`
 
 func TestOmpStopHonorsCancellation(t *testing.T) {
 	node, err := exec.LookPath("node")
@@ -398,52 +347,20 @@ func TestOmpStopWithLegacyPiStopOnly(t *testing.T) {
 	assert.JSONEq(t, `{"decision":"block","reason":"continue"}`, strings.TrimSpace(string(out)))
 }
 
-func TestOmpReplacementContinuesAfterEndFailure(t *testing.T) {
+func TestOmpDecisionTimeoutCap(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node unavailable")
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "omp.mjs")
-	log := filepath.Join(dir, "events")
-	script := `let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{let e=JSON.parse(s);require("fs").appendFileSync(process.env.OMP_TEST_LOG,e.hook_event_name+":"+e.session_id+"\n");if(e.hook_event_name==="SessionEnd")process.exitCode=1})`
-	_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", script, "marker"}, Marker: "marker", Hooks: []Hook{{Event: EventSessionStart}, {Event: EventSessionEnd}}})
+	_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write('{"block":true,"reason":"no"}'))`, "first"}, Marker: "first", Hooks: []Hook{{Event: EventPreToolUse, Timeout: 60 * time.Second}}})
 	require.NoError(t, err)
-	driver := `import {pathToFileURL} from "node:url";let h={},errors=[];(await import(pathToFileURL(process.argv[1]))).default({on:(n,f)=>h[n]=f});let id="a",c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:x=>errors.push(x)},sessionManager:{getSessionId:()=>id,getSessionFile:()=>undefined}};await h.session_start({},c);id="b";await h.session_switch({reason:"new"},c);await h.session_switch({reason:"new"},c);console.log(JSON.stringify(errors));`
+	driver := `import {pathToFileURL} from "node:url";let handlers=[],timers=[],original=globalThis.setTimeout;globalThis.setTimeout=(f,ms,...args)=>{timers.push(ms);return original(f,ms,...args)};(await import(pathToFileURL(process.argv[1]))).default({on:(n,f)=>{if(n==="tool_call")handlers.push(f)}});let c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>"id",getSessionFile:()=>undefined}},result;result=await handlers[0]({toolName:"bash",input:{}},c);console.log(JSON.stringify({result,timeout:timers[0]}));`
 	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
-	cmd.Env = append(os.Environ(), "OMP_TEST_LOG="+log)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	assert.Contains(t, string(out), "exited with status 1")
-	data, err := os.ReadFile(log)
-	require.NoError(t, err)
-	assert.Equal(t, "SessionStart:a\nSessionEnd:a\nSessionStart:b\n", string(data))
-}
-
-func TestOmpFirstBlockAndTimeoutCap(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node unavailable")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "omp.mjs")
-	marker := filepath.Join(dir, "second")
-	for _, tc := range []struct{ marker, script string }{
-		{"first", `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write('{"block":true,"reason":"no"}'))`},
-		{"second", `require("fs").writeFileSync(process.env.OMP_TEST_MARKER,"ran")`},
-	} {
-		_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", tc.script, tc.marker}, Marker: tc.marker, Hooks: []Hook{{Event: EventPreToolUse, Timeout: 60 * time.Second}}})
-		require.NoError(t, err)
-	}
-	driver := `import {pathToFileURL} from "node:url";let handlers=[],timers=[],original=globalThis.setTimeout;globalThis.setTimeout=(f,ms,...args)=>{timers.push(ms);return original(f,ms,...args)};(await import(pathToFileURL(process.argv[1]))).default({on:(n,f)=>{if(n==="tool_call")handlers.push(f)}});let c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>"id",getSessionFile:()=>undefined}},result;for(let f of handlers){result=await f({toolName:"bash",input:{}},c);if(result?.block)break}console.log(JSON.stringify({result,timers}));`
-	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
-	cmd.Env = append(os.Environ(), "OMP_TEST_MARKER="+marker)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	assert.Contains(t, string(out), `"block":true`)
-	assert.Contains(t, string(out), "25000")
-	_, err = os.Stat(marker)
-	assert.True(t, os.IsNotExist(err))
+	assert.JSONEq(t, `{"result":{"block":true,"reason":"no"},"timeout":25000}`, strings.TrimSpace(string(out)))
 }
 
 func TestOmpReplacementSharesDeadlineAndKillsChild(t *testing.T) {

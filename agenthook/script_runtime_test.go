@@ -24,7 +24,7 @@ func TestScriptRuntimeResponses(t *testing.T) {
 
 const scriptResponseDriver = `
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 const dir = process.argv[2];
 const command = (script) => ({ hooks: [{ command: process.execPath, args: ["-e", script] }] });
 const config = { hooks: { test: [
@@ -67,33 +67,13 @@ try {
  process.kill(Number(readFileSync(pidfile, "utf8")), 0);
  assert.equal(captured.deref() === undefined, true, "completed command retained stdout chunks");
 } finally { Buffer.concat = concat; process.kill(Number(readFileSync(pidfile, "utf8"))); }
-`
-
-func TestScriptRuntimeOmpControls(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node unavailable")
-	}
-	runtime, err := os.ReadFile("script_runtime.js")
-	require.NoError(t, err)
-	dir := t.TempDir()
-	driver := filepath.Join(dir, "controls.mjs")
-	require.NoError(t, os.WriteFile(driver, append(runtime, []byte(scriptOmpControlsDriver)...), 0o600))
-	cmd := exec.CommandContext(t.Context(), node, driver, dir)
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(output))
-}
-
-const scriptOmpControlsDriver = `
-import assert from "node:assert/strict";
-import {existsSync} from "node:fs";
-const dir=process.argv[2], marker=dir+"/marker";
-const command=(script)=>({hooks:[{command:process.execPath,args:["-e",script,marker]}]});
+const marker=dir+"/marker";
+const markerCommand=(script)=>({hooks:[{command:process.execPath,args:["-e",script,marker]}]});
 const write='require("fs").appendFileSync(process.argv[1],"spawned")';
-const config={hooks:{test:[command(write)]}};
-let result=await runHooks("test",{cwd:dir},{collect:true,budgetMs:0});
-assert.equal(existsSync(marker),false);assert.match(result.failures.join(" "),/budget/i);
-config.hooks.test=[command('setTimeout(()=>{},10000)'),command(write)];
-result=await runHooks("test",{cwd:dir},{collect:true,budgetMs:100});
-assert.match(result.failures.join(" "),/budget/i);assert.equal(existsSync(marker),false);
+config.hooks.test=[markerCommand(write)];
+let budgetResult=await runHooks("test",{cwd:dir},{collect:true,budgetMs:0});
+assert.equal(existsSync(marker),false);assert.match(budgetResult.failures.join(" "),/budget/i);
+config.hooks.test=[markerCommand('setTimeout(()=>{},10000)'),markerCommand(write)];
+budgetResult=await runHooks("test",{cwd:dir},{collect:true,budgetMs:100});
+assert.match(budgetResult.failures.join(" "),/budget/i);assert.equal(existsSync(marker),false);
 `
