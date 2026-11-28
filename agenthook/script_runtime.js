@@ -3,9 +3,10 @@ import { spawn } from "node:child_process";
 const defaultTimeoutSeconds = 60;
 // A failure quotes at most this many characters from the end of the command's stderr.
 const stderrTailLength = 2000;
-// A background process the command starts can inherit stderr and hold it open,
+// A background process the command starts can inherit a pipe and hold it open,
 // so the wait ends this long after the command itself exits.
 const stderrGraceMs = 250;
+const stdoutLimit = 16 * 1024 * 1024;
 
 const exitFailure = (code, signal) => {
 	if (signal) return `killed by ${signal}`;
@@ -13,21 +14,24 @@ const exitFailure = (code, signal) => {
 };
 
 // Runs one argv without a shell in the payload's directory, writing the payload
-// to stdin, and resolves to a failure description, ending in the tail of the
-// command's stderr, or null. At its timeout the child is force-killed and the
+// to stdin, and resolves to a failure and optional collected response. Failures
+// include the tail of stderr. At its timeout the child is force-killed and the
 // wait ends even if it has not exited, so a child that ignores SIGTERM cannot
 // block later commands or the harness.
-function runCommand(handler, payload) {
+function runCommand(handler, payload, options = {}) {
 	return new Promise((resolve) => {
 		let child;
 		try {
 			// Pi changes ctx.cwd on a cross-project resume without changing the process directory.
-			child = spawn(handler.command, handler.args, { cwd: payload.cwd, stdio: ["pipe", "ignore", "pipe"] });
+			child = spawn(handler.command, handler.args, { cwd: payload.cwd, stdio: ["pipe", options.collect ? "pipe" : "ignore", "pipe"] });
 		} catch (error) {
-			resolve(`could not start: ${error.message}`);
+			resolve({ failure: `could not start: ${error.message}` });
 			return;
 		}
 		let stderr = "";
+		let stdout = [];
+		let stdoutBytes = 0;
+		let overflow = false;
 		let done = false;
 		let grace;
 		const seconds = handler.timeout > 0 ? handler.timeout : defaultTimeoutSeconds;
@@ -35,17 +39,43 @@ function runCommand(handler, payload) {
 			child.kill("SIGKILL");
 			finish(`timed out after ${seconds}s`);
 		}, seconds * 1000);
+		const abort = () => {
+			child.kill("SIGKILL");
+			finish(options.signal.reason?.message ?? "cancelled");
+		};
 		const finish = (failure) => {
 			if (done) return;
 			done = true;
 			clearTimeout(timer);
 			clearTimeout(grace);
-			// Keep draining stderr so a process still writing to it never blocks,
+			options.signal?.removeEventListener("abort", abort);
+			// Keep draining pipes so a process still writing to them never blocks,
 			// without holding the harness open.
 			child.stderr.unref();
+			child.stdout?.unref();
 			const detail = stderr.trim();
-			resolve(failure && detail ? `${failure}: ${detail}` : failure);
+			if (!failure && overflow) failure = `stdout exceeds ${stdoutLimit} bytes`;
+			let response;
+			if (!failure && options.collect && stdoutBytes > 0) {
+				const text = Buffer.concat(stdout).toString("utf8").trim();
+				if (text) {
+					try {
+						response = JSON.parse(text);
+						if (!response || typeof response !== "object" || Array.isArray(response)) throw new Error("expected an object");
+						if (Object.keys(response).length === 0) response = undefined;
+					} catch (error) { response = undefined; failure = `invalid stdout JSON object: ${error.message}`; }
+				}
+			}
+			resolve({ failure: failure && detail ? `${failure}: ${detail}` : failure, response });
 		};
+		if (child.stdout) child.stdout.on("data", (chunk) => {
+			if (done || overflow) return;
+			stdoutBytes += chunk.length;
+			if (stdoutBytes > stdoutLimit) { overflow = true; stdout = []; }
+			else stdout.push(chunk);
+		});
+		options.signal?.addEventListener("abort", abort, { once: true });
+		if (options.signal?.aborted) abort();
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (chunk) => {
 			if (!done) stderr = (stderr + chunk).slice(-stderrTailLength);
@@ -62,17 +92,37 @@ function runCommand(handler, payload) {
 	});
 }
 
-// Runs every registered command for a native event in order, then throws one
-// error naming each command that failed so the harness reports it.
-async function runHooks(event, payload) {
+// Runs commands in order. By default, throws an aggregate error; collect returns
+// { responses, failures }. matcher selects exact native matches, budgetMs bounds
+// the batch, signal cancels it, and stop returns true for a decisive response.
+async function runHooks(event, payload, options = {}) {
 	const failures = [];
-	for (const entry of config.hooks?.[event] ?? []) {
-		for (const handler of entry.hooks) {
-			const failure = await runCommand(handler, payload);
-			if (failure) failures.push(`${[handler.command, ...handler.args].join(" ")}: ${failure}`);
+	const responses = [];
+	const controller = new AbortController();
+	const cancel = () => controller.abort(new Error("cancelled"));
+	options.signal?.addEventListener("abort", cancel, { once: true });
+	if (options.signal?.aborted) cancel();
+	const budget = options.budgetMs == null ? undefined : setTimeout(
+		() => controller.abort(new Error("callback budget exceeded")), Math.max(0, options.budgetMs),
+	);
+	try {
+		for (const entry of config.hooks?.[event] ?? []) {
+			if (options.collect && entry.matcher && entry.matcher !== options.matcher) continue;
+			for (const handler of entry.hooks) {
+				if (controller.signal.aborted) break;
+				const { failure, response } = await runCommand(handler, payload, { collect: options.collect, signal: controller.signal });
+				if (failure) failures.push(`${[handler.command, ...handler.args].join(" ")}: ${failure}`);
+				if (response !== undefined) {
+					responses.push(response);
+					if (options.stop?.(response)) return { responses, failures };
+				}
+			}
+			if (controller.signal.aborted) break;
 		}
+	} finally {
+		clearTimeout(budget);
+		options.signal?.removeEventListener("abort", cancel);
 	}
-	if (failures.length > 0) {
-		throw new Error(`agenthook ${event} commands failed: ${failures.join("; ")}`);
-	}
+	if (options.collect) return { responses, failures };
+	if (failures.length > 0) throw new Error(`agenthook ${event} commands failed: ${failures.join("; ")}`);
 }
