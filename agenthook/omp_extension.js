@@ -60,12 +60,10 @@ export default function (omp) {
 		if (announced?.id === now.id) return;
 		const ended = announced;
 		announced = now;
-		const hasCommands = (name) => (config.hooks?.[name] ?? []).some((entry) => entry.hooks.length > 0);
-		// Reserve half the remaining callback time for Start when both phases have work.
-		const reserveStart = ended && hasCommands("SessionEnd") && hasCommands("SessionStart");
 		if (ended) {
 			const reason = event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "other";
-			await run("SessionEnd", lifecycle("SessionEnd", ended, { reason }), reserveStart);
+			// Reserve half the remaining callback time for Start.
+			await run("SessionEnd", lifecycle("SessionEnd", ended, { reason }), true);
 		}
 		const source = event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "fork";
 		await run("SessionStart", lifecycle("SessionStart", now, { source }));

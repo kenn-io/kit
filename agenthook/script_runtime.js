@@ -105,19 +105,13 @@ async function runHooks(event, payload, options = {}) {
 		else budget = setTimeout(() => controller.abort(new Error("callback budget exceeded")), options.budgetMs);
 	}
 	try {
+		// After the budget aborts, runCommand reports each remaining command without spawning it.
 		for (const entry of config.hooks?.[event] ?? []) {
 			for (const handler of entry.hooks) {
-				if (controller.signal.aborted) break;
 				const { failure, response } = await runCommand(handler, payload, { ...options, signal: controller.signal });
 				if (failure) failures.push(`${[handler.command, ...handler.args].join(" ")}: ${failure}`);
-				if (response !== undefined) {
-					responses.push(response);
-				}
+				if (response !== undefined) responses.push(response);
 			}
-			if (controller.signal.aborted) break;
-		}
-		if (controller.signal.aborted && !failures.some((failure) => failure.includes(controller.signal.reason.message))) {
-			failures.push(controller.signal.reason.message);
 		}
 	} finally {
 		clearTimeout(budget);

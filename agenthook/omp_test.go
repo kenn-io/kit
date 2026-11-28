@@ -386,8 +386,8 @@ func TestOmpStopWithLegacyPiStopOnly(t *testing.T) {
 	require.NoError(t, err)
 	pi, err := os.ReadFile(piPath)
 	require.NoError(t, err)
-	legacy := strings.Replace(string(pi), "\t\t\t// agenthook:omp-guarded\n", "", 1)
-	legacy = strings.Replace(legacy, `if (ctx.mode !== "tui" || ctx.agent?.kind) return;`, `if (ctx.mode !== "tui") return;`, 1)
+	legacy := strings.Replace(string(pi), `if (ctx.mode !== "tui" || ctx.agent?.kind) return;`, `if (ctx.mode !== "tui") return;`, 1)
+	require.NotEqual(t, string(pi), legacy)
 	require.NoError(t, os.WriteFile(piPath, []byte(legacy), 0o600))
 	_, err = Install(AgentOmp, InstallOptions{ConfigPath: ompPath, Executable: node, Arguments: []string{"-e", `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write('{"decision":"block","reason":"continue"}'))`, "omp-marker"}, Marker: "omp-marker", Hooks: []Hook{{Event: EventStop}}})
 	require.NoError(t, err)
@@ -469,23 +469,4 @@ func TestOmpReplacementSharesDeadlineAndKillsChild(t *testing.T) {
 	assert.Equal(t, "ab", string(data))
 	_, err = os.Stat(marker)
 	assert.True(t, os.IsNotExist(err))
-}
-
-func TestOmpReplacementEndOnlyUsesFullBudget(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node unavailable")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "omp.mjs")
-	_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", "process.stdin.resume()", "marker"}, Marker: "marker", Hooks: []Hook{{Event: EventSessionEnd}}})
-	require.NoError(t, err)
-	driver := `import {pathToFileURL} from "node:url";let h={},timers=[],original=setTimeout;globalThis.setTimeout=(f,ms,...args)=>{timers.push(ms);return original(f,ms,...args)};(await import(pathToFileURL(process.argv[1]))).default({on:(n,f)=>h[n]=f});let id="a",c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>id,getSessionFile:()=>undefined}};await h.session_start({},c);timers=[];id="b";await h.session_switch({reason:"new"},c);console.log(JSON.stringify(timers));`
-	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	var timers []float64
-	require.NoError(t, json.Unmarshal(out, &timers))
-	require.NotEmpty(t, timers)
-	assert.Greater(t, timers[0], float64(24000))
 }
