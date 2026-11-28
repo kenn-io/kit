@@ -9,6 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+
+	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/embedmodel"
 )
 
 // ErrInvalidVector reports that the provider returned a vector that failed
@@ -80,6 +84,7 @@ const (
 	ReasonRateLimited
 	// ReasonUnavailable is a timeout or server failure (408 or 5xx).
 	ReasonUnavailable
+	ReasonUnsupportedContent
 )
 
 func (r Reason) String() string {
@@ -94,6 +99,8 @@ func (r Reason) String() string {
 		return "credentials rejected"
 	case ReasonRateLimited:
 		return "rate limited"
+	case ReasonUnsupportedContent:
+		return "unsupported content"
 	case ReasonUnavailable:
 		return "unavailable"
 	default:
@@ -101,22 +108,34 @@ func (r Reason) String() string {
 	}
 }
 
-// APIError is a non-2xx embedding response. Reason classifies it; the
-// provider body is read only to classify and is never kept or echoed.
+// APIError is a non-2xx embedding response, or a 200 from Gemini Embedding 2
+// that reports truncated input. Reason classifies it; the provider body is
+// read only to classify and is never kept or echoed. Message holds guidance
+// for selected errors from a Kit service.
 type APIError struct {
 	StatusCode int
 	RetryAfter time.Duration
 	Reason     Reason
+	Message    string
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("embed endpoint returned %d (%s)", e.StatusCode, e.Reason)
+	result := fmt.Sprintf("embed endpoint returned %d (%s)", e.StatusCode, e.Reason)
+	if e.Message != "" {
+		result += ": " + e.Message
+	}
+	return result
+}
+
+func (e *APIError) Is(target error) bool {
+	return target == embedmodel.ErrUnsupportedContent && e.Reason == ReasonUnsupportedContent
 }
 
 // InputRejected reports that the endpoint refused this input itself: it is
 // too long or refused by policy. The same input will fail again, and other
 // inputs may succeed. A 400 Kit cannot attribute to the input is not an input
-// rejection.
+// rejection. A Gemini Embedding 2 response with truncated:true is one, with
+// StatusCode 200, because its vector covers only part of the input.
 func (e *APIError) InputRejected() bool {
 	return e.Reason == ReasonInputTooLong || e.Reason == ReasonContentPolicy
 }
@@ -124,27 +143,63 @@ func (e *APIError) InputRejected() bool {
 // CredentialsRejected reports that the key or the permission was refused.
 // That is not a reason to skip one document.
 func (e *APIError) CredentialsRejected() bool {
-	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
+	return e.Reason != ReasonInvalidRequest && (e.Reason == ReasonCredentials || e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden)
 }
 
 // Retryable reports a response that may succeed later: 408, 429, or a 5xx.
 // Check RetryAfter for the delay the provider asked for.
 func (e *APIError) Retryable() bool {
-	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
+	return !e.CredentialsRejected() && (e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500)
 }
 
 // maxErrorBody bounds how much of a failed response Kit reads to classify it.
 const maxErrorBody = 4096
 
-// newAPIError reads up to maxErrorBody bytes of a non-2xx response to
-// classify it. The body is not kept.
-func newAPIError(resp *http.Response) *APIError {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-	return &APIError{
+type statusCode struct {
+	status int
+	code   string
+}
+
+var guidanceStatusCodes = map[statusCode]struct{}{
+	{http.StatusRequestEntityTooLarge, "input_too_long"}:     {},
+	{http.StatusUnsupportedMediaType, "unsupported_content"}: {},
+	{http.StatusNotFound, "model_not_found"}:                 {},
+	{http.StatusForbidden, "model_not_found"}:                {},
+}
+
+// newAPIError reads one byte past maxErrorBody to detect oversized responses.
+// It classifies the first maxErrorBody bytes and retains selected guidance.
+func newAPIError(resp *http.Response, api embedconfig.API) *APIError {
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody+1))
+	complete := readErr == nil && len(body) <= maxErrorBody
+	if len(body) > maxErrorBody {
+		body = body[:maxErrorBody]
+	}
+	err := &APIError{
 		StatusCode: resp.StatusCode,
 		RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
 		Reason:     classifyFailure(resp.StatusCode, body),
 	}
+	code, message := errorDetail(body)
+	if _, ok := guidanceStatusCodes[statusCode{resp.StatusCode, code}]; api == embedconfig.APIKit && complete && ok {
+		err.Message = guidanceText(message)
+	}
+	message = strings.ToLower(message)
+	if api == embedconfig.APIVertex && resp.StatusCode == http.StatusBadRequest && err.Reason == ReasonUnknown && strings.Contains(message, "token") && (sizeLimit(message) || containsAny(message, "up to")) {
+		err.Reason = ReasonInputTooLong
+	}
+	return err
+}
+
+func guidanceText(message string) string {
+	message = strings.Map(func(r rune) rune {
+		directional := r >= '\u2066' && r <= '\u2069'
+		if (unicode.IsControl(r) && !unicode.IsSpace(r)) || (unicode.Is(unicode.Cf, r) && r != '\u200c' && r != '\u200d' && !directional) {
+			return -1
+		}
+		return r
+	}, message)
+	return strings.Join(strings.Fields(message), " ")
 }
 
 func retryAfter(header string) time.Duration {

@@ -1,4 +1,21 @@
-// Package embedclient calls an OpenAI-compatible text embeddings endpoint.
+// Package embedclient calls Kit, OpenAI-compatible, and Vertex embedding endpoints.
+//
+// Vertex predict requests use task type RETRIEVAL_DOCUMENT for document roles
+// and RETRIEVAL_QUERY for query roles. Gemini embedding 2 uses embedContent
+// and ignores task types, so New requires a role prefix or formatter that
+// carries its task, such as "task: search result | query: " for queries and
+// "title: none | text: " for documents. Both request Model.Dimensions and
+// always return float vectors. InputTypeMode, RequestDimensions, and
+// EncodingFormat do not change a Vertex request.
+//
+// Vertex sends up to 250 inputs per request for gemini-embedding-001,
+// text-embedding-005, and text-multilingual-embedding-002, and one for other
+// models, further capped by Batch.Items. A Vertex 400 that names a
+// token limit is an input rejection; a request with more than one input is split
+// in halves when it receives one. Set Batch.Items so a request stays under
+// 20,000 tokens to avoid failed first attempts.
+// GoogleHTTPClient supplies Application Default Credentials; pass it as
+// Options.HTTP.
 //
 // The caller owns the HTTP client when it supplies one. This package clones
 // that client, pins requests to the configured origin, and can attach a bearer
@@ -39,9 +56,11 @@
 //
 // Failures are typed. APIError reports the status, a Reason derived from the
 // status and the provider's error code or message, and whether a retry may
-// help. The provider body itself is never kept. TransportError keeps the
-// network cause behind a generic message: "embed request timed out" for a
-// timeout and "embed request failed" for other transport failures.
+// help. The provider body itself is never kept. For Kit services, Message
+// holds guidance for input_too_long, unsupported_content, and model_not_found.
+// TransportError keeps the network cause behind a generic message: "embed
+// request timed out" for a timeout and "embed request failed" for other
+// transport failures.
 // VectorError names the input whose vector failed validation, and matches
 // ErrInvalidVector.
 //
@@ -49,7 +68,17 @@
 // EncodeFunc sends its strings unchanged, so text from embedfit.Prepared is
 // not wrapped a second time.
 //
-// Text is the only encoded form. Image and file content returns
-// embedmodel.ErrUnsupportedContent so those callers can keep their own path.
-// vector.EncodeFunc remains available through EncodeFunc.
+// A Kit client for Gemini embedding 2 requires a role prefix or formatter when
+// Embed or EmbedInputs formats text. Encode accepts preformatted text.
+//
+// An Input carries a role and one payload: Text, or MediaType with Data.
+// EmbedInputs adds role affixes to text inputs. Encode sends inputs as given
+// and implements Backend. Neither joins, trims, nor splits text. Kit services
+// receive inputs over the HTTP contract at
+// https://github.com/kenn-io/kit/blob/main/docs/embedding-http.md, and Check
+// tests a service against it. A media input goes in its own request to a Kit
+// service or to Vertex gemini-embedding-2. OpenAI-compatible services and
+// other Vertex models reject media with embedmodel.ErrUnsupportedContent. The
+// same error identifies a Kit service that reports unsupported content. Embed
+// remains text-only.
 package embedclient

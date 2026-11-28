@@ -1,7 +1,8 @@
 ---
+type: Guide
 title: "Migration Notes"
 description: "Migration guidance for consumers of the self-update package."
-last_edited: 2026-06-15
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # Migration Notes

@@ -1,7 +1,8 @@
 ---
+type: Guide
 title: "Developing kit"
 description: "Development tooling, build conventions, and debugging guidance for kit."
-last_edited: 2026-10-30
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # Developing kit

@@ -122,6 +122,9 @@ func runHookCheckHelper(mode string) int {
 			if mode == "feature-default" {
 				feature = ""
 			}
+			if mode == "feature-table" {
+				feature = `"hooks":true,"context_management":{"experimental_mode":false}`
+			}
 			fmt.Printf("{\"id\":%d,\"result\":{\"config\":{\"features\":{%s}}}}\n", request.ID, feature)
 		case "hooks/list":
 			args, _ := request.Params["cwds"].([]any)
@@ -176,6 +179,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"malformed response is terminal", "malformed", "", "", CheckUnknown, "", "", 1, false},
 		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, "", "", 1, false},
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, "", "", 1, false},
+		{"table-valued feature", "feature-table", "trusted", "", CheckOK, "", "", 1, false},
 		{"reviewed", "normal", "trusted", "", CheckOK, "", "", 1, false},
 		{"native source capitalization", "source-case", "trusted", "", CheckOK, "", "", 1, false},
 		{"managed", "normal", "managed", "", CheckOK, "", "", 1, false},
@@ -670,6 +674,32 @@ func TestTransientCodexError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.transient, transientCodexError(fmt.Errorf("codex: %w", tc.err)))
 		})
+	}
+}
+
+// A caller that names where its hooks should run moves them there, even while
+// the old executable still exists.
+func TestReplaceMovedRewritesAHookThatStillResolves(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	old, err := os.Executable()
+	require.NoError(t, err)
+	moved := filepath.Join(t.TempDir(), "moved-hook")
+	for _, agent := range []Agent{AgentClaude, AgentCodex} {
+		opts := InstallOptions{Executable: old, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+		_, err = Install(agent, opts)
+		require.NoError(t, err)
+		opts.Executable, opts.ReplaceMoved = moved, true
+
+		result, err := Install(agent, opts)
+		require.NoError(t, err)
+		assert.True(t, result.Changed, agent)
+		assert.Contains(t, string(result.Data), "moved-hook", agent)
+		assert.NotContains(t, string(result.Data), old, agent)
+		again, err := PlanInstall(agent, opts)
+		require.NoError(t, err)
+		assert.False(t, again.Changed, agent)
 	}
 }
 

@@ -49,8 +49,8 @@ type listItemLine struct {
 func renderMarkdownDocument(markdown string, opts Options) (string, error) {
 	source := []byte(markdown)
 	p := parser.New(parser.WithExtensions(
-		extension.GFMParser,
-		extension.DefinitionListParser,
+		extension.NewGFMParser(),
+		extension.NewDefinitionListParser(),
 	))
 	document := p.Parse(source)
 	renderer := terminalRenderer{source: source, opts: opts}

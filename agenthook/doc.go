@@ -5,9 +5,11 @@
 // translate that vocabulary to the native config path, event names, tool names,
 // and file format used by each harness. This lets applications describe one set
 // of lifecycle hooks while support for new agents stays centralized in kit.
-// Profiles are provided for Claude Code, Codex, GitHub Copilot CLI, Cursor,
-// Factory Droid, Gemini CLI, Hermes Agent, Muse Code, OpenCode, Pi, and Qwen
-// Code. Pi and
+// Profiles are provided for Antigravity CLI (agy), Claude Code, Codex, GitHub
+// Copilot CLI, Cursor, Factory Droid, Gemini CLI, Hermes Agent, Muse Code,
+// OpenCode, Pi, and Qwen Code. The agy profile maps UserPromptSubmit to
+// PreInvocation, which agy runs before every model call in a turn, and has no
+// SessionEnd or PostToolUse. Pi and
 // OpenCode have no command-hook config, so their profiles write a kit-owned
 // module that runs the registered commands. The Pi module reports only from
 // Pi's interactive terminal, so print, json, and rpc runs, subagents included,
@@ -29,8 +31,8 @@
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling keeps a marked hook whose executable moved when its
 // active command arguments and other settings match and the installed executable
-// resolves, and otherwise writes the requested executable. Uninstalling removes
-// only marked commands.
+// resolves, and otherwise writes the requested executable. ReplaceMoved always
+// writes the requested executable. Uninstalling removes only marked commands.
 // Nested JSON reinstalls retain the group and handler positions of existing
 // event/matcher registrations. Changed matchers reuse single-handler groups
 // in the same event, and new registrations append after existing groups.

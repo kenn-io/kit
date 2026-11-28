@@ -8,6 +8,7 @@ callers responsible for their own file formats and higher-level policy.
 
 ## Invariants
 
+- `ValidateTrustedFile` checks the opened file without repairing it and accepts trusted inherited Windows DACLs; a directory check does not validate its children.
 - On Windows, every Win32 call that takes a caller's path converts it with
   `internal/winpath.UTF16Ptr`, which adds the `\\?\` prefix to long paths as
   the os package does. Without it a path that `os.OpenFile` accepts past
@@ -62,6 +63,11 @@ callers responsible for their own file formats and higher-level policy.
   another user could swap the entry between the check and the removal.
 - Platforms that cannot validate private files refuse in `CreatePrivateFile`
   before creating anything, since every create would fail validation.
+- `OpenSecretFile(path)` is a separate read-only policy: current euid
+  0400/0600 or root-owned without group/other write, trusted ancestor/link
+  traversal, same opened regular handle, no repair. Linux ACL/filesystem checks
+  still apply; macOS parents may have deny-only ACLs, never allowing entries.
+  Keep existing runtime-state APIs strict and Windows DACL/reparse checks intact.
 
 ## Tests
 

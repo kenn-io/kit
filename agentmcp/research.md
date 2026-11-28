@@ -1,7 +1,8 @@
 ---
+type: Explanation
 title: "MCP registration research"
 description: "Research on MCP server registration formats and discovery across agent tools."
-last_edited: 2026-11-13
+generated: { by: codex/gpt-6.2-astra, at: "2026-11-19T10:49:55Z" }
 ---
 
 # MCP registration research

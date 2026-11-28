@@ -9,6 +9,7 @@ databases, command parsing, and shutdown policy belong to the caller.
 
 ## Invariants
 
+- `RuntimeStore.ValidateFiles` validates the directory and each record or lock independently. Validation never repairs; failure falls back to deep repair.
 - Never infer live daemon state from a runtime record alone. Probe the endpoint
   before claiming a process is reachable.
 - With PID-aware discovery, retain a live record's probe failure until another

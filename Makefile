@@ -16,7 +16,7 @@ override GOFLAGS += -trimpath
 endif
 export GOFLAGS
 
-.PHONY: lint lint-golangci lint-config lint-config-check custom-gcl nilaway lint-workflow-retries lint-frontmatter lint-frontmatter-changed
+.PHONY: lint lint-golangci lint-config lint-config-check custom-gcl nilaway lint-workflow-retries lint-frontmatter lint-frontmatter-changed fix-frontmatter
 
 # lint is the repository lint gate: shared config drift, golangci-lint with the
 # kit analyzers, nilaway, workflow downloads, and Markdown metadata.
@@ -43,6 +43,12 @@ lint-config:
 lint-config-check:
 	go run ./cmd/kennlint config -check
 
+.PHONY: test-embedclient-vertex
+test-embedclient-vertex:
+	go test ./embedclient -run '^(TestVertex.*|TestGoogleHTTPClientOverridesAPIKey|TestEmbedClassifiesFailedResponses)$$'
+	go test ./embedconfig -run '^(TestVertex.*|TestEmbedderDecodesTheStandardKeys)$$'
+	go test ./embedmodel -run '^(TestVertexIdentity|TestVectorIdentityPinsTheEndpointOnlyOnRequest)$$'
+
 .PHONY: test-embedserver
 # Set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY to include native parity.
 # CI sets GOTESTSUM_SUITE so each job writes its own gotestsum/<suite>.json.
@@ -50,15 +56,30 @@ GOTESTSUM_SUITE ?= embedserver
 test-embedserver:
 	go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/$(GOTESTSUM_SUITE).json --rerun-fails=2 --rerun-fails-report gotestsum/$(GOTESTSUM_SUITE)-reruns.txt --packages "./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal ./embedclient" -- -race
 
+.PHONY: test-vector-postgres
+# KIT_POSTGRES_TEST_DSN must point to a disposable PostgreSQL cluster.
+test-vector-postgres:
+	@test -n "$$KIT_POSTGRES_TEST_DSN" || { echo "set KIT_POSTGRES_TEST_DSN" >&2; exit 1; }
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/pgvector ./search/postgres" -- -count=1 -p 1
+
+.PHONY: test-vector-sqlite
+test-vector-sqlite:
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --packages "./vector/sqlitevec" -- -count=1
+
 lint-workflow-retries:
 	go run ./cmd/kennlint workflow-retries
 
+FRONTMATTER_FIX_FLAGS = -type-rule 'docs/architecture/**=Explanation' -type-rule 'docs/research/**=Explanation'
+
 lint-frontmatter:
-	go run ./cmd/kennlint frontmatter
+	@go run ./cmd/kennlint frontmatter || { echo "fix locally: make fix-frontmatter (set stale generated.at by hand; BY=<actor> records generated.by)"; exit 1; }
 
 FRONTMATTER_BASE ?= origin/main
 lint-frontmatter-changed:
-	go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE)
+	@go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE) || { echo "fix locally: make fix-frontmatter (set stale generated.at by hand; BY=<actor> records generated.by)"; exit 1; }
+
+fix-frontmatter:
+	go run ./cmd/kennlint frontmatter -fix $(FRONTMATTER_FIX_FLAGS) $${BY:+-by "$$BY"}
 
 # Workflow actions run at the commits in .github/workflows/actions.lock,
 # including actions that other actions call. The organization requires
