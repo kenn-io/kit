@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,9 +41,6 @@ func Check(ctx context.Context, path string, args []string, want Info) error {
 		return errors.New("invalid expectation: distribution is required")
 	case want.BuildTime.IsZero() && want.SourceTime.IsZero():
 		return errors.New("invalid expectation: build_time or source_time is required")
-	}
-	if !filepath.IsAbs(path) && filepath.Dir(path) == "." {
-		path = "." + string(os.PathSeparator) + path
 	}
 	out, err := binaryprobe.Run(ctx, path, args)
 	if err != nil {

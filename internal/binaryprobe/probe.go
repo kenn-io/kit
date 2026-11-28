@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +42,7 @@ func run(ctx context.Context, path string, args []string, requireStdout bool) ([
 	cmd.Stdout = diagnostic
 	if requireStdout {
 		stdout = &outputPrefix{limit: stdoutLimit}
-		cmd.Stdout = &stdoutWriter{stdout: stdout, diagnostic: diagnostic}
+		cmd.Stdout = io.MultiWriter(stdout, diagnostic)
 	}
 	cmd.Stderr = diagnostic
 	err := cmd.Run()
@@ -66,13 +67,6 @@ func run(ctx context.Context, path string, args []string, requireStdout bool) ([
 		return nil, errors.New("stdout exceeds 16 KiB limit")
 	}
 	return stdout.buf, nil
-}
-
-type stdoutWriter struct{ stdout, diagnostic *outputPrefix }
-
-func (w *stdoutWriter) Write(p []byte) (int, error) {
-	_, _ = w.stdout.Write(p)
-	return w.diagnostic.Write(p)
 }
 
 type outputPrefix struct {
