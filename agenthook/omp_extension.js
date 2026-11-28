@@ -71,7 +71,7 @@ export default function (omp) {
 	on("session_switch", replace);
 	on("session_branch", replace);
 	on("input", async (event, ctx, run) => {
-		if (event.source !== "interactive" || typeof event.text !== "string" || !event.text) return;
+		if (event.source !== "interactive" || typeof event.text !== "string" || (!event.text && !(Array.isArray(event.images) && event.images.length))) return;
 		await run("UserPromptSubmit", payload("UserPromptSubmit", ctx, { prompt: event.text }));
 	});
 	const toolFields = (event) => ({ tool_name: event.toolName, tool_use_id: event.toolCallId, tool_input: event.input });

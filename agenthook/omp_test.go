@@ -251,6 +251,45 @@ func TestOmpSessionAndToolLifecycle(t *testing.T) {
 	assert.Equal(t, "b", entries[6]["session_id"])
 }
 
+func TestOmpImageOnlyInteractiveInput(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node unavailable")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "omp.mjs")
+	log := filepath.Join(dir, "events")
+	require.NoError(t, os.WriteFile(log, nil, 0o600))
+	_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", `let s="";process.stdin.on("data",x=>s+=x).on("end",()=>require("fs").appendFileSync(process.env.OMP_TEST_LOG,s+"\n"))`, "image-marker"}, Marker: "image-marker", Hooks: []Hook{{Event: EventUserPromptSubmit}}})
+	require.NoError(t, err)
+	driver := ompHost + `let c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>"id",getSessionFile:()=>undefined}};let images=[{type:"image",data:"private-image-data",mimeType:"image/png"}];await h.input({source:"interactive",text:"",images},c);await h.input({source:"interactive",text:"",images:[]},c);await h.input({source:"extension",text:"",images},c);await h.input({source:"rpc",text:"",images},c);`
+	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
+	cmd.Env = append(os.Environ(), "OMP_TEST_LOG="+log)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	data, err := os.ReadFile(log)
+	require.NoError(t, err)
+	require.NotEmpty(t, data, "image-only input must reach the hook")
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 1)
+	var event map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &event))
+	assert.Equal(t, "UserPromptSubmit", event["hook_event_name"])
+	assert.Equal(t, "", event["prompt"])
+	assert.NotContains(t, string(data), "private-image-data")
+	assert.NotContains(t, event, "images")
+}
+
+func TestOmpHandleEmptyPrompt(t *testing.T) {
+	var output strings.Builder
+	handler := &agyRecorder{}
+	err := Handle(t.Context(), AgentOmp, strings.NewReader(`{"session_id":"id","hook_event_name":"UserPromptSubmit","prompt":""}`), &output, handler)
+	require.NoError(t, err)
+	require.NotNil(t, handler.prompt)
+	assert.Empty(t, handler.prompt.Prompt)
+	assert.JSONEq(t, `{}`, output.String())
+}
+
 func TestOmpUnsavedLocalInputBeforeBlockedStop(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

@@ -20,8 +20,8 @@ func ompProfile() profileSpec {
 	spec.script = ompExtension
 	spec.scriptMatcherEvents = []Event{EventPreToolUse, EventPostToolUse, EventPostToolUseFailure}
 	spec.responseFormat = responseOmp
-	spec.sessionSourceRequirement = inputRequired
-	spec.sessionEndReasonRequirement = inputRequired
+	spec.sessionSourceRequirement, spec.sessionEndReasonRequirement = inputRequired, inputRequired
+	spec.userPromptRequirement = inputOptional
 	return spec
 }
 
