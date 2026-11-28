@@ -52,14 +52,16 @@ function runCommand(handler, payload, options = {}) {
 			if (!failure && overflow) failure = `stdout exceeds ${stdoutLimit} bytes`;
 			let response;
 			if (!failure && options.collect) {
-				const text = Buffer.concat(stdout).toString("utf8").trim();
-				if (text) {
-					try {
+				try {
+					const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(stdout)).trim();
+					if (text) {
 						response = JSON.parse(text);
 						if (!response || typeof response !== "object" || Array.isArray(response)) throw new Error("expected an object");
-					} catch (error) { response = undefined; failure = `invalid stdout JSON object: ${error.message}`; }
-				}
+					}
+				} catch (error) { response = undefined; failure = `invalid stdout JSON object: ${error.message}`; }
 			}
+			// A descendant may keep the data listener alive after the grace period.
+			stdout = [];
 			resolve({ failure: failure && detail ? `${failure}: ${detail}` : failure, response });
 		};
 		if (child.stdout) child.stdout.on("data", (chunk) => {
