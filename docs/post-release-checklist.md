@@ -1,41 +1,25 @@
 ---
+type: Guide
 title: "Post-release documentation checklist"
 description: "Reconcile release notes, upgrade guidance, and contributor credit after a release."
-last_edited: 2026-11-15
+generated: { by: codex/gpt-6.2-sol, at: "2026-11-28T16:24:49Z" }
 ---
 
 # Post-release documentation checklist
 
-Use this checklist after a maintainer has published a release. It reconciles
-public documentation with what shipped; it is not authority to tag or publish.
-Follow each repository's own release procedures. Apply only the items relevant
-to that release. [Kata PR #1040](https://github.com/kenn-io/kata/pull/1040)
-illustrates a post-release documentation reconciliation.
+Use this checklist to reconcile public documentation with an already published
+release. Start from the published tag and the GitHub release notes, as Kit does.
+Follow your repository’s own release procedure.
 
-## Release evidence
+- [ ] Compare the release notes with the commits and pull requests between the
+  previous published tag and the new tag. Keep entries for later work out of
+  this release. If the repository maintains a changelog, reconcile it against
+  the same range.
+- [ ] Verify version claims and upgrade guidance against the shipped source.
+  Update prerequisites, migration steps, or rollback guidance where they changed.
+- [ ] Check contributor credit against shipped pull requests and release notes.
+- [ ] Open any release pages and links you updated. Check the version, date, and
+  anchors against the published release.
 
-- [ ] Record the published tag, previous published tag, release date, and
-  source range between them. Check the tag and release notes against the
-  shipped commits and pull requests, not just the current branch.
-
-## Documentation
-
-- [ ] Reconcile the changelog with the shipped range: move only shipped entries
-  into the release, retain later unreleased work, and add missing notable
-  changes supported by the shipped source or pull requests.
-- [ ] Replace unreleased references with the earliest release that contains
-  the change, verified against tags. Leave references to unshipped work alone.
-- [ ] Where relevant, update upgrade prerequisites, migration steps, rollback
-  guidance, and component version requirements. Link to the source or release
-  notes that support them. Distinguish application, API, schema, and dependency
-  versions rather than treating them as interchangeable.
-- [ ] Credit contributors from shipped pull requests and release notes; verify
-  attribution rather than guessing from commit authorship or current work.
-- [ ] If affected, update landing pages and documentation links or anchors so
-  they point to the right release and existing sections.
-
-## Final check
-
-- [ ] Review the rendered documentation and links, and run the repository's
-  applicable documentation checks. Confirm that release dates, versions,
-  references, and credit agree with the release evidence above.
+[Kata’s 0.23.0 update](https://github.com/kenn-io/kata/pull/1040) shows how a
+repository with a changelog can apply the same checks.
