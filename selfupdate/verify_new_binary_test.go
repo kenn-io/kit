@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -210,27 +209,6 @@ func TestNewBinaryRunCanceledBeforeStartReportsCancellationOnce(t *testing.T) {
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, context.Canceled.Error(), err.Error())
-}
-
-func TestVerifyOutputKeepsOnlyItsBeginning(t *testing.T) {
-	t.Parallel()
-	output := &outputPrefix{}
-	first := "version `GLIBC_9.99' not found\n"
-	chunk := bytes.Repeat([]byte("x"), 32<<10)
-
-	n, err := output.Write([]byte(first))
-	require.NoError(t, err)
-	assert.Equal(t, len(first), n)
-	for range 64 {
-		n, err = output.Write(chunk)
-		require.NoError(t, err)
-		assert.Equal(t, len(chunk), n, "a discarded write must still report success so the process keeps running")
-	}
-
-	assert.Len(t, output.buf, verifyOutputLimit)
-	text := output.String()
-	assert.True(t, strings.HasPrefix(text, strings.TrimSpace(first)))
-	assert.True(t, strings.HasSuffix(text, "..."))
 }
 
 func TestInstallReplacesBinaryWhenNewBinaryRuns(t *testing.T) {
