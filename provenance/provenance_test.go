@@ -180,3 +180,10 @@ func TestInvalidExpectations(t *testing.T) {
 		require.ErrorContains(t, Check(t.Context(), "nonexistent", nil, want), "invalid expectation")
 	}
 }
+
+func TestCheckBareRelativePath(t *testing.T) {
+	path := fixture(t, map[string]string{"version": "1.2.3", "commit": commit, "distribution": "tap", "buildTime": buildStamp, "sourceTime": sourceStamp})
+	t.Chdir(filepath.Dir(path))
+	t.Setenv("PATH", t.TempDir())
+	require.NoError(t, Check(t.Context(), filepath.Base(path), nil, expected()))
+}
