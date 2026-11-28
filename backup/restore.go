@@ -518,7 +518,7 @@ func syncRestoredTree(target, ceiling string) error {
 		if err != nil {
 			// Directory sync is a no-op on Windows, so an unlistable
 			// subtree needs no sync; preserve all other walk errors.
-			if runtime.GOOS == "windows" && path != target && d != nil && d.IsDir() && errors.Is(err, fs.ErrPermission) {
+			if runtime.GOOS == "windows" && path != target && errors.Is(err, fs.ErrPermission) {
 				return fs.SkipDir
 			}
 			return err
