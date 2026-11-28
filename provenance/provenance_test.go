@@ -14,103 +14,136 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const commit = "0123456789abcdef0123456789abcdef01234567"
+const (
+	commit      = "0123456789abcdef0123456789abcdef01234567"
+	buildStamp  = "2026-01-02T03:04:05Z"
+	sourceStamp = "2026-01-01T03:04:05Z"
+)
+
+func fixture(t *testing.T, stamps map[string]string) string {
+	t.Helper()
+	name := "fixture"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	var flags []string
+	for k, v := range stamps {
+		flags = append(flags, "-X", "main."+k+"="+v)
+	}
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-ldflags", strings.Join(flags, " "), "-o", path, "./testdata/fixture")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	return path
+}
+
+func expected() Info {
+	build, _ := time.Parse(time.RFC3339, buildStamp)
+	source, _ := time.Parse(time.RFC3339, sourceStamp)
+	return Info{Version: "1.2.3", Commit: commit, Distribution: "tap", BuildTime: build, SourceTime: source}
+}
+
+func TestCheckRejectsWrongSecondaryTimestamp(t *testing.T) {
+	path := fixture(t, map[string]string{"version": "1.2.3", "commit": commit, "distribution": "tap", "buildTime": buildStamp, "sourceTime": buildStamp})
+	err := Check(t.Context(), path, nil, expected())
+	require.ErrorContains(t, err, "provenance mismatch")
+	assert.Contains(t, err.Error(), sourceStamp)
+	assert.Contains(t, err.Error(), buildStamp)
+}
 
 func TestInfoJSON(t *testing.T) {
-	data, err := json.Marshal(Info{})
+	data, err := json.Marshal(Info{SchemaVersion: 42, BuildTime: expected().BuildTime.In(time.FixedZone("offset", 3600))})
 	require.NoError(t, err)
-	assert.JSONEq(t, `{}`, string(data))
+	assert.JSONEq(t, `{"schema_version":1,"build_time":"2026-01-02T03:04:05Z"}`, string(data))
 }
 
 func TestCheckFinalBinary(t *testing.T) {
-	name := "fixture"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	binary := filepath.Join(t.TempDir(), name)
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "./testdata/fixture")
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "%s", output)
-	expected := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	want := Want{Version: "v1.2.3", Commit: commit, Distribution: "tap", Time: BuildTime, ExpectedTime: expected}
-	record, err := json.Marshal(Info{SchemaVersion: SchemaVersion, Version: "1.2.3", Commit: commit, Distribution: "tap", BuildTime: expected.In(time.FixedZone("offset", 3600))})
-	require.NoError(t, err)
-	valid := `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","build_time":"2026-01-02T03:04:05Z","distribution":"tap","extra":true}`
-	cases := []struct {
-		name     string
-		args     []string
-		want     Want
-		contains []string
+	stamps := map[string]string{"version": "1.2.3", "commit": commit, "distribution": "tap", "buildTime": "2026-01-02T04:04:05+01:00", "sourceTime": sourceStamp}
+	path := fixture(t, stamps)
+	want := expected()
+	require.NoError(t, Check(t.Context(), path, nil, want))
+	for _, tc := range []struct {
+		name   string
+		change func(*Info)
 	}{
-		{"unstamped successful executable", []string{"unstamped"}, want, []string{"version", "commit", "build_time", "distribution"}},
-		{"valid", []string{"output", valid}, want, nil},
-		{"Info round trip", []string{"output", string(record)}, want, nil},
-		{"no distribution expectation", []string{"output", `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","build_time":"2026-01-02T03:04:05Z"}`}, Want{Version: "1.2.3", Commit: commit, Time: BuildTime, ExpectedTime: expected}, []string{"distribution"}},
-		{"no distribution report", []string{"output", `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","build_time":"2026-01-02T03:04:05Z"}`}, want, []string{"distribution"}},
-		{"missing expectation", []string{"output", valid}, Want{Version: "1.2.3", Commit: commit, Distribution: "tap", Time: BuildTime}, []string{"expected", "time"}},
-		{"invalid time kind", []string{"output", valid}, Want{Version: "1.2.3", Commit: commit, Distribution: "tap", ExpectedTime: expected}, []string{"time kind"}},
-		{"source mislabeled as build", []string{"output", `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","distribution":"tap","build_time":"2026-01-02T03:04:04Z"}`}, want, []string{"build_time"}},
-		{"wrong time", []string{"output", valid}, Want{Version: "1.2.3", Commit: commit, Distribution: "tap", Time: BuildTime, ExpectedTime: expected.Add(time.Second)}, []string{"build_time"}},
-		{"missing schema", []string{"output", strings.Replace(valid, `"schema_version":1,`, "", 1)}, want, []string{"schema_version"}},
-		{"future schema", []string{"output", strings.Replace(valid, `"schema_version":1`, `"schema_version":2`, 1)}, want, []string{"schema_version"}},
-		{"wrong fields", []string{"output", `{"schema_version":1,"version":"2","commit":"abcd","distribution":"core","build_time":"2026-01-02T03:04:05Z"}`}, want, []string{"version", "commit", "distribution"}},
-		{"wrong full commit", []string{"output", `{"schema_version":1,"version":"1.2.3","commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","distribution":"tap","build_time":"2026-01-02T03:04:05Z"}`}, want, []string{"commit"}},
-		{"source only", []string{"output", `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","distribution":"tap","source_time":"2026-01-02T03:04:05Z"}`}, want, []string{"build_time"}},
-		{"source accepted", []string{"output", `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","distribution":"tap","source_time":"2026-01-02T03:04:05Z"}`}, Want{Version: "1.2.3", Commit: commit, Distribution: "tap", Time: SourceTime, ExpectedTime: expected}, nil},
-		{"equal times", []string{"output", `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","distribution":"tap","source_time":"2026-01-02T03:04:05Z","build_time":"2026-01-02T03:04:05Z"}`}, want, nil},
-		{"offset", []string{"output", `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","distribution":"tap","build_time":"2026-01-02T04:04:05+01:00"}`}, want, nil},
-		{"malformed", []string{"output", "{"}, want, []string{"JSON"}},
-		{"nonzero", []string{"fail"}, want, []string{"fixture failed"}},
-		{"oversized", []string{"large"}, want, []string{"stdout"}},
-	}
-	for _, tc := range cases {
+		{"version", func(i *Info) { i.Version = "v1.2.3" }},
+		{"commit", func(i *Info) { i.Commit = strings.Repeat("a", 40) }},
+		{"distribution", func(i *Info) { i.Distribution = "core" }},
+		{"build time", func(i *Info) { i.BuildTime = i.BuildTime.Add(time.Second) }},
+		{"source time", func(i *Info) { i.SourceTime = i.SourceTime.Add(time.Second) }},
+		{"unexpected build time", func(i *Info) { i.BuildTime = time.Time{} }},
+		{"swapped times", func(i *Info) { i.BuildTime, i.SourceTime = i.SourceTime, i.BuildTime }},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Check(t.Context(), binary, tc.args, tc.want)
-			if len(tc.contains) == 0 {
+			wrong := want
+			tc.change(&wrong)
+			err := Check(t.Context(), path, nil, wrong)
+			require.ErrorContains(t, err, "provenance mismatch")
+			assert.Contains(t, err.Error(), " got:")
+			assert.Contains(t, err.Error(), "want:")
+		})
+	}
+	valid := `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","distribution":"tap","build_time":"2026-01-02T04:04:05+01:00","source_time":"` + sourceStamp + `","extra":true}`
+	for _, tc := range []struct{ name, output, contains string }{
+		{"reordered offset additive", valid, ""},
+		{"case variant", strings.Replace(valid, `"version"`, `"Version"`, 1), ""},
+		{"malformed", "{", "decode provenance JSON"},
+		{"missing schema", strings.Replace(valid, `"schema_version":1,`, "", 1), `"schema_version":1`},
+		{"future schema", strings.Replace(valid, `"schema_version":1`, `"schema_version":2`, 1), `"schema_version":2`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Check(t.Context(), path, []string{"output", tc.output}, want)
+			if tc.contains == "" {
 				require.NoError(t, err)
-				return
-			}
-			require.Error(t, err)
-			for _, s := range tc.contains {
-				assert.Contains(t, err.Error(), s)
+			} else {
+				require.ErrorContains(t, err, tc.contains)
 			}
 		})
 	}
+	require.ErrorContains(t, Check(t.Context(), path, []string{"fail"}, want), "fixture failed")
+	require.ErrorContains(t, Check(t.Context(), path, []string{"large", valid}, want), "stdout exceeds")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	assert.ErrorIs(t, Check(ctx, binary, []string{"unstamped"}, want), context.Canceled)
+	assert.ErrorIs(t, Check(ctx, path, nil, want), context.Canceled)
 }
 
-func TestVersionOnlyLinkedBinary(t *testing.T) {
-	name := "fixture"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
+func TestLinkedArtifacts(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stamps map[string]string
+		want   Info
+		valid  bool
+	}{
+		{"version only", map[string]string{"version": "1.2.3"}, expected(), false},
+		{"unstamped", nil, expected(), false},
+		{"source only", map[string]string{"version": "1.2.3", "commit": commit, "distribution": "tap", "sourceTime": sourceStamp}, func() Info { i := expected(); i.BuildTime = time.Time{}; return i }(), true},
+		{"equal times", map[string]string{"version": "1.2.3", "commit": commit, "distribution": "tap", "buildTime": buildStamp, "sourceTime": buildStamp}, func() Info { i := expected(); i.SourceTime = i.BuildTime; return i }(), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := fixture(t, tc.stamps)
+			err := Check(t.Context(), path, nil, tc.want)
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, "provenance mismatch")
+				assert.Contains(t, err.Error(), `"schema_version":1`)
+				assert.Contains(t, err.Error(), "want:")
+			}
+		})
 	}
-	binary := filepath.Join(t.TempDir(), name)
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-ldflags", "-X main.version=1.2.3", "-o", binary, "./testdata/fixture")
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "%s", output)
-	err = Check(t.Context(), binary, []string{"linked"}, Want{Version: "1.2.3", Commit: commit, Distribution: "archive", Time: BuildTime, ExpectedTime: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)})
-	require.Error(t, err)
-	for _, field := range []string{"commit", "distribution", "build_time"} {
-		assert.Contains(t, err.Error(), field)
+}
+
+func TestInvalidExpectations(t *testing.T) {
+	for _, change := range []func(*Info){func(i *Info) { i.Version = "" }, func(i *Info) { i.Commit = "short" }, func(i *Info) { i.Distribution = "" }, func(i *Info) { i.BuildTime = time.Time{}; i.SourceTime = time.Time{} }} {
+		want := expected()
+		change(&want)
+		require.ErrorContains(t, Check(t.Context(), "nonexistent", nil, want), "invalid expectation")
 	}
-	assert.NotContains(t, err.Error(), "version mismatch")
-	assert.NotContains(t, err.Error(), "schema_version")
 }
 
 func TestCheckBareRelativePath(t *testing.T) {
-	name := "fixture"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	dir := t.TempDir()
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", filepath.Join(dir, name), "./testdata/fixture")
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "%s", output)
-	t.Chdir(dir)
+	path := fixture(t, map[string]string{"version": "1.2.3", "commit": commit, "distribution": "tap", "buildTime": buildStamp, "sourceTime": sourceStamp})
+	t.Chdir(filepath.Dir(path))
 	t.Setenv("PATH", t.TempDir())
-	want := Want{Version: "1.2.3", Commit: commit, Distribution: "tap", Time: BuildTime, ExpectedTime: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}
-	record := `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","distribution":"tap","build_time":"2026-01-02T03:04:05Z"}`
-	require.NoError(t, Check(t.Context(), name, []string{"output", record}, want))
+	require.NoError(t, Check(t.Context(), filepath.Base(path), nil, expected()))
 }

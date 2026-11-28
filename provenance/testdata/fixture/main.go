@@ -5,27 +5,37 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"go.kenn.io/kit/provenance"
 )
 
-var version string
+var version, commit, buildTime, sourceTime, distribution string
 
 func main() {
-	if len(os.Args) < 2 {
-		os.Exit(2)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "output":
+			fmt.Print(os.Args[2])
+			return
+		case "large":
+			fmt.Print(os.Args[2], strings.Repeat(" ", 17<<10), "junk")
+			return
+		case "fail":
+			fmt.Fprint(os.Stderr, "fixture failed")
+			os.Exit(1)
+		}
 	}
-	switch os.Args[1] {
-	case "linked":
-		_ = json.NewEncoder(os.Stdout).Encode(provenance.Info{SchemaVersion: provenance.SchemaVersion, Version: version})
-	case "unstamped":
-		fmt.Print(`{}`)
-	case "output":
-		fmt.Print(os.Args[2])
-	case "large":
-		fmt.Print(strings.Repeat("x", 17<<10))
-	case "fail":
-		fmt.Fprint(os.Stderr, "fixture failed")
-		os.Exit(1)
+	parse := func(value string) time.Time {
+		if value == "" {
+			return time.Time{}
+		}
+		t, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			fmt.Fprint(os.Stderr, err)
+			os.Exit(1)
+		}
+		return t
 	}
+	_ = json.NewEncoder(os.Stdout).Encode(provenance.Info{Version: version, Commit: commit, BuildTime: parse(buildTime), SourceTime: parse(sourceTime), Distribution: distribution})
 }

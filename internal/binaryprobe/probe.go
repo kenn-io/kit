@@ -59,7 +59,7 @@ func run(ctx context.Context, path string, args []string, requireStdout bool) ([
 		}
 		return nil, err
 	}
-	if !requireStdout {
+	if stdout == nil {
 		return nil, nil
 	}
 	if stdout.truncated {

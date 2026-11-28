@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"go.kenn.io/kit/internal/binaryprobe"
@@ -26,26 +26,28 @@ type Info struct {
 	Distribution  string    `json:"distribution,omitzero"`
 }
 
-// TimeKind selects the timestamp required by Check.
-type TimeKind uint8
-
-const (
-	// BuildTime requires the time at which the binary was built.
-	BuildTime TimeKind = iota + 1
-	// SourceTime requires the source revision's time.
-	SourceTime
-)
-
-// Want specifies the expected values for a release binary.
-type Want struct {
-	Version, Commit, Distribution string
-	Time                          TimeKind
-	// ExpectedTime is the nonzero expected instant for the selected Time.
-	ExpectedTime time.Time
+// MarshalJSON stamps the supported schema and encodes timestamps in UTC.
+func (i Info) MarshalJSON() ([]byte, error) {
+	type record Info
+	i.SchemaVersion = SchemaVersion
+	i.BuildTime = i.BuildTime.UTC()
+	i.SourceTime = i.SourceTime.UTC()
+	return json.Marshal(record(i))
 }
 
 // Check runs the binary and compares its JSON provenance with want.
-func Check(ctx context.Context, path string, args []string, want Want) error {
+func Check(ctx context.Context, path string, args []string, want Info) error {
+	_, hexErr := hex.DecodeString(want.Commit)
+	switch {
+	case want.Version == "":
+		return errors.New("invalid expectation: version is required")
+	case (len(want.Commit) != 40 && len(want.Commit) != 64) || hexErr != nil:
+		return errors.New("invalid expectation: commit must be a full hex hash")
+	case want.Distribution == "":
+		return errors.New("invalid expectation: distribution is required")
+	case want.BuildTime.IsZero() && want.SourceTime.IsZero():
+		return errors.New("invalid expectation: build_time or source_time is required")
+	}
 	if !filepath.IsAbs(path) && filepath.Dir(path) == "." {
 		path = "." + string(os.PathSeparator) + path
 	}
@@ -53,49 +55,20 @@ func Check(ctx context.Context, path string, args []string, want Want) error {
 	if err != nil {
 		return fmt.Errorf("run provenance command: %w", err)
 	}
-	var raw Info
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return fmt.Errorf("decode provenance JSON: %w", err)
+	var got Info
+	if err := json.Unmarshal(out, &got); err != nil {
+		prefix := out[:min(len(out), 200)]
+		return fmt.Errorf("decode provenance JSON: %w; got: %q", err, prefix)
 	}
-	var problems []string
-	if strings.TrimPrefix(want.Version, "v") == "" || strings.TrimPrefix(raw.Version, "v") != strings.TrimPrefix(want.Version, "v") {
-		problems = append(problems, "version mismatch")
-	}
-	_, hexErr := hex.DecodeString(want.Commit)
-	if (len(want.Commit) != 40 && len(want.Commit) != 64) || hexErr != nil || raw.Commit != want.Commit {
-		problems = append(problems, "commit must match the full expected hash")
-	}
-	if raw.SchemaVersion != SchemaVersion {
-		problems = append(problems, "schema_version must be 1")
-	}
-	if want.Distribution == "" {
-		problems = append(problems, "expected distribution is required")
-	} else if raw.Distribution != want.Distribution {
-		problems = append(problems, "distribution mismatch")
-	}
-	var selected time.Time
-	var name string
-	switch want.Time {
-	case BuildTime:
-		name, selected = "build_time", raw.BuildTime
-	case SourceTime:
-		name, selected = "source_time", raw.SourceTime
-	default:
-		problems = append(problems, "time kind must select build_time or source_time")
-	}
-	if want.ExpectedTime.IsZero() {
-		problems = append(problems, "expected time is required")
-	}
-	if name != "" {
-		switch {
-		case selected.IsZero():
-			problems = append(problems, name+" is missing or zero")
-		case !want.ExpectedTime.IsZero() && !selected.Equal(want.ExpectedTime):
-			problems = append(problems, name+" does not match expected time")
+	want.SchemaVersion = SchemaVersion
+	got.BuildTime, got.SourceTime = got.BuildTime.UTC(), got.SourceTime.UTC()
+	want.BuildTime, want.SourceTime = want.BuildTime.UTC(), want.SourceTime.UTC()
+	if got != want {
+		expected, err := json.Marshal(want)
+		if err != nil {
+			return fmt.Errorf("encode expectation: %w", err)
 		}
-	}
-	if len(problems) > 0 {
-		return fmt.Errorf("invalid provenance: %s", strings.Join(problems, "; "))
+		return fmt.Errorf("provenance mismatch:\n got: %s\nwant: %s", out, expected)
 	}
 	return nil
 }
