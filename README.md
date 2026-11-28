@@ -48,8 +48,11 @@ behavior, or provider workflows live here.
   midnight and dates a zone skipped.
 - **Share development tooling.** `lint` owns the shared Go lint policy,
   `logging` builds reusable slog loggers, `openssh` orchestrates an OpenSSH
-  client, `telemetry` wraps OpenTelemetry and anonymous usage events, and
-  `spill` moves oversized in-memory lists to a temporary file.
+  client, `telemetry` wraps OpenTelemetry and anonymous usage events,
+  `spill` moves oversized in-memory lists to a temporary file, and
+  [`provenance`](provenance/) defines the `version --json` record a release
+  binary prints and checks an extracted or installed binary against the
+  version, full commit, timestamp, and distribution its pipeline expects.
 
 ## Installation
 
