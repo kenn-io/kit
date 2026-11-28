@@ -51,14 +51,12 @@
   identity upon replacement, preserving the ended session's cwd. It reports
   SessionStart and interactive input submissions including local commands
   immediately, even before a transcript exists;
-  validate native outputs, report failures in the TUI, return the first valid
-  block, and join nonblank tool contexts. Share a 25-second budget
-  across callback batches and honor Stop cancellation. Separate Pi and omp
-  filenames allow a shared directory; the omp module checks for a co-located
-  legacy Kit Pi module on its first TUI callback and disables reporting for that
-  session with an actionable warning.
-  Keep the Pi glue marker `// agenthook:omp-guarded` when retaining that guard;
-  it lets the omp module recognize refreshed Pi glue without parsing code.
+  validate native outputs and report failures in the TUI. omp aggregates decision
+  handlers in registration order. Lifecycle callbacks share a 25-second deadline
+  across both replacement phases; Stop honors cancellation. Each decision command
+  has a 25-second cap (omp defaults to 30 seconds per handler). Pi and omp use
+  separate files; in a shared directory, a Pi module predating its omp guard can
+  duplicate SessionStart and UserPromptSubmit until Pi hooks are reinstalled.
   The OpenCode module retires its reported root with SessionEnd as soon as
   its terminal shows a session with another root or that root is deleted,
   and never from cleanup, which also runs on hot reload and reinstall. Setup

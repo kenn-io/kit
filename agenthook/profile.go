@@ -114,6 +114,7 @@ type profileSpec struct {
 	defaultDir                  func() (string, error)
 	configEnvSubdir             string
 	configEnvDir                func(string) (string, error)
+	scriptMatcherEvents         []Event
 	newConfigFields             map[string]any
 	eventName                   func(Event) string
 	timeoutUnit                 time.Duration
@@ -210,15 +211,6 @@ func ConfigPath(agent Agent) (string, error) {
 	spec, ok := profiles[agent]
 	if !ok {
 		return "", fmt.Errorf("unsupported agent hook integration %q", agent)
-	}
-	// OMP publishes PI_CODING_AGENT_DIR in its metadata but named profiles
-	// and the inherited-profile exception must be resolved before that override.
-	if agent == AgentOmp {
-		dir, err := ompAgentDir()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(dir, spec.profile.ConfigFilename), nil
 	}
 	dir := ""
 	if spec.profile.ConfigEnvironment != "" {

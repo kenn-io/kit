@@ -13,8 +13,12 @@ import (
 var ompExtension string
 
 func ompProfile() profileSpec {
-	spec := newProfileSpec(Profile{Agent: AgentOmp, DisplayName: "omp", ConfigEnvironment: "PI_CODING_AGENT_DIR", ConfigFilename: filepath.Join("extensions", "agenthook-omp.js"), SupportedEvents: []Event{EventSessionStart, EventUserPromptSubmit, EventPreToolUse, EventPostToolUse, EventPostToolUseFailure, EventStop, EventSessionEnd}}, formatScript, "bash", ompAgentDir)
+	spec := newProfileSpec(Profile{
+		Agent: AgentOmp, DisplayName: "omp", ConfigFilename: filepath.Join("extensions", "agenthook-omp.js"),
+		SupportedEvents: []Event{EventSessionStart, EventUserPromptSubmit, EventPreToolUse, EventPostToolUse, EventPostToolUseFailure, EventStop, EventSessionEnd},
+	}, formatScript, "bash", ompAgentDir)
 	spec.script = ompExtension
+	spec.scriptMatcherEvents = []Event{EventPreToolUse, EventPostToolUse, EventPostToolUseFailure}
 	spec.responseFormat = responseOmp
 	spec.sessionSourceRequirement = inputRequired
 	spec.sessionEndReasonRequirement = inputRequired

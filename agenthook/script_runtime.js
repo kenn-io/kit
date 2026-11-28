@@ -95,8 +95,7 @@ function runCommand(handler, payload, options = {}) {
 }
 
 // Runs commands in order. Collection preserves successful sibling responses.
-// OMP supplies an exact matcher, an aggregate budget, cancellation and a
-// predicate that stops on a validated decision.
+// OMP supplies an aggregate deadline for lifecycle callbacks.
 async function runHooks(event, payload, options = {}) {
 	const failures = [];
 	const responses = [];
@@ -111,14 +110,12 @@ async function runHooks(event, payload, options = {}) {
 	}
 	try {
 		for (const entry of config.hooks?.[event] ?? []) {
-			if ("matcher" in options && entry.matcher && entry.matcher !== options.matcher) continue;
 			for (const handler of entry.hooks) {
 				if (controller.signal.aborted) break;
 				const { failure, response } = await runCommand(handler, payload, { ...options, signal: controller.signal });
 				if (failure) failures.push(`${[handler.command, ...handler.args].join(" ")}: ${failure}`);
 				if (response !== undefined) {
 					responses.push(response);
-					if (options.stop?.(response)) return { responses, failures };
 				}
 			}
 			if (controller.signal.aborted) break;

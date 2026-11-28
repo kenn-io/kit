@@ -33,11 +33,12 @@
 // SessionEnd reports replacement, not quit. Tool decisions and Stop blocks
 // return promptly; failures appear in the TUI and do not override valid sibling
 // decisions. Nonblank tool contexts join in registration order. Each
-// callback has a 25-second shared budget; Stop also honors its cancellation.
-// When a shared directory contains a legacy Kit Pi module, omp reports an
-// error and disables its hooks until Pi registrations are reinstalled with
-// updated Kit and omp is restarted. The omp mappings follow omp v19.2.1;
-// session_stop needs v16.1.0.
+// lifecycle callback has a 25-second deadline, and each decision command is
+// capped at 25 seconds against omp's default 30-second handler timeout; omp
+// does not expose a lower custom tool-call timeout to the extension. Stop
+// honors cancellation. In a shared directory, a Pi module predating the omp
+// guard can duplicate SessionStart and UserPromptSubmit until Pi hooks are
+// reinstalled. The omp mappings follow omp v19.2.1; session_stop needs v16.1.0.
 // Several terminals can report the same session_id, so hosts should keep one
 // record per terminal.
 //

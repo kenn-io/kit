@@ -246,12 +246,10 @@ func prepareInstall(agent Agent, opts InstallOptions) (profileSpec, string, []na
 		if spec.format == formatHermesYAML && hook.Timeout > 300*time.Second {
 			return profileSpec{}, "", nil, errors.New("Hermes hook timeout must not exceed 300 seconds")
 		}
-		// OMP filters exact native shell names; other script matchers would be dropped.
 		if spec.format == formatScript && strings.TrimSpace(hook.Matcher) != "" &&
-			!(agent == AgentOmp && strings.TrimSpace(hook.Matcher) == ToolBash &&
-				(hook.Event == EventPreToolUse || hook.Event == EventPostToolUse || hook.Event == EventPostToolUseFailure)) {
-			if agent == AgentOmp {
-				return profileSpec{}, "", nil, errors.New("omp supports only the Bash matcher on tool events")
+			!(strings.TrimSpace(hook.Matcher) == ToolBash && slices.Contains(spec.scriptMatcherEvents, hook.Event)) {
+			if len(spec.scriptMatcherEvents) > 0 {
+				return profileSpec{}, "", nil, fmt.Errorf("%s hooks accept the Bash matcher only on tool events", spec.profile.DisplayName)
 			}
 			return profileSpec{}, "", nil, fmt.Errorf("%s hooks do not support matchers", spec.profile.DisplayName)
 		}
