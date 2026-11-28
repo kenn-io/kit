@@ -51,6 +51,22 @@ func TestCheckRejectsWrongSecondaryTimestamp(t *testing.T) {
 	assert.Contains(t, err.Error(), buildStamp)
 }
 
+func TestCheckRejectsExplicitZeroTimestamp(t *testing.T) {
+	path := fixture(t, nil)
+	for _, tc := range []struct {
+		name, output string
+		want         Info
+	}{
+		{"build time", `"build_time":"0001-01-01T00:00:00Z","source_time":"` + sourceStamp + `"`, func() Info { i := expected(); i.BuildTime = time.Time{}; return i }()},
+		{"source time", `"build_time":"` + buildStamp + `","source_time":"0001-01-01T00:00:00Z"`, func() Info { i := expected(); i.SourceTime = time.Time{}; return i }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := `{"schema_version":1,"version":"1.2.3","commit":"` + commit + `","distribution":"tap",` + tc.output + `}`
+			require.Error(t, Check(t.Context(), path, []string{"output", output}, tc.want))
+		})
+	}
+}
+
 func TestInfoJSON(t *testing.T) {
 	data, err := json.Marshal(Info{SchemaVersion: 42, BuildTime: expected().BuildTime.In(time.FixedZone("offset", 3600))})
 	require.NoError(t, err)

@@ -51,8 +51,8 @@ func Check(ctx context.Context, path string, args []string, want Info) error {
 	if err != nil {
 		return fmt.Errorf("run provenance command: %w", err)
 	}
-	var got Info
-	if err := json.Unmarshal(out, &got); err != nil {
+	got, err := decode(out)
+	if err != nil {
 		prefix := out[:min(len(out), 200)]
 		return fmt.Errorf("decode provenance JSON: %w; got: %q", err, prefix)
 	}
@@ -72,4 +72,36 @@ func Check(ctx context.Context, path string, args []string, want Info) error {
 		return fmt.Errorf("provenance mismatch:\n got: %s\nwant: %s", out, expected)
 	}
 	return nil
+}
+
+// decode parses a provenance record. A timestamp that is present must be a
+// non-zero RFC 3339 time; omitted timestamps stay zero.
+func decode(out []byte) (Info, error) {
+	var rec struct {
+		Info
+		BuildTime  json.RawMessage `json:"build_time"`
+		SourceTime json.RawMessage `json:"source_time"`
+	}
+	if err := json.Unmarshal(out, &rec); err != nil {
+		return Info{}, err
+	}
+	for _, f := range []struct {
+		name string
+		raw  json.RawMessage
+		dst  *time.Time
+	}{
+		{"build_time", rec.BuildTime, &rec.Info.BuildTime},
+		{"source_time", rec.SourceTime, &rec.Info.SourceTime},
+	} {
+		if f.raw == nil {
+			continue
+		}
+		if err := json.Unmarshal(f.raw, f.dst); err != nil {
+			return Info{}, err
+		}
+		if f.dst.IsZero() {
+			return Info{}, fmt.Errorf("%s must not be zero or null", f.name)
+		}
+	}
+	return rec.Info, nil
 }
