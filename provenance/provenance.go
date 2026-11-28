@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.kenn.io/kit/internal/binaryprobe"
@@ -26,7 +27,9 @@ type Info struct {
 	Distribution  string    `json:"distribution,omitzero"`
 }
 
-// Check runs the binary and compares its JSON provenance with want.
+// Check runs the binary and compares its JSON provenance with want. Commit
+// hashes compare case-insensitively, and timestamps compare in UTC. All other
+// fields must match exactly.
 func Check(ctx context.Context, path string, args []string, want Info) error {
 	_, hexErr := hex.DecodeString(want.Commit)
 	switch {
@@ -58,6 +61,9 @@ func Check(ctx context.Context, path string, args []string, want Info) error {
 	}
 	got.BuildTime, got.SourceTime = got.BuildTime.UTC(), got.SourceTime.UTC()
 	want.BuildTime, want.SourceTime = want.BuildTime.UTC(), want.SourceTime.UTC()
+	if strings.EqualFold(got.Commit, want.Commit) {
+		got.Commit = want.Commit
+	}
 	if got != want {
 		expected, err := json.Marshal(want)
 		if err != nil {

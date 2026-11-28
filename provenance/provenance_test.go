@@ -74,6 +74,13 @@ func TestCheckFinalBinary(t *testing.T) {
 	path := fixture(t, stamps)
 	want := expected()
 	require.NoError(t, Check(t.Context(), path, nil, want))
+	uppercase := want
+	uppercase.Commit = strings.ToUpper(uppercase.Commit)
+	require.NoError(t, Check(t.Context(), path, nil, uppercase))
+	uppercase.Version = "different"
+	err := Check(t.Context(), path, nil, uppercase)
+	require.ErrorContains(t, err, "provenance mismatch")
+	assert.Contains(t, err.Error(), `"commit":"`+commit+`"`)
 	for _, tc := range []struct {
 		name   string
 		change func(*Info)
