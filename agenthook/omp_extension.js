@@ -1,5 +1,18 @@
 import { existsSync } from "node:fs";
 
+const identity = (ctx) => ({ id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd });
+const lifecycle = (name, { id, file, cwd }, extra = {}) => ({ hook_event_name: name, session_id: id, cwd, ...(file ? { transcript_path: file } : {}), ...extra });
+
+const valid = (name, value) => {
+	const allowed = name === "PreToolUse" ? ["block", "reason", "additionalContext"] : name === "Stop" ? ["decision", "reason"] : name === "PostToolUse" || name === "PostToolUseFailure" ? ["additionalContext"] : [];
+	return Object.keys(value).every((key) => allowed.includes(key)) &&
+		(value.block === undefined || typeof value.block === "boolean") &&
+		(value.reason === undefined || typeof value.reason === "string") &&
+		(value.additionalContext === undefined || typeof value.additionalContext === "string") &&
+		(value.decision === undefined || value.decision === "block") &&
+		(value.reason === undefined || (name === "Stop" ? value.decision === "block" : value.block === true));
+};
+
 // OMP v19.2.1 event contracts:
 // https://github.com/can1357/oh-my-pi/blob/v19.2.1/packages/coding-agent/src/extensibility/shared-events.ts#L26-L83
 // https://github.com/can1357/oh-my-pi/blob/v19.2.1/packages/coding-agent/src/extensibility/extensions/types.ts#L1455-L1461
@@ -7,20 +20,7 @@ import { existsSync } from "node:fs";
 // https://github.com/can1357/oh-my-pi/blob/v19.2.1/packages/coding-agent/src/extensibility/shared-events.ts#L121-L132
 export default function (omp) {
 	let announced = null;
-	const identity = (ctx) => ({ id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd });
-	const payload = (name, ctx, extra = {}) => {
-		const { id, file, cwd } = identity(ctx);
-		return { hook_event_name: name, session_id: id, cwd, ...(file ? { transcript_path: file } : {}), ...extra };
-	};
-	const valid = (name, value) => {
-		const allowed = name === "PreToolUse" ? ["block", "reason", "additionalContext"] : name === "Stop" ? ["decision", "reason"] : name === "PostToolUse" || name === "PostToolUseFailure" ? ["additionalContext"] : [];
-		return Object.keys(value).every((key) => allowed.includes(key)) &&
-			(value.block === undefined || typeof value.block === "boolean") &&
-			(value.reason === undefined || typeof value.reason === "string") &&
-			(value.additionalContext === undefined || typeof value.additionalContext === "string") &&
-			(value.decision === undefined || value.decision === "block") &&
-			(value.reason === undefined || (name === "Stop" ? value.decision === "block" : value.block === true));
-	};
+	const payload = (name, ctx, extra) => lifecycle(name, identity(ctx), extra);
 	const on = (name, fn) => omp.on(name, async (event, ctx) => {
 		if (ctx.mode !== "tui" || ctx.agent?.kind !== "main") return;
 		const deadline = Date.now() + 25000;
@@ -64,10 +64,21 @@ export default function (omp) {
 		// Reserve half the remaining callback time for Start when both phases have work.
 		const reserveStart = ended && hasCommands("SessionEnd") && hasCommands("SessionStart");
 		if (ended) {
-			await run("SessionEnd", { hook_event_name: "SessionEnd", session_id: ended.id, ...(ended.file ? { transcript_path: ended.file } : {}), cwd: ended.cwd, reason: event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "other" }, reserveStart);
+			const reason = event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "other";
+			await run("SessionEnd", lifecycle("SessionEnd", ended, { reason }), reserveStart);
 		}
-		await run("SessionStart", { hook_event_name: "SessionStart", session_id: now.id, ...(now.file ? { transcript_path: now.file } : {}), cwd: now.cwd, source: event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "fork" });
+		const source = event.reason === "new" ? "clear" : event.reason === "resume" ? "resume" : "fork";
+		await run("SessionStart", lifecycle("SessionStart", now, { source }));
 	};
+	// Native /move keeps the session ID but changes cwd and transcript. OMP emits
+	// the before events while the old session is still current, so refresh the
+	// announced location there and leave End/Start to the after events.
+	const relocate = async (_event, ctx) => {
+		const current = identity(ctx);
+		if (announced?.id === current.id) announced = current;
+	};
+	on("session_before_switch", relocate);
+	on("session_before_branch", relocate);
 	on("session_switch", replace);
 	on("session_branch", replace);
 	on("input", async (event, ctx, run) => {

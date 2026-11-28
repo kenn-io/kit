@@ -225,7 +225,7 @@ func TestOmpSessionAndToolLifecycle(t *testing.T) {
 	}
 	_, err = Install(AgentOmp, InstallOptions{ConfigPath: path, Executable: node, Arguments: []string{"-e", `let s="";process.stdin.on("data",x=>s+=x).on("end",()=>require("fs").appendFileSync(process.env.OMP_TEST_LOG,s+"\n"))`, "lifecycle-marker"}, Marker: "lifecycle-marker", Hooks: hooks})
 	require.NoError(t, err)
-	driver := ompHost + `import {writeFileSync} from "node:fs";let id="a",f=process.argv[2]+"/a",c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>id,getSessionFile:()=>f}};await h.session_start({},c);await h.input({source:"interactive",text:"/local"},c);await h.input({source:"extension",text:"hidden"},c);await h.tool_call({toolName:"bash",toolCallId:"1",input:{command:"git commit"}},c);writeFileSync(f,"saved");await h.tool_result({toolName:"bash",toolCallId:"1",input:{command:"git commit"},content:[{type:"text",text:"done"}],isError:false},c);await h.tool_result({toolName:"bash",toolCallId:"2",input:{command:"git commit"},content:[{type:"text",text:"failed"}],isError:true},c);await h.session_switch({reason:"resume"},c);id="b";f=process.argv[2]+"/b";c.cwd=process.argv[2]+"/other";writeFileSync(f,"saved");await h.session_branch({reason:"fork"},c);await h.input({source:"interactive",text:"skip"},{...c,agent:{kind:"subagent"}});`
+	driver := ompHost + `import {writeFileSync} from "node:fs";let id="a",f=process.argv[2]+"/a",c={mode:"tui",agent:{kind:"main"},cwd:process.argv[2],ui:{notify:console.error},sessionManager:{getSessionId:()=>id,getSessionFile:()=>f}};await h.session_start({},c);await h.input({source:"interactive",text:"/local"},c);await h.input({source:"extension",text:"hidden"},c);await h.tool_call({toolName:"bash",toolCallId:"1",input:{command:"git commit"}},c);writeFileSync(f,"saved");await h.tool_result({toolName:"bash",toolCallId:"1",input:{command:"git commit"},content:[{type:"text",text:"done"}],isError:false},c);await h.tool_result({toolName:"bash",toolCallId:"2",input:{command:"git commit"},content:[{type:"text",text:"failed"}],isError:true},c);await h.session_switch({reason:"resume"},c);f=process.argv[2]+"/other/a-moved";c.cwd=process.argv[2]+"/other";writeFileSync(f,"saved");await h.session_before_switch?.({reason:"resume"},c);id="b";f=process.argv[2]+"/b";c.cwd=process.argv[2];writeFileSync(f,"saved");await h.session_switch({reason:"resume"},c);await h.input({source:"interactive",text:"skip"},{...c,agent:{kind:"subagent"}});`
 	cmd := exec.CommandContext(t.Context(), node, "--input-type=module", "-e", driver, path, dir)
 	cmd.Env = append(os.Environ(), "OMP_TEST_LOG="+log)
 	out, err := cmd.CombinedOutput()
@@ -247,8 +247,12 @@ func TestOmpSessionAndToolLifecycle(t *testing.T) {
 	assert.Equal(t, "failed", entries[4]["error"])
 	assert.Equal(t, "a", entries[5]["session_id"])
 	assert.Equal(t, "SessionEnd", entries[5]["hook_event_name"])
-	assert.Equal(t, dir, entries[5]["cwd"])
+	assert.Equal(t, filepath.Join(dir, "other"), entries[5]["cwd"])
+	assert.Equal(t, filepath.Join(dir, "other", "a-moved"), entries[5]["transcript_path"])
+	assert.Equal(t, "SessionStart", entries[6]["hook_event_name"])
 	assert.Equal(t, "b", entries[6]["session_id"])
+	assert.Equal(t, dir, entries[6]["cwd"])
+	assert.Equal(t, filepath.Join(dir, "b"), entries[6]["transcript_path"])
 }
 
 func TestOmpImageOnlyInteractiveInput(t *testing.T) {
