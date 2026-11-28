@@ -3,8 +3,14 @@
 package safefileio
 
 import (
+	"bytes"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 
@@ -12,6 +18,29 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
+
+var gcChurnSink atomic.Pointer[[]byte]
+
+func startGCChurn(t *testing.T) func() {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for ctx.Err() == nil {
+			// Allocate and fill 50-byte slices (the 64-byte size class used by
+			// CreateWellKnownSid) with 0xff so freed unpinned SIDs are overwritten.
+			for range 64 {
+				poison := bytes.Repeat([]byte{0xff}, 50)
+				gcChurnSink.Store(&poison)
+			}
+			runtime.GC()
+		}
+	})
+	return func() {
+		cancel()
+		wg.Wait()
+	}
+}
 
 func TestPrivateWindowsACLDeduplicatesLocalSystem(t *testing.T) {
 	require := require.New(t)
@@ -79,10 +108,12 @@ func TestEnsurePrivateDirShallowLeavesMatchingDACLUntouched(t *testing.T) {
 	defer func() { _ = windows.CloseHandle(sourceHandle) }()
 	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
 	require.NoError(err)
-	worldRead := allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
+	worldRead := allowFullControl(&pinner, world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
 	worldRead.AccessPermissions = windows.FILE_GENERIC_READ
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		allowFullControl(userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		allowFullControl(&pinner, userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 		worldRead,
 	}, nil)
 	require.NoError(err)
@@ -219,9 +250,11 @@ func TestValidatePrivateDirRejectsBroadDACL(t *testing.T) {
 	require.NoError(err)
 	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
 	require.NoError(err)
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		allowFullControl(userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
-		allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		allowFullControl(&pinner, userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		allowFullControl(&pinner, world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 	}, nil)
 	require.NoError(err)
 	require.NoError(windows.SetSecurityInfo(
@@ -294,9 +327,11 @@ func TestValidatePrivateCurrentUserFileRejectsBroadDACL(t *testing.T) {
 	require.NoError(err)
 	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
 	require.NoError(err)
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		allowFullControl(userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
-		allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		allowFullControl(&pinner, userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		allowFullControl(&pinner, world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 	}, nil)
 	require.NoError(err)
 	require.NoError(windows.SetSecurityInfo(
@@ -339,8 +374,10 @@ func TestValidateCurrentUserFileProtectionRequirements(t *testing.T) {
 	defer func() { _ = windows.CloseHandle(handle) }()
 	userSID, err := currentWindowsUserSID()
 	require.NoError(err)
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		allowFullControl(userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		allowFullControl(&pinner, userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 	}, nil)
 	require.NoError(err)
 	require.NoError(windows.SetSecurityInfo(
@@ -468,4 +505,57 @@ func TestCurrentWindowsOwnerSIDIsAvailable(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, ownerSID)
 	require.NotEmpty(t, ownerSID.String())
+}
+
+func TestCurrentWindowsUserSIDIsAvailable(t *testing.T) {
+	require := require.New(t)
+	userSID, err := currentWindowsUserSID()
+	require.NoError(err)
+	require.NotNil(userSID)
+	require.True(userSID.IsValid())
+
+	tokenUser, err := windows.GetCurrentProcessToken().GetTokenUser()
+	require.NoError(err)
+	require.True(userSID.Equals(tokenUser.User.Sid))
+}
+
+func TestPrivateWindowsACLUnderGCPressure(t *testing.T) {
+	stopChurn := startGCChurn(t)
+	defer stopChurn()
+
+	const workers = 4
+	base := t.TempDir()
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for worker := range workers {
+		dir := filepath.Join(base, fmt.Sprintf("worker-%d", worker))
+		wg.Go(func() {
+			for i := range 128 {
+				userSID, err := currentWindowsUserSID()
+				if err != nil {
+					errs[worker] = fmt.Errorf("iteration %d user SID: %w", i, err)
+					return
+				}
+				acl, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+				if err != nil {
+					errs[worker] = fmt.Errorf("iteration %d privateWindowsACL: %w", i, err)
+					return
+				}
+				if acl == nil || acl.AceCount < 2 {
+					errs[worker] = fmt.Errorf("iteration %d unexpected ACL: %v", i, acl)
+					return
+				}
+			}
+			for i := range 8 {
+				if err := EnsurePrivateDirShallow(dir); err != nil {
+					errs[worker] = fmt.Errorf("iteration %d EnsurePrivateDirShallow: %w", i, err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	for worker, err := range errs {
+		require.NoError(t, err, "worker %d", worker)
+	}
 }

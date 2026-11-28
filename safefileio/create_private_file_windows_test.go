@@ -4,10 +4,12 @@ package safefileio
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"unsafe"
 
@@ -166,4 +168,78 @@ func TestDiscardCreatedWindowsFileDeletesThroughHandle(t *testing.T) {
 	data, err := os.ReadFile(path)
 	require.NoError(err)
 	assert.Equal(t, "replacement", string(data))
+}
+
+func TestPrivateFileSecurityAttributesSelfRelativeUnderGCPressure(t *testing.T) {
+	require := require.New(t)
+	userSID, err := currentWindowsUserSID()
+	require.NoError(err)
+	attrs, err := privateFileSecurityAttributes(userSID)
+	require.NoError(err)
+	require.NotNil(attrs)
+	require.NotNil(attrs.SecurityDescriptor)
+	require.True(attrs.SecurityDescriptor.IsValid())
+	control, _, err := attrs.SecurityDescriptor.Control()
+	require.NoError(err)
+	require.NotZero(control&windows.SE_SELF_RELATIVE, "security descriptor must be self-relative")
+	require.NotZero(control&windows.SE_DACL_PROTECTED, "security descriptor DACL must be protected")
+	dacl, _, err := attrs.SecurityDescriptor.DACL()
+	require.NoError(err)
+	require.NotNil(dacl)
+	require.GreaterOrEqual(dacl.AceCount, uint16(2))
+
+	stopChurn := startGCChurn(t)
+	defer stopChurn()
+
+	const workers = 4
+	base := t.TempDir()
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for worker := range workers {
+		wg.Go(func() {
+			for i := range 128 {
+				sid, err := currentWindowsUserSID()
+				if err != nil {
+					errs[worker] = fmt.Errorf("iteration %d user SID: %w", i, err)
+					return
+				}
+				sa, err := privateFileSecurityAttributes(sid)
+				if err != nil {
+					errs[worker] = fmt.Errorf("iteration %d privateFileSecurityAttributes: %w", i, err)
+					return
+				}
+				if sa == nil || sa.SecurityDescriptor == nil || !sa.SecurityDescriptor.IsValid() {
+					errs[worker] = fmt.Errorf("iteration %d invalid security descriptor", i)
+					return
+				}
+				ctrl, _, err := sa.SecurityDescriptor.Control()
+				if err != nil {
+					errs[worker] = fmt.Errorf("iteration %d control: %w", i, err)
+					return
+				}
+				if ctrl&windows.SE_SELF_RELATIVE == 0 || ctrl&windows.SE_DACL_PROTECTED == 0 {
+					errs[worker] = fmt.Errorf("iteration %d unexpected control flags: %#x", i, ctrl)
+					return
+				}
+			}
+			for i := range 4 {
+				path := filepath.Join(base, fmt.Sprintf("w%d-%d.txt", worker, i))
+				file, err := CreatePrivateFile(path)
+				if err != nil {
+					errs[worker] = fmt.Errorf("iteration %d CreatePrivateFile: %w", i, err)
+					return
+				}
+				valErr := ValidatePrivateCurrentUserFile(file)
+				closeErr := file.Close()
+				if err := errors.Join(valErr, closeErr); err != nil {
+					errs[worker] = fmt.Errorf("iteration %d validate/close: %w", i, err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	for worker, err := range errs {
+		require.NoError(err, "worker %d", worker)
+	}
 }

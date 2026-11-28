@@ -5,6 +5,7 @@ package packstore
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -105,10 +106,17 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 	require.NoError(t, err)
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	require.NoError(t, err)
+	require.NotNil(t, user.User.Sid)
+	userSID, err := user.User.Sid.Copy()
+	require.NoError(t, err)
+	runtime.KeepAlive(user)
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
+	pinner.Pin(userSID)
 	trustee := windows.TRUSTEE{
 		TrusteeForm:  windows.TRUSTEE_IS_SID,
 		TrusteeType:  windows.TRUSTEE_IS_USER,
-		TrusteeValue: windows.TrusteeValueFromSID(user.User.Sid),
+		TrusteeValue: windows.TrusteeValueFromSID(userSID),
 	}
 	restricted, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
 		{
@@ -159,11 +167,19 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 		nil,
 	))
 	return func() {
+		var cleanupPinner runtime.Pinner
+		defer cleanupPinner.Unpin()
+		cleanupPinner.Pin(userSID)
+		cleanupTrustee := windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_USER,
+			TrusteeValue: windows.TrusteeValueFromSID(userSID),
+		}
 		fullControl, aclErr := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
 			AccessPermissions: windows.GENERIC_ALL,
 			AccessMode:        windows.GRANT_ACCESS,
 			Inheritance:       windows.NO_INHERITANCE,
-			Trustee:           trustee,
+			Trustee:           cleanupTrustee,
 		}}, nil)
 		require.NoError(t, aclErr)
 		require.NoError(t, windows.SetSecurityInfo(

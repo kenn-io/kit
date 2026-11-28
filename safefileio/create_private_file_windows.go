@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -75,6 +76,11 @@ func privateFileSecurityAttributes(userSID *windows.SID) (*windows.SecurityAttri
 	if err != nil {
 		return nil, err
 	}
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
+	// SetDACL writes acl into the absolute descriptor inside Win32 code without
+	// a Go GC write barrier. Keep acl pinned until ToSelfRelative copies it inline.
+	pinner.Pin(acl)
 	descriptor, err := windows.NewSecurityDescriptor()
 	if err != nil {
 		return nil, err
@@ -85,9 +91,13 @@ func privateFileSecurityAttributes(userSID *windows.SID) (*windows.SecurityAttri
 	if err := descriptor.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
 		return nil, err
 	}
+	selfRelative, err := descriptor.ToSelfRelative()
+	if err != nil {
+		return nil, err
+	}
 	return &windows.SecurityAttributes{
 		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
-		SecurityDescriptor: descriptor,
+		SecurityDescriptor: selfRelative,
 	}, nil
 }
 
