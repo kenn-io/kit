@@ -9,6 +9,9 @@ import (
 	"syscall"
 )
 
+// ValidateTrustedFile is unsupported outside Windows.
+func ValidateTrustedFile(*os.File) error { return errors.ErrUnsupported }
+
 // OpenCurrentUserFile opens path without following symlinks and verifies the
 // opened handle is a regular file owned by the current user.
 func OpenCurrentUserFile(path string) (*os.File, error) {

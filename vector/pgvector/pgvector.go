@@ -1,7 +1,14 @@
 // Package pgvector implements vector.Store using PostgreSQL and pgvector.
 // The caller owns the database connection and documents table. RevisionColumn
 // must change whenever document content changes, including when a deleted
-// document key is reused for replacement content.
+// document key is reused for replacement content. SaveDocuments requires schema
+// USAGE, SELECT on generations, SELECT and UPDATE on documents, SELECT, INSERT,
+// UPDATE, and DELETE on stamps, and SELECT, INSERT, and DELETE on chunks.
+// SaveDocuments requires READ COMMITTED and a rollback on error. Retry a busy
+// generation in a new transaction, and save documents in a consistent order.
+// Stale keys correspond to input entries in order, including repeated keys.
+// An open SaveDocuments transaction holds its generation lock until it ends;
+// lifecycle operations wait. Keep transactions short and use lifecycle deadlines.
 package pgvector
 
 import (

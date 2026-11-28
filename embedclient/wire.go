@@ -106,10 +106,15 @@ func (c *Client) classify(payload []byte, count int) ([][]float32, []error, erro
 	if err := jsonv2.Unmarshal(payload, &decoded); err != nil {
 		return nil, nil, errors.New("embed response is invalid")
 	}
-	raw, err := orderItems(decoded.Data, count)
+	raw, err := orderItems(decoded.Data, count, c.api == embedconfig.APIKit)
 	if err != nil {
 		return nil, nil, err
 	}
+	out, problems := c.decodeVectors(raw)
+	return out, problems, nil
+}
+
+func (c *Client) decodeVectors(raw []wireEmbedding) ([][]float32, []error) {
 	out := make([][]float32, len(raw))
 	var problems []error
 	for i, item := range raw {
@@ -120,10 +125,10 @@ func (c *Client) classify(payload []byte, count int) ([][]float32, []error, erro
 		}
 		out[i] = vector
 	}
-	return out, problems, nil
+	return out, problems
 }
 
-func orderItems(items []wireItem, count int) ([]wireEmbedding, error) {
+func orderItems(items []wireItem, count int, requireIndex bool) ([]wireEmbedding, error) {
 	if len(items) != count {
 		return nil, fmt.Errorf("embed response contained %d vectors for %d inputs", len(items), count)
 	}
@@ -134,7 +139,7 @@ func orderItems(items []wireItem, count int) ([]wireEmbedding, error) {
 		}
 	}
 	out := make([]wireEmbedding, count)
-	if missing == count {
+	if missing == count && !requireIndex {
 		for i, item := range items {
 			out[i] = item.Embedding
 		}

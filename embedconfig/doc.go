@@ -5,6 +5,14 @@
 // Embedder, the standard configuration-file shape for one embedding endpoint,
 // so every application reads the same keys.
 //
+// VertexBaseURL constructs a Vertex endpoint for a location. Set Deployment.API to
+// APIVertex to select its request protocol. Embedder.API carries the same
+// choice through Parts. APIKit selects the Kit HTTP contract at /embed.
+// The default is APIOpenAI. Vertex prediction calls use
+// RETRIEVAL_DOCUMENT for documents and RETRIEVAL_QUERY for queries, request Model.Dimensions, and return float vectors, so
+// InputTypeMode, RequestDimensions, and EncodingFormat have no effect there.
+// A Vertex request may carry fewer than Batch.Items inputs.
+//
 // The types stay separate on purpose. Model, role, and input settings can
 // change vectors or force a rebuild. Batch size and timeouts do not.
 // embedmodel.Descriptor combines them and computes the identities.

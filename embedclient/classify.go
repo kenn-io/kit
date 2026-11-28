@@ -13,8 +13,14 @@ import (
 // accepts, and a 403 naming a missing model is a configuration problem.
 func classifyFailure(status int, body []byte) Reason {
 	code, message := errorDetail(body)
-	code, message = strings.ToLower(code), strings.ToLower(message)
+	message = strings.ToLower(message)
 	switch {
+	case status == http.StatusBadGateway && code == "upstream_credentials":
+		return ReasonCredentials
+	case status == http.StatusFailedDependency && code == "model_unavailable":
+		return ReasonInvalidRequest
+	case status == http.StatusUnsupportedMediaType && code == "unsupported_content":
+		return ReasonUnsupportedContent
 	case status == http.StatusForbidden && code == "model_not_found":
 		return ReasonInvalidRequest
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
@@ -47,6 +53,8 @@ func classifyFailure(status int, body []byte) Reason {
 // Many servers send no code, a null code, or a numeric one, so the message
 // is the usual signal.
 var errorCodeReasons = map[string]Reason{
+	"input_too_long":           ReasonInputTooLong,
+	"invalid_request":          ReasonInvalidRequest,
 	"context_length_exceeded":  ReasonInputTooLong,
 	"content_policy_violation": ReasonContentPolicy,
 	"content_filter":           ReasonContentPolicy,
@@ -70,12 +78,15 @@ func messageReason(message string) Reason {
 		return ReasonContentPolicy
 	case containsAny(message, "batch", "per request", "number of inputs", "too many inputs"):
 		return ReasonUnknown
-	case containsAny(message, "too long", "too large", "too many", "length", "maximum", "exceed",
-		"overflow", "less than") &&
+	case sizeLimit(message) &&
 		containsAny(message, "token", "context", "input", "text", "character"):
 		return ReasonInputTooLong
 	}
 	return ReasonUnknown
+}
+
+func sizeLimit(message string) bool {
+	return containsAny(message, "maximum", "exceed", "too long", "too many", "too large", "length", "overflow", "less than")
 }
 
 func modelMissing(message string) bool {
@@ -123,7 +134,7 @@ func errorDetail(body []byte) (code, message string) {
 	case jsonv2.Unmarshal(envelope.Error, &text) == nil && text != "":
 		message = text
 	}
-	return code, message
+	return strings.ToLower(code), message
 }
 
 // stringCode returns a string error code. Some servers send a numeric code,

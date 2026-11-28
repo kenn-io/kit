@@ -8,6 +8,7 @@ callers responsible for their own file formats and higher-level policy.
 
 ## Invariants
 
+- `ValidateTrustedFile` checks the opened file without repairing it and accepts trusted inherited Windows DACLs; a directory check does not validate its children.
 - On Windows, every Win32 call that takes a caller's path converts it with
   `internal/winpath.UTF16Ptr`, which adds the `\\?\` prefix to long paths as
   the os package does. Without it a path that `os.OpenFile` accepts past

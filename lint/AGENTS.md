@@ -17,10 +17,10 @@
   module plugin.
 - `cmd/kennlint` runs analyzers, renders or checks configuration, and scans
   workflow downloads with `kennlint workflow-retries`. Its `frontmatter`
-  command checks git-tracked Markdown metadata; it inspects YAML node tags
-  and styles so dates must be bare, and compares content and date values
-  against a merge base when `-changed` is set. Fixes preserve Markdown bodies
-  and never invent titles or descriptions or bump existing dates.
+  command checks git-tracked Markdown metadata against the Kenn OKF profile.
+  Fixes fill only absent fields, preserve bodies, and never bump
+  timestamps. Meaningful edits require a changed
+  timestamp against the merge base; formatting-only edits do not.
 
 See `docs/adopting-kennlint.md` for the consumer workflow.
 

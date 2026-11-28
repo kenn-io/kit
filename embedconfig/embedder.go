@@ -16,16 +16,23 @@ import (
 //
 // The zero value is disabled. BaseURL, Model, and Dims are set together.
 type Embedder struct {
-	// BaseURL is the OpenAI-compatible endpoint base. The client appends
-	// /embeddings unless the path already ends with it.
+	// API selects the provider protocol. Empty uses OpenAI-compatible requests.
+	API API `toml:"api"`
+	// BaseURL is the endpoint base. For OpenAI-compatible endpoints, the client
+	// appends /embeddings unless the path already ends with it. Kit appends
+	// /embed to a base ending in /v1. For Vertex, use
+	// VertexBaseURL to construct the publisher-model URL, or set base_url to
+	// https://us-central1-aiplatform.googleapis.com/v1/projects/project-a/locations/us-central1/publishers/google/models.
+	// The client appends the model name and its :predict or :embedContent method.
 	BaseURL string `toml:"base_url"`
 	// Model is the provider model name.
 	Model string `toml:"model"`
 	// Dims is the vector width the provider returns.
 	Dims int `toml:"dims"`
 	// RequestDimensions sends Dims as the dimensions field on each request.
-	// Set it only when the endpoint supports requesting that width. False
-	// leaves the provider default; Dims still validates the returned width.
+	// Vertex always sends Dims as outputDimensionality.
+	// Set it only when an OpenAI-compatible endpoint supports that width.
+	// False leaves its default; Dims still validates the returned width.
 	// The client never truncates vectors to fit Dims.
 	RequestDimensions bool `toml:"request_dimensions"`
 	// APIKey is the bearer token: the token itself as a string, or a table
@@ -124,7 +131,7 @@ func (e Embedder) Parts() (Parts, error) {
 	if err != nil {
 		return Parts{}, err
 	}
-	deployment, err := Deployment{BaseURL: e.BaseURL, TrustPrivateNetwork: e.TrustPrivateNetwork}.Prepared()
+	deployment, err := Deployment{API: e.API, BaseURL: e.BaseURL, TrustPrivateNetwork: e.TrustPrivateNetwork}.Prepared()
 	if err != nil {
 		return Parts{}, err
 	}

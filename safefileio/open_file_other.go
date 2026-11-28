@@ -3,10 +3,14 @@
 package safefileio
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
 )
+
+// ValidateTrustedFile is unsupported outside Windows.
+func ValidateTrustedFile(*os.File) error { return errors.ErrUnsupported }
 
 // OpenCurrentUserFile fails closed when the platform cannot bind an open file
 // to a verified current-user identity without following links.
